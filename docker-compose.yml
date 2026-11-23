@@ -1,0 +1,713 @@
+services:
+  duckdns-updater:
+    image: linuxserver/duckdns:latest
+    container_name: docker2_duckdns
+    restart: "no"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Africa/Dakar
+      - SUBDOMAINS=omega-software
+      - TOKEN=763c25e2-8d70-440a-9025-baf59381acf2
+
+  nginx-proxy:
+    image: nginx:latest
+    container_name: docker2_nginx
+    restart: "no"
+    ports:
+      - "8080:80"
+      - "9443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - ./portal:/usr/share/nginx/html:ro
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - ecole
+      - clinique
+      - ecommerce
+      - stock
+      - commerciale
+      - pointage
+      - pos
+      - auto
+
+  ecole:
+    build:
+      context: ./apps/ecole
+      dockerfile: Dockerfile
+    container_name: docker2_ecole
+    restart: "no"
+    ports:
+      - "9001:8000"
+    volumes:
+      - ./data/ecole:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  clinique:
+    build:
+      context: ./apps/clinique
+      dockerfile: Dockerfile
+    container_name: docker2_clinique
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=120
+    restart: "no"
+    ports:
+      - "9002:8000"
+    volumes:
+      - ./data/clinique:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  ecommerce:
+    build:
+      context: ./apps/ecommerce
+      dockerfile: Dockerfile
+    container_name: docker2_ecommerce
+    restart: "no"
+    ports:
+      - "9003:8000"
+    volumes:
+      - ./data/ecommerce:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  stock:
+    build:
+      context: ./apps/stock
+      dockerfile: Dockerfile
+    container_name: docker2_stock
+    restart: "no"
+    ports:
+      - "9004:8000"
+    volumes:
+      - ./data/stock:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  commerciale:
+    build:
+      context: ./apps/commerciale
+      dockerfile: Dockerfile
+    container_name: docker2_commerciale
+    restart: "no"
+    ports:
+      - "9005:8000"
+    volumes:
+      - ./data/commerciale:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  pointage:
+    build:
+      context: ./apps/pointage
+      dockerfile: Dockerfile
+    container_name: docker2_pointage
+    restart: "no"
+    ports:
+      - "9008:8000"
+    volumes:
+      - ./data/pointage:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  pos:
+    build:
+      context: ./apps/pos
+      dockerfile: Dockerfile
+    image: docker2-pos:latest
+    container_name: docker2_pos
+    restart: "no"
+    ports:
+      - "9007:8000"
+    volumes:
+      - ./data/pos:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  rh:
+    build:
+      context: ./apps/rh
+      dockerfile: Dockerfile
+    container_name: docker2_rh
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=120
+    restart: "no"
+    ports:
+      - "9009:8000"
+    volumes:
+      - ./data/rh:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  hotel:
+    build:
+      context: ./apps/hotel
+      dockerfile: Dockerfile
+    image: docker2-hotel:latest
+    container_name: docker2_hotel
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=120
+    restart: "no"
+    ports:
+      - "9012:8000"
+    volumes:
+      - ./data/hotel:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  projets:
+    build:
+      context: ./apps/projets
+      dockerfile: Dockerfile
+    image: docker2-projets:latest
+    container_name: docker2_projets
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=120
+    restart: "no"
+    ports:
+      - "9010:8000"
+    volumes:
+      - ./data/projets:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  ged:
+    build:
+      context: ./apps/ged
+      dockerfile: Dockerfile
+    image: docker2-ged:latest
+    container_name: docker2_ged
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=180
+      - PYTHONUNBUFFERED=1
+    restart: "no"
+    ports:
+      - "9011:8000"
+    volumes:
+      - ./data/ged:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  pointage_v2:
+    build:
+      context: ./apps/pointage_v2
+      dockerfile: Dockerfile
+    image: docker2-pointage_v2:latest
+    container_name: docker2_pointage_v2
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=180
+      - PYTHONUNBUFFERED=1
+    restart: "no"
+    ports:
+      - "9013:8000"
+    volumes:
+      - ./data/pointage_v2:/app/data
+      - ./apps/pointage_v2/auth.py:/app/auth.py:ro
+      - ./apps/pointage_v2/crud.py:/app/crud.py:ro
+      - ./apps/pointage_v2/pointage_logic.py:/app/pointage_logic.py:ro
+      - ./apps/pointage_v2/pointage_qr.py:/app/pointage_qr.py:ro
+      - ./apps/pointage_v2/qr_cache.py:/app/qr_cache.py:ro
+      - ./apps/pointage_v2/rapports.py:/app/rapports.py:ro
+      - ./apps/pointage_v2/portail.py:/app/portail.py:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  transport:
+    build:
+      context: ./apps/transport
+      dockerfile: Dockerfile
+    image: docker2-transport:latest
+    container_name: docker2_transport
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=180
+      - PYTHONUNBUFFERED=1
+    restart: "no"
+    ports:
+      - "9014:8000"
+    volumes:
+      - ./data/transport:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  agri:
+    build:
+      context: ./apps/agri
+      dockerfile: Dockerfile
+    image: docker2-agri:latest
+    container_name: docker2_agri
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=300
+      - PYTHONUNBUFFERED=1
+      - API_METEO_KEY=${API_METEO_KEY:-}
+      - API_SATELLITE_KEY=${API_SATELLITE_KEY:-}
+    restart: "no"
+    ports:
+      - "9015:8000"
+    volumes:
+      - ./data/agri:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  microfinance:
+    build:
+      context: ./apps/microfinance
+      dockerfile: Dockerfile
+    image: docker2-microfinance:latest
+    container_name: docker2_microfinance
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=180
+      - PYTHONUNBUFFERED=1
+    restart: "no"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+    mem_limit: 250m
+    ports:
+      - "9017:8000"
+    volumes:
+      - ./data/microfinance:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  agro:
+    build:
+      context: ./apps/agro
+      dockerfile: Dockerfile
+    image: docker2-agro:latest
+    container_name: docker2_agro
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=300
+      - PYTHONUNBUFFERED=1
+    restart: "no"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+    mem_limit: 300m
+    ports:
+      - "9016:8000"
+    volumes:
+      - ./data/agro:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  pharmacie:
+    build:
+      context: ./apps/pharmacie
+      dockerfile: Dockerfile
+    image: docker2-pharmacie:latest
+    container_name: docker2_pharmacie
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=180
+      - PYTHONUNBUFFERED=1
+    restart: "no"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+    mem_limit: 300m
+    ports:
+      - "9018:8000"
+    volumes:
+      - ./data/pharmacie:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  transport_v2:
+    build:
+      context: ./apps/transport
+      dockerfile: Dockerfile
+    image: docker2-transport-v2:latest
+    container_name: docker2_transport_v2
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=180
+      - PYTHONUNBUFFERED=1
+    restart: "no"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+    mem_limit: 300m
+    ports:
+      - "9019:8000"
+    volumes:
+      - ./data/transport_v2:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  crm:
+    build:
+      context: ./apps/crm
+      dockerfile: Dockerfile
+    image: docker2-crm:latest
+    container_name: docker2_crm
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=180
+      - PYTHONUNBUFFERED=1
+    restart: "no"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+    mem_limit: 300m
+    ports:
+      - "9020:8000"
+    volumes:
+      - ./data/crm:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  btp:
+    build:
+      context: ./apps/btp
+      dockerfile: Dockerfile
+    image: docker2-btp:latest
+    container_name: docker2_btp
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=180
+      - PYTHONUNBUFFERED=1
+    restart: "no"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+    mem_limit: 300m
+    ports:
+      - "9021:8000"
+    volumes:
+      - ./data/btp:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  marketplace:
+    build:
+      context: ./apps/marketplace
+      dockerfile: Dockerfile
+    image: docker2-marketplace:latest
+    container_name: docker2_marketplace
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=180
+      - PYTHONUNBUFFERED=1
+    restart: "no"
+    mem_limit: 300m
+    ports:
+      - "9022:8000"
+    volumes:
+      - ./data/marketplace:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  assurance:
+    build:
+      context: ./apps/assurance
+      dockerfile: Dockerfile
+    image: docker2-assurance:latest
+    container_name: docker2_assurance
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=180
+      - PYTHONUNBUFFERED=1
+    restart: "no"
+    mem_limit: 300m
+    ports:
+      - "9023:8000"
+    volumes:
+      - ./data/assurance:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  formation_pro:
+    build:
+      context: ./apps/formation_pro
+      dockerfile: Dockerfile
+    image: docker2-formation-pro:latest
+    container_name: docker2_formation_pro
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=180
+      - PYTHONUNBUFFERED=1
+    restart: "no"
+    mem_limit: 300m
+    ports:
+      - "9024:8000"
+    volumes:
+      - ./data/formation_pro:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  immobilier:
+    build:
+      context: ./apps/immobilier
+      dockerfile: Dockerfile
+    image: docker2-immobilier:latest
+    container_name: docker2_immobilier
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=180
+      - PYTHONUNBUFFERED=1
+    restart: "no"
+    mem_limit: 300m
+    ports:
+      - "9025:8000"
+    volumes:
+      - ./data/immobilier:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  restaurant:
+    build:
+      context: ./apps/restaurant
+      dockerfile: Dockerfile
+    image: docker2-restaurant:latest
+    container_name: docker2_restaurant
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=180
+      - PYTHONUNBUFFERED=1
+    restart: "no"
+    mem_limit: 300m
+    ports:
+      - "9026:8000"
+    volumes:
+      - ./data/restaurant:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  telemedecine:
+    build:
+      context: ./apps/telemedecine
+      dockerfile: Dockerfile
+    image: docker2-telemedecine:latest
+    container_name: docker2_telemedecine
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=300
+      - PYTHONUNBUFFERED=1
+      - MASTER_KEY=omega-telemed-master-key-2026-secure
+      - JWT_SECRET=omega-telemed-jwt-2026
+    restart: "no"
+    mem_limit: 350m
+    ports:
+      - "9027:8000"
+    volumes:
+      - ./data/telemedecine:/app/data
+      - ./data/telemedecine/secure:/app/secure_storage
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  mode:
+    build:
+      context: ./apps/mode
+      dockerfile: Dockerfile
+    image: docker2-mode:latest
+    container_name: docker2_mode
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=180
+      - PYTHONUNBUFFERED=1
+    restart: "no"
+    mem_limit: 300m
+    ports:
+      - "9028:8000"
+    volumes:
+      - ./data/mode:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  auto:
+    build:
+      context: ./apps/auto
+      dockerfile: Dockerfile
+    image: docker2-auto:latest
+    container_name: docker2_auto
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=180
+      - PYTHONUNBUFFERED=1
+      - SECRET_KEY=omega-auto-cedeao-2026-premium-secret
+    restart: "no"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+    mem_limit: 350m
+    ports:
+      - "9029:8000"
+    volumes:
+      - ./data/auto:/app/data
+      - ./uploads/auto:/app/uploads
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  parts:
+    build:
+      context: ./apps/parts
+      dockerfile: Dockerfile
+    image: docker2-parts:latest
+    container_name: docker2_parts
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=180
+      - PYTHONUNBUFFERED=1
+      - SECRET_KEY=omega-parts-cedeao-2026-secret-premium
+    restart: "no"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+    mem_limit: 350m
+    ports:
+      - "9030:8000"
+    volumes:
+      - ./data/parts:/app/data
+      - ./uploads/parts:/app/uploads
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+

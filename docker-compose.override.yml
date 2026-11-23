@@ -1,0 +1,138 @@
+# ============================================================
+#  OMEGA DOCKER2 — Override pour WSL2 (2 GB RAM)
+#  Ce fichier S'AJOUTE à docker-compose.yml automatiquement
+# ============================================================
+
+services:
+
+  # ==================== APPLICATIONS ====================
+  ecole:
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+    mem_limit: 200m
+    memswap_limit: 400m
+    restart: "no"
+
+  clinique:
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+    mem_limit: 200m
+    memswap_limit: 400m
+    restart: "no"
+
+  ecommerce:
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+    mem_limit: 200m
+    memswap_limit: 400m
+    restart: "no"
+
+  stock:
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+    mem_limit: 200m
+    memswap_limit: 400m
+    restart: "no"
+
+  commerciale:
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+    mem_limit: 200m
+    memswap_limit: 400m
+    restart: "no"
+
+  pos:
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+    mem_limit: 200m
+    memswap_limit: 400m
+    restart: "no"
+
+  pointage:
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+    mem_limit: 200m
+    memswap_limit: 400m
+    restart: "no"
+
+  rh:
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+    mem_limit: 200m
+    memswap_limit: 400m
+    restart: "no"
+
+  projets:
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+    mem_limit: 200m
+    memswap_limit: 400m
+    restart: "no"
+
+  ged:
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+    mem_limit: 200m
+    memswap_limit: 400m
+    restart: "no"
+
+  hotel:
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+    mem_limit: 200m
+    memswap_limit: 400m
+    restart: "no"
+
+  pointage_v2:
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+    mem_limit: 200m
+    memswap_limit: 400m
+    restart: "no"
+
+  transport:
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+    mem_limit: 200m
+    memswap_limit: 400m
+    restart: "no"
+
+  agri:
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+    mem_limit: 250m
+    memswap_limit: 500m
+    restart: "no"
+
+  # ==================== INFRASTRUCTURE ====================
+  nginx-proxy:
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "2"}
+    mem_limit: 100m
+    restart: "no"
+    # Retirer depends_on (démarrage parallèle)
+    depends_on: []
+
+  duckdns-updater:
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+    mem_limit: 50m
+    restart: "no"
+
+  # ==================== CLOUDFLARED ====================

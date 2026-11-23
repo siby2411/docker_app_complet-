@@ -1,0 +1,205 @@
+server {
+    listen 80;
+    server_name omega-software.duckdns.org localhost;
+
+    # ========================================
+    # PAGE D'ACCUEIL
+    # ========================================
+    location = / {
+        return 200 '<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Omega Consulting</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; font-family:"Segoe UI",sans-serif; }
+        body { background:linear-gradient(135deg,#0a0e17,#1a2a4a); min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+        .hero { background:rgba(255,255,255,0.03); border-radius:32px; padding:40px; max-width:1100px; width:100%; border:1px solid rgba(255,255,255,0.05); }
+        .hero-header { text-align:center; margin-bottom:30px; }
+        .hero-header .logo { font-size:2.5rem; font-weight:900; color:#fff; }
+        .hero-header .logo span { color:#00d4ff; }
+        .app-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin:20px 0; }
+        .app-card { background:rgba(255,255,255,0.04); padding:20px 15px; border-radius:12px; text-align:center; text-decoration:none; color:#fff; border:1px solid rgba(255,255,255,0.05); transition:0.3s; }
+        .app-card:hover { background:rgba(0,212,255,0.08); border-color:#00d4ff; transform:translateY(-3px); }
+        .app-card .icon { font-size:2rem; display:block; margin-bottom:8px; }
+        .app-card .icon.blue { color:#00d4ff; }
+        .app-card .icon.green { color:#34d399; }
+        .app-card .icon.orange { color:#fb923c; }
+        .app-card .icon.pink { color:#f472b6; }
+        .app-card .icon.purple { color:#a78bfa; }
+        .app-card .icon.gold { color:#fbbf24; }
+        .app-card .icon.red { color:#ef4444; }
+        .app-card h3 { font-size:0.85rem; }
+        .app-card small { color:rgba(255,255,255,0.3); font-size:0.6rem; display:block; margin-top:2px; }
+        .hero-footer { text-align:center; margin-top:20px; padding-top:15px; border-top:1px solid rgba(255,255,255,0.04); color:rgba(255,255,255,0.2); font-size:0.75rem; }
+        .hero-footer span { color:#00d4ff; }
+        @media (max-width:600px) { .hero { padding:20px; } .app-grid { grid-template-columns:1fr 1fr; } }
+    </style>
+</head>
+<body>
+    <div class="hero">
+        <div class="hero-header">
+            <div class="logo">OMEGA <span>CONSULTING</span></div>
+            <div class="subtitle">Solutions d\'Entreprise</div>
+        </div>
+        <div class="app-grid">
+            <a href="/ecole/" class="app-card"><span class="icon blue"><i class="fas fa-graduation-cap"></i></span><h3>École</h3><small>Élèves & Notes</small></a>
+            <a href="/clinique/" class="app-card"><span class="icon green"><i class="fas fa-heartbeat"></i></span><h3>Clinique</h3><small>Patients & Soins</small></a>
+            <a href="/ecommerce/" class="app-card"><span class="icon orange"><i class="fas fa-shopping-cart"></i></span><h3>E-Commerce</h3><small>Produits & Commandes</small></a>
+            <a href="/stock/" class="app-card"><span class="icon pink"><i class="fas fa-boxes"></i></span><h3>Stock</h3><small>Stocks & Alertes</small></a>
+            <a href="/commerciale/" class="app-card"><span class="icon purple"><i class="fas fa-briefcase"></i></span><h3>Commerciale</h3><small>Clients & Devis</small></a>
+            <a href="/pointage/" class="app-card"><span class="icon gold"><i class="fas fa-fingerprint"></i></span><h3>Pointage RH</h3><small>QR Code & Présence</small></a>
+            <a href="/pos/" class="app-card"><span class="icon red"><i class="fas fa-utensils"></i></span><h3>POS Restaurant</h3><small>Point of Sale</small></a>
+        </div>
+        <div class="hero-footer">&copy; 2026 <span>Omega Consulting</span> &mdash; Sénégal</div>
+    </div>
+</body>
+</html>';
+        add_header Content-Type text/html;
+    }
+
+    # ========================================
+    # REDIRECTIONS
+    # ========================================
+    location = /pointage {
+        return 301 /pointage/;
+    }
+
+    # ========================================
+    # APPLICATION POS
+    # ========================================
+    location /pos/ {
+        proxy_pass http://pos:8000/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 120s;
+        proxy_connect_timeout 120s;
+        proxy_send_timeout 120s;
+        proxy_buffering off;
+    }
+
+    # ========================================
+    # APPLICATION POINTAGE
+    # ========================================
+    location /pointage/ {
+        proxy_pass http://pointage:8000/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_read_timeout 120s;
+        proxy_buffering off;
+    }
+
+    # ========================================
+    # APPLICATION ÉCOLE
+    # ========================================
+    location /ecole/ {
+        proxy_pass http://ecole:8000/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+    }
+
+    # ========================================
+    # APPLICATION CLINIQUE
+    # ========================================
+    location /clinique/ {
+        proxy_pass http://clinique:8000/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Prefix /clinique;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+
+        # Désactiver la compression en amont pour que sub_filter fonctionne
+        proxy_set_header Accept-Encoding "";
+
+        # ============ RÉÉCRITURE DES LIENS HTML ============
+        sub_filter_once off;
+        sub_filter_types text/html text/css application/javascript;
+
+        # href="/...", action="/...", src="/..."
+        sub_filter 'href="/' 'href="/clinique/';
+        sub_filter "href='/" "href='/clinique/";
+        sub_filter 'action="/' 'action="/clinique/';
+        sub_filter "action='/" "action='/clinique/";
+        sub_filter 'src="/' 'src="/clinique/';
+        sub_filter "src='/" "src='/clinique/";
+
+        # Redirections JavaScript
+        sub_filter 'location.href="/' 'location.href="/clinique/';
+        sub_filter "location.href='/" "location.href='/clinique/";
+        sub_filter 'location.href = "/' 'location.href = "/clinique/';
+        sub_filter "location.href = '/" "location.href = '/clinique/";
+        sub_filter 'window.location="/' 'window.location="/clinique/';
+        sub_filter "window.location='/" "window.location='/clinique/";
+        sub_filter 'window.location = "/' 'window.location = "/clinique/';
+        sub_filter "window.location = '/" "window.location = '/clinique/";
+
+        # CSS url(...)
+        sub_filter 'url(/' 'url(/clinique/';
+        sub_filter "url('/" "url('/clinique/";
+
+        # Meta refresh
+        sub_filter 'content="0;url=/' 'content="0;url=/clinique/';
+    }
+
+    # ========================================
+    # APPLICATION E-COMMERCE
+    # ========================================
+    location /ecommerce/ {
+        proxy_pass http://ecommerce:8000/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+    }
+
+    # ========================================
+    # APPLICATION STOCK
+    # ========================================
+    location /stock/ {
+        proxy_pass http://stock:8000/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+    }
+
+    # ========================================
+    # APPLICATION COMMERCIALE
+    # ========================================
+    location /commerciale/ {
+        proxy_pass http://commerciale:8000/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+    }
+}

@@ -1,0 +1,10 @@
+*.tar.gz
+*.sql
+*.sql.gz
+*.env
+.env.*
+uploads/
+data/
+backups/
+*.log
+node_modules/
