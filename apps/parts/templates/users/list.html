@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Utilisateurs{% endblock %}
+{% block page_title %}👤 Utilisateurs{% endblock %}
+{% block content %}
+
+<div class="card-premium">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h5 class="mb-0">{{ users|length }} utilisateur(s)</h5>
+    <a href="{{ url_for('user_new') }}" class="btn btn-accent"><i class="bi bi-plus-lg"></i> Nouvel utilisateur</a>
+  </div>
+
+  <div class="table-responsive">
+    <table class="table table-omega">
+      <thead>
+        <tr>
+          <th>Nom</th><th>Username</th><th>Rôle</th><th>Email</th><th>Téléphone</th>
+          <th>PDV</th><th class="text-center">Ventes</th><th class="text-end">CA</th>
+          <th>Statut</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr>
+          <td><strong style="color:#0a2540">{{ u.nom_complet or '—' }}</strong></td>
+          <td><code style="font-size:11px">{{ u.username }}</code></td>
+          <td><span class="badge-statut badge-{{ 'danger' if u.role == 'admin' else 'en_cours' if u.role == 'gerant' else 'disponible' }}">{{ u.role }}</span></td>
+          <td><small>{{ u.email or '—' }}</small></td>
+          <td><small>{{ u.telephone or '—' }}</small></td>
+          <td><small>{{ u.point_vente or '—' }}</small></td>
+          <td class="text-center">{{ u.nb_ventes }}</td>
+          <td class="text-end fw-bold">{{ u.ca_total|money_short }}</td>
+          <td><span class="badge-statut badge-{{ 'disponible' if u.actif else 'annulee' }}">{{ 'actif' if u.actif else 'inactif' }}</span></td>
+          <td class="text-end">
+            <a href="{{ url_for('user_edit', uid=u.id) }}" class="btn btn-sm btn-light"><i class="bi bi-pencil"></i></a>
+            {% if u.id != current_user.id %}
+            <form method="POST" action="{{ url_for('user_delete', uid=u.id) }}" class="d-inline" onsubmit="return confirm('Supprimer ?')">
+              <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="10" class="text-center text-muted py-4">Aucun utilisateur</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

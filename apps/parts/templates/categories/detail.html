@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}{{ c.nom }}{% endblock %}
+{% block page_title %}{{ c.icone }} {{ c.nom }}{% endblock %}
+{% block content %}
+
+<div class="row g-3 mb-3">
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-gear-wide-connected"></i></div><div><div class="kpi-val">{{ pieces|length }}</div><div class="kpi-lbl">Pièces</div></div></div></div>
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-info-grad"><i class="bi bi-diagram-3"></i></div><div><div class="kpi-val">{{ enfants|length }}</div><div class="kpi-lbl">Sous-catégories</div></div></div></div>
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-upc"></i></div><div><div class="kpi-val">{{ c.code }}</div><div class="kpi-lbl">Code</div></div></div></div>
+</div>
+
+{% if enfants %}
+<div class="card-premium">
+  <h5>Sous-catégories</h5>
+  <div class="row g-2">
+    {% for e in enfants %}
+    <div class="col-md-4">
+      <a href="{{ url_for('categorie_detail', cid=e.id) }}" class="text-decoration-none">
+        <div style="padding:12px;background:#f5f7fa;border-radius:10px">
+          <div style="font-weight:600;color:#0a2540">{{ e.icone }} {{ e.nom }}</div>
+          <div class="text-muted" style="font-size:11px">{{ e.code }}</div>
+        </div>
+      </a>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="card-premium">
+  <div class="d-flex justify-content-between mb-3">
+    <h5 class="mb-0">Pièces ({{ pieces|length }})</h5>
+    <a href="{{ url_for('piece_new') }}?categorie_id={{ c.id }}" class="btn btn-sm btn-accent"><i class="bi bi-plus"></i> Ajouter</a>
+  </div>
+  {% if pieces %}
+  <div class="table-responsive">
+    <table class="table table-omega table-sm">
+      <thead><tr><th>SKU</th><th>Nom</th><th>Marque</th><th class="text-end">Prix</th><th class="text-center">Stock</th><th></th></tr></thead>
+      <tbody>
+        {% for p in pieces %}
+        <tr>
+          <td><code style="font-size:11px">{{ p.sku }}</code></td>
+          <td><a href="{{ url_for('piece_detail', pid=p.id) }}" style="text-decoration:none;font-weight:600;color:#0a2540">{{ p.nom[:50] }}</a></td>
+          <td>{{ p.marque_piece or '—' }}</td>
+          <td class="text-end fw-bold">{{ p.prix_vente_detail|money }}</td>
+          <td class="text-center">
+            {% if p.stock_total == 0 %}<span class="badge-statut badge-rupture">0</span>
+            {% elif p.stock_total <= p.stock_alerte %}<span class="badge-statut badge-alerte">{{ p.stock_total }}</span>
+            {% else %}<span class="badge-statut badge-disponible">{{ p.stock_total }}</span>{% endif %}
+          </td>
+          <td><a href="{{ url_for('piece_detail', pid=p.id) }}" class="btn btn-sm btn-light"><i class="bi bi-eye"></i></a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="text-muted text-center py-3">Aucune pièce dans cette catégorie.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

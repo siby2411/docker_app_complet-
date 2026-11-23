@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}{{ d.numero }}{% endblock %}
+{% block page_title %}📄 Devis {{ d.numero }}{% endblock %}
+{% block content %}
+<div class="row g-3">
+  <div class="col-lg-8">
+    <div class="card-premium">
+      <div class="d-flex justify-content-between mb-3">
+        <h4 style="color:#0a2540">{{ d.numero }}</h4>
+        <span class="badge-statut badge-{{ d.statut }}">{{ d.statut }}</span>
+      </div>
+      <p><strong>Date :</strong> {{ d.date_devis|dte }} · <strong>Validité :</strong> {{ d.date_validite|dte }}</p>
+      {% if d.client_nom %}<p><strong>Client :</strong> {{ d.client_prenom or '' }} {{ d.client_nom }} — {{ d.client_tel or '' }}</p>{% endif %}
+      {% if d.notes %}<div class="alert alert-secondary">{{ d.notes }}</div>{% endif %}
+    </div>
+
+    <div class="card-premium">
+      <h5>Lignes ({{ lignes|length }})</h5>
+      <table class="table table-omega table-sm">
+        <thead><tr><th>SKU</th><th>Pièce</th><th class="text-center">Qté</th><th class="text-end">P.U.</th><th class="text-end">Total</th><th></th></tr></thead>
+        <tbody>
+          {% for l in lignes %}
+          <tr>
+            <td><code style="font-size:11px">{{ l.sku }}</code></td>
+            <td>{{ l.piece_nom[:50] }}</td>
+            <td class="text-center">{{ l.quantite }}</td>
+            <td class="text-end">{{ l.prix_unitaire|money }}</td>
+            <td class="text-end fw-bold">{{ l.montant|money }}</td>
+            <td><form method="POST" action="{{ url_for('devis_del_ligne', did=d.id, lid=l.id) }}" onsubmit="return confirm('Supprimer ?')"><button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button></form></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot><tr style="background:#f5f7fa"><td colspan="4" class="text-end"><strong>TOTAL</strong></td><td class="text-end"><strong>{{ d.montant_total|money }}</strong></td><td></td></tr></tfoot>
+      </table>
+    </div>
+
+    {% if d.statut == 'en_attente' and pieces %}
+    <div class="card-premium">
+      <h5>Ajouter une ligne</h5>
+      <form method="POST" action="{{ url_for('devis_add_ligne', did=d.id) }}" class="row g-2">
+        <div class="col-md-5"><select name="piece_id" class="form-select" required>
+          <option value="">— Pièce —</option>
+          {% for p in pieces %}<option value="{{ p.id }}" data-prix="{{ p.prix_vente_detail }}">{{ p.sku }} — {{ p.nom[:50] }}</option>{% endfor %}
+        </select></div>
+        <div class="col-md-2"><input type="number" name="quantite" class="form-control" placeholder="Qté" required value="1" min="1"></div>
+        <div class="col-md-3"><input type="number" name="prix_unitaire" id="pu" class="form-control" placeholder="P.U." required></div>
+        <div class="col-md-2"><button class="btn btn-accent w-100">Ajouter</button></div>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card-premium">
+      <h6>Actions</h6>
+      <div class="d-grid gap-2">
+        {% if d.statut == 'en_attente' %}
+        <form method="POST" action="{{ url_for('devis_change_statut', did=d.id) }}"><input type="hidden" name="statut" value="accepte"><button class="btn btn-success w-100">✅ Accepter</button></form>
+        <form method="POST" action="{{ url_for('devis_change_statut', did=d.id) }}"><input type="hidden" name="statut" value="refuse"><button class="btn btn-light w-100">❌ Refuser</button></form>
+        <form method="POST" action="{{ url_for('devis_convertir', did=d.id) }}" onsubmit="return confirm('Convertir en vente ?')"><button class="btn btn-accent w-100">💰 Convertir en vente</button></form>
+        {% endif %}
+        {% if current_user.is_gerant() %}
+        <form method="POST" action="{{ url_for('devis_delete', did=d.id) }}" onsubmit="return confirm('Supprimer ?')"><button class="btn btn-outline-danger w-100">🗑️ Supprimer</button></form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+document.querySelector('select[name="piece_id"]')?.addEventListener('change', function() {
+  const prix = this.options[this.selectedIndex].dataset.prix;
+  if (prix) document.getElementById('pu').value = prix;
+});
+</script>
+{% endblock %}

@@ -1,0 +1,451 @@
+"""
+Omega Shop — Plateforme E-Commerce de dernière génération
+Design premium orange/gold — Développé par Omega Informatique
+"""
+from flask import Flask, render_template_string, request, redirect, url_for, flash, jsonify
+from werkzeug.middleware.proxy_fix import ProxyFix
+import sqlite3
+import os
+from datetime import datetime, timedelta
+
+app = Flask(__name__)
+app.secret_key = 'omega_ecommerce_2026_secret_key_premium'
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
+DB_PATH = "/app/data/ecommerce.db"
+
+# ==================== AUTH ====================
+try:
+    from auth import (init_auth, log_action, role_required, admin_required,
+                      vendeur_required, staff_required, client_required)
+    init_auth(app)
+    AUTH_OK = True
+    print("[AUTH] ✅ Module auth chargé")
+except Exception as e:
+    print(f"[AUTH] ⚠️ {e}")
+    AUTH_OK = False
+    def role_required(*r):
+        def d(f): return f
+        return d
+    def admin_required(f): return f
+    def vendeur_required(f): return f
+    def staff_required(f): return f
+    def client_required(f): return f
+    def log_action(*a, **k): pass
+
+try:
+    from flask_login import current_user, login_required
+except ImportError:
+    current_user = None
+    def login_required(f): return f
+
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+# ==================== DESIGN ÉPOUSTOUFLANT ====================
+HTML_BASE = """
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Omega Shop — {{ page_title or 'E-Commerce' }}</title>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',system-ui,sans-serif}
+body{background:#fef9f3;color:#1a1a2e;min-height:100vh}
+
+/* ============ TOP BANNER ============ */
+.top-banner{background:linear-gradient(90deg,#ff6b35 0%,#f7931e 50%,#ffb800 100%);color:white;padding:10px 25px;font-size:0.82rem;display:flex;justify-content:space-between;align-items:center;font-weight:600;letter-spacing:0.3px}
+.top-banner i{color:#ffd700}
+.top-banner .brand-info{display:flex;align-items:center;gap:20px;flex-wrap:wrap}
+.top-banner strong{color:#ffd700;font-weight:800}
+
+/* ============ HEADER ============ */
+.header{background:white;box-shadow:0 4px 24px rgba(255,107,53,0.08);padding:16px 30px;display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #ff6b35;flex-wrap:wrap;gap:15px}
+.header .logo-section{display:flex;align-items:center;gap:15px}
+.logo-icon{width:56px;height:56px;background:linear-gradient(135deg,#ff6b35,#f7931e);border-radius:16px;display:flex;justify-content:center;align-items:center;color:white;font-size:1.7rem;box-shadow:0 8px 24px rgba(255,107,53,0.3);transform:rotate(-5deg)}
+.header h1{font-size:1.55rem;color:#1a1a2e;font-weight:900;line-height:1.05;letter-spacing:-0.5px}
+.header h1 span{color:#ff6b35}
+.header .subtitle{font-size:0.72rem;color:#64748b;margin-top:4px;letter-spacing:1px;text-transform:uppercase;font-weight:700}
+.user-section{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.user-badge{display:flex;align-items:center;gap:10px;padding:8px 16px;background:#fff4e6;border-radius:30px;border:1.5px solid #fed7aa}
+.user-badge .avatar{width:38px;height:38px;background:linear-gradient(135deg,#ff6b35,#f7931e);border-radius:50%;display:flex;justify-content:center;align-items:center;color:white;font-weight:800;font-size:0.9rem}
+.user-badge .info{display:flex;flex-direction:column;line-height:1.15}
+.user-badge .name{font-weight:700;font-size:0.85rem;color:#1a1a2e}
+.user-badge .role{font-size:0.68rem;color:#ff6b35;text-transform:uppercase;font-weight:800;letter-spacing:0.5px}
+.btn-logout{background:linear-gradient(135deg,#dc2626,#ef4444);color:white;padding:9px 16px;border-radius:10px;text-decoration:none;font-size:0.82rem;font-weight:700;transition:0.3s;box-shadow:0 4px 12px rgba(220,38,38,0.25)}
+.btn-logout:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(220,38,38,0.35)}
+
+/* ============ NAV ============ */
+.nav{background:white;padding:0 25px;display:flex;gap:2px;border-bottom:1px solid #fed7aa;flex-wrap:wrap;box-shadow:0 2px 8px rgba(0,0,0,0.03)}
+.nav a{padding:15px 18px;color:#475569;text-decoration:none;border-bottom:3px solid transparent;transition:0.3s;font-size:0.85rem;display:flex;align-items:center;gap:7px;font-weight:600}
+.nav a:hover{color:#ff6b35;background:#fff4e6}
+.nav a.active{color:#ff6b35;border-bottom-color:#ff6b35;background:#fff4e6}
+
+/* ============ CONTAINER ============ */
+.container{max-width:1500px;margin:28px auto;padding:0 25px}
+
+/* ============ PAGE HEADER ============ */
+.page-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:28px;flex-wrap:wrap;gap:15px}
+.page-header h2{font-size:1.7rem;color:#1a1a2e;font-weight:900;display:flex;align-items:center;gap:12px;letter-spacing:-0.5px}
+.page-header h2 i{color:#ff6b35}
+.page-header .page-subtitle{color:#64748b;font-size:0.88rem;margin-top:4px}
+
+/* ============ STATS ============ */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:20px;margin-bottom:28px}
+.stat-card{background:white;border-radius:18px;padding:24px;position:relative;overflow:hidden;box-shadow:0 6px 20px rgba(255,107,53,0.06);transition:0.3s;border-left:5px solid #ff6b35}
+.stat-card:hover{transform:translateY(-5px);box-shadow:0 12px 30px rgba(255,107,53,0.15)}
+.stat-card .stat-icon{position:absolute;right:18px;top:18px;font-size:2.8rem;color:#ff6b35;opacity:0.12}
+.stat-card .stat-value{font-size:2.2rem;font-weight:900;color:#1a1a2e;line-height:1;letter-spacing:-1px}
+.stat-card .stat-label{color:#64748b;font-size:0.75rem;text-transform:uppercase;font-weight:800;letter-spacing:1px;margin-top:10px}
+.stat-card.gold{border-left-color:#ffb800}.stat-card.gold .stat-icon{color:#ffb800}
+.stat-card.green{border-left-color:#10b981}.stat-card.green .stat-icon{color:#10b981}
+.stat-card.purple{border-left-color:#8b5cf6}.stat-card.purple .stat-icon{color:#8b5cf6}
+.stat-card.rose{border-left-color:#ec4899}.stat-card.rose .stat-icon{color:#ec4899}
+.stat-card.blue{border-left-color:#3b82f6}.stat-card.blue .stat-icon{color:#3b82f6}
+
+/* ============ CARDS ============ */
+.card{background:white;border-radius:18px;padding:28px;box-shadow:0 6px 20px rgba(255,107,53,0.06);margin-bottom:22px}
+.card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:12px;padding-bottom:18px;border-bottom:2px solid #fff4e6}
+.card-header h3{font-size:1.2rem;color:#1a1a2e;font-weight:800;display:flex;align-items:center;gap:10px}
+.card-header h3 i{color:#ff6b35}
+
+/* ============ BUTTONS ============ */
+.btn{padding:11px 20px;border:none;border-radius:10px;cursor:pointer;font-weight:700;display:inline-flex;align-items:center;gap:8px;text-decoration:none;transition:0.3s;font-size:0.85rem;letter-spacing:0.3px}
+.btn-primary{background:linear-gradient(135deg,#ff6b35,#f7931e);color:white;box-shadow:0 6px 16px rgba(255,107,53,0.3)}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgba(255,107,53,0.4)}
+.btn-success{background:linear-gradient(135deg,#10b981,#059669);color:white}
+.btn-success:hover{transform:translateY(-2px)}
+.btn-warning{background:linear-gradient(135deg,#f59e0b,#fbbf24);color:white}
+.btn-warning:hover{transform:translateY(-2px)}
+.btn-danger{background:linear-gradient(135deg,#dc2626,#ef4444);color:white}
+.btn-danger:hover{transform:translateY(-2px)}
+.btn-info{background:linear-gradient(135deg,#0891b2,#06b6d4);color:white}
+.btn-info:hover{transform:translateY(-2px)}
+.btn-gold{background:linear-gradient(135deg,#ffb800,#ffd700);color:#1a1a2e;box-shadow:0 6px 16px rgba(255,184,0,0.3)}
+.btn-gold:hover{transform:translateY(-2px)}
+.btn-sm{padding:7px 13px;font-size:0.75rem}
+
+/* ============ TABLES ============ */
+.table-wrap{overflow-x:auto;border-radius:12px}
+table{width:100%;border-collapse:collapse;font-size:0.88rem}
+th,td{padding:14px 16px;text-align:left;border-bottom:1px solid #fff4e6}
+th{background:linear-gradient(180deg,#fff4e6,#ffe9d1);color:#ff6b35;font-size:0.72rem;text-transform:uppercase;font-weight:800;letter-spacing:0.8px}
+tbody tr{transition:0.2s}
+tbody tr:hover{background:#fff9f3}
+
+/* ============ BADGES ============ */
+.badge{padding:5px 12px;border-radius:20px;font-size:0.7rem;font-weight:800;display:inline-flex;align-items:center;gap:5px;letter-spacing:0.3px}
+.badge-success{background:#d1fae5;color:#065f46}
+.badge-warning{background:#fef3c7;color:#92400e}
+.badge-danger{background:#fee2e2;color:#991b1b}
+.badge-info{background:#dbeafe;color:#1e40af}
+.badge-gold{background:#fef3c7;color:#92400e}
+.badge-role-admin{background:linear-gradient(135deg,#dc2626,#ef4444);color:white}
+.badge-role-vendeur{background:linear-gradient(135deg,#ff6b35,#f7931e);color:white}
+.badge-role-livreur{background:linear-gradient(135deg,#0891b2,#06b6d4);color:white}
+.badge-role-client{background:linear-gradient(135deg,#10b981,#059669);color:white}
+
+/* ============ FLASH ============ */
+.flash{padding:15px 20px;border-radius:12px;margin-bottom:18px;display:flex;align-items:center;gap:12px;font-size:0.9rem;font-weight:600}
+.flash-success{background:#d1fae5;color:#065f46;border-left:5px solid #10b981}
+.flash-danger{background:#fee2e2;color:#991b1b;border-left:5px solid #dc2626}
+.flash-warning{background:#fef3c7;color:#92400e;border-left:5px solid #f59e0b}
+
+/* ============ FORMS ============ */
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.form-group{margin-bottom:16px}
+.form-group label{display:block;font-weight:800;color:#ff6b35;margin-bottom:8px;font-size:0.82rem;text-transform:uppercase;letter-spacing:0.5px}
+.form-group input,.form-group select,.form-group textarea{width:100%;padding:12px 15px;border:2px solid #f1f5f9;border-radius:11px;font-size:0.92rem;background:#f8fafc;transition:0.3s;font-family:inherit}
+.form-group input:focus,.form-group select:focus,.form-group textarea:focus{outline:none;border-color:#ff6b35;background:white;box-shadow:0 0 0 4px rgba(255,107,53,0.1)}
+.form-full{grid-column:1/-1}
+
+/* ============ FOOTER ============ */
+.footer{background:linear-gradient(135deg,#1a1a2e,#2d2d44);color:white;padding:30px;margin-top:60px;text-align:center;font-size:0.85rem}
+.footer strong{color:#ff6b35;font-weight:800}
+.footer .footer-sub{opacity:0.7;font-size:0.75rem;margin-top:8px}
+
+/* ============ EMPTY ============ */
+.empty{text-align:center;padding:60px 20px;color:#94a3b8}
+.empty i{font-size:4rem;color:#fed7aa;margin-bottom:18px}
+
+/* ============ HERO ============ */
+.hero{background:linear-gradient(135deg,#ff6b35 0%,#f7931e 50%,#ffb800 100%);border-radius:24px;padding:50px;color:white;margin-bottom:30px;position:relative;overflow:hidden;box-shadow:0 15px 40px rgba(255,107,53,0.25)}
+.hero::before{content:'';position:absolute;top:-80px;right:-80px;width:280px;height:280px;background:rgba(255,255,255,0.1);border-radius:50%}
+.hero::after{content:'';position:absolute;bottom:-100px;left:-50px;width:220px;height:220px;background:rgba(255,255,255,0.08);border-radius:50%}
+.hero h1{font-size:2.4rem;font-weight:900;margin-bottom:12px;position:relative;z-index:1;letter-spacing:-1px}
+.hero h1 span{color:#ffd700}
+.hero p{font-size:1.05rem;opacity:0.95;position:relative;z-index:1;max-width:600px;line-height:1.5}
+.hero .btn-hero{background:white;color:#ff6b35;padding:14px 28px;border-radius:12px;font-weight:800;font-size:1rem;text-decoration:none;display:inline-flex;align-items:center;gap:10px;margin-top:24px;position:relative;z-index:1;transition:0.3s;box-shadow:0 8px 20px rgba(0,0,0,0.15)}
+.hero .btn-hero:hover{transform:translateY(-3px);box-shadow:0 12px 30px rgba(0,0,0,0.25)}
+
+@media(max-width:768px){
+  .form-grid{grid-template-columns:1fr}
+  .header{flex-direction:column;align-items:flex-start}
+  .stats{grid-template-columns:1fr 1fr}
+  .container{padding:0 15px}
+  .hero{padding:30px 20px}
+  .hero h1{font-size:1.7rem}
+  .top-banner{flex-direction:column;gap:5px;text-align:center}
+}
+</style>
+</head>
+<body>
+
+<!-- TOP BANNER -->
+<div class="top-banner">
+  <div class="brand-info">
+    <span><i class="fas fa-bolt"></i> <strong>OMEGA SHOP</strong> — Boutique en ligne premium</span>
+  </div>
+  <div class="brand-info">
+    <span><i class="fas fa-phone"></i> +221 33 800 00 00</span>
+    <span><i class="fas fa-truck-fast"></i> Livraison 24-48h</span>
+    <span><i class="fas fa-shield-halved"></i> Paiement sécurisé</span>
+  </div>
+</div>
+
+<!-- HEADER -->
+<header class="header">
+  <div class="logo-section">
+    <div class="logo-icon"><i class="fas fa-shopping-bag"></i></div>
+    <div>
+      <h1>OMEGA <span>SHOP</span></h1>
+      <div class="subtitle"><i class="fas fa-star"></i> Excellence & Innovation</div>
+    </div>
+  </div>
+  <div class="user-section">
+    {% if current_user and current_user.is_authenticated %}
+    <div class="user-badge">
+      <div class="avatar">{{ current_user.prenom[0] if current_user.prenom else 'U' }}{{ current_user.nom[0] if current_user.nom else '' }}</div>
+      <div class="info">
+        <span class="name">{{ current_user.prenom }} {{ current_user.nom }}</span>
+        <span class="role">{{ current_user.role }}</span>
+      </div>
+    </div>
+    <a href="/logout" class="btn-logout"><i class="fas fa-right-from-bracket"></i> Déconnexion</a>
+    {% endif %}
+  </div>
+</header>
+
+<!-- NAV -->
+<nav class="nav">
+  <a href="/" class="{{ 'active' if active=='dashboard' else '' }}"><i class="fas fa-chart-line"></i> Dashboard</a>
+  {% if current_user and current_user.is_authenticated %}
+    {% if current_user.role in ['admin','vendeur'] %}
+    <a href="/produits" class="{{ 'active' if active=='produits' else '' }}"><i class="fas fa-box"></i> Produits</a>
+    <a href="/categories" class="{{ 'active' if active=='categories' else '' }}"><i class="fas fa-tags"></i> Catégories</a>
+    <a href="/marques" class="{{ 'active' if active=='marques' else '' }}"><i class="fas fa-award"></i> Marques</a>
+    <a href="/fournisseurs" class="{{ 'active' if active=='fournisseurs' else '' }}"><i class="fas fa-truck-loading"></i> Fournisseurs</a>
+    {% endif %}
+    {% if current_user.role in ['admin','vendeur','livreur'] %}
+    <a href="/commandes" class="{{ 'active' if active=='commandes' else '' }}"><i class="fas fa-shopping-cart"></i> Commandes</a>
+    {% endif %}
+    {% if current_user.role in ['admin','vendeur'] %}
+    <a href="/clients" class="{{ 'active' if active=='clients' else '' }}"><i class="fas fa-users"></i> Clients</a>
+    <a href="/promotions" class="{{ 'active' if active=='promotions' else '' }}"><i class="fas fa-percent"></i> Promotions</a>
+    {% endif %}
+    {% if current_user.role in ['admin'] %}
+    <a href="/rapports" class="{{ 'active' if active=='rapports' else '' }}"><i class="fas fa-chart-pie"></i> Rapports</a>
+    {% endif %}
+    {% if current_user.role == 'client' %}
+    <a href="/boutique" class="{{ 'active' if active=='boutique' else '' }}"><i class="fas fa-store"></i> Boutique</a>
+    <a href="/mon-panier" class="{{ 'active' if active=='panier' else '' }}"><i class="fas fa-shopping-basket"></i> Panier</a>
+    <a href="/mes-commandes" class="{{ 'active' if active=='mes_commandes' else '' }}"><i class="fas fa-receipt"></i> Mes commandes</a>
+    <a href="/ma-wishlist" class="{{ 'active' if active=='wishlist' else '' }}"><i class="fas fa-heart"></i> Wishlist</a>
+    {% endif %}
+  {% endif %}
+</nav>
+
+<!-- CONTAINER -->
+<div class="container">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}{% for cat, msg in messages %}
+      <div class="flash flash-{{ cat }}"><i class="fas fa-circle-info"></i> {{ msg }}</div>
+    {% endfor %}{% endif %}
+  {% endwith %}
+
+  {% block content %}{% endblock %}
+</div>
+
+<!-- FOOTER -->
+<footer class="footer">
+  <div>&copy; 2026 <strong>OMEGA SHOP</strong> — Tous droits réservés</div>
+  <div class="footer-sub">
+    <i class="fas fa-code"></i> Développé par <strong>OMEGA INFORMATIQUE</strong> — Solutions digitales premium · Dakar, Sénégal
+  </div>
+</footer>
+
+</body>
+</html>
+"""
+
+
+def render_page(content, active='dashboard', page_title='Omega Shop'):
+    page = HTML_BASE.replace("{% block content %}{% endblock %}", content)
+    return render_template_string(page, active=active, page_title=page_title, current_user=current_user)
+
+
+# ==================== HEALTHCHECK ====================
+@app.route('/health')
+def health():
+    return jsonify(status='ok', service='ecommerce-omega', timestamp=datetime.now().isoformat())
+
+
+# ==================== DASHBOARD ====================
+@app.route('/')
+def index():
+    if not (current_user and current_user.is_authenticated):
+        return redirect('/login')
+
+    # Rediriger les clients vers la boutique
+    if current_user.role == 'client':
+        return redirect('/boutique')
+
+    conn = get_db()
+    c = conn.cursor()
+
+    c.execute("SELECT COUNT(*) FROM produits WHERE actif=1")
+    total_produits = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM clients WHERE actif=1")
+    total_clients = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM commandes WHERE date(date_commande) = date('now')")
+    commandes_jour = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM commandes WHERE statut NOT IN ('Livrée', 'Annulée')")
+    commandes_encours = c.fetchone()[0]
+
+    c.execute("""SELECT COALESCE(SUM(total), 0) FROM commandes
+                 WHERE strftime('%Y-%m', date_commande) = strftime('%Y-%m', 'now')
+                 AND statut != 'Annulée'""")
+    ca_mois = c.fetchone()[0]
+
+    c.execute("""SELECT COUNT(*) FROM produits WHERE stock <= stock_alerte AND actif=1""")
+    alertes_stock = c.fetchone()[0]
+
+    # Dernières commandes
+    c.execute("""SELECT c.*, cl.nom as cl_nom, cl.prenom as cl_prenom
+                 FROM commandes c
+                 JOIN clients cl ON c.client_id = cl.id
+                 ORDER BY c.date_commande DESC LIMIT 8""")
+    dernieres_commandes = c.fetchall()
+
+    # Top produits
+    c.execute("""SELECT p.*, SUM(lc.quantite) as total_vendu
+                 FROM produits p
+                 JOIN lignes_commande lc ON lc.produit_id = p.id
+                 GROUP BY p.id
+                 ORDER BY total_vendu DESC LIMIT 5""")
+    top_produits = c.fetchall()
+
+    conn.close()
+
+    role = current_user.role
+
+    content = f"""
+    <div class="hero">
+      <h1>Bienvenue <span>{current_user.prenom}</span> 👋</h1>
+      <p>Tableau de bord administrateur — Vision temps réel de votre boutique Omega Shop</p>
+    </div>
+
+    <div class="stats">
+      <div class="stat-card">
+        <i class="fas fa-box stat-icon"></i>
+        <div class="stat-value">{total_produits}</div>
+        <div class="stat-label">Produits</div>
+      </div>
+      <div class="stat-card green">
+        <i class="fas fa-users stat-icon"></i>
+        <div class="stat-value">{total_clients}</div>
+        <div class="stat-label">Clients</div>
+      </div>
+      <div class="stat-card blue">
+        <i class="fas fa-shopping-cart stat-icon"></i>
+        <div class="stat-value">{commandes_jour}</div>
+        <div class="stat-label">Commandes du jour</div>
+      </div>
+      <div class="stat-card purple">
+        <i class="fas fa-truck-fast stat-icon"></i>
+        <div class="stat-value">{commandes_encours}</div>
+        <div class="stat-label">En cours</div>
+      </div>
+      <div class="stat-card gold">
+        <i class="fas fa-money-bill-wave stat-icon"></i>
+        <div class="stat-value">{ca_mois:,.0f}</div>
+        <div class="stat-label">CA ce mois (FCFA)</div>
+      </div>
+      <div class="stat-card rose">
+        <i class="fas fa-exclamation-triangle stat-icon"></i>
+        <div class="stat-value">{alertes_stock}</div>
+        <div class="stat-label">Alertes stock</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <h3><i class="fas fa-clock-rotate-left"></i> Dernières commandes</h3>
+        <a href="/commandes" class="btn btn-primary btn-sm"><i class="fas fa-arrow-right"></i> Voir tout</a>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>N°</th><th>Client</th><th>Montant</th><th>Mode</th><th>Date</th><th>Statut</th></tr></thead>
+          <tbody>
+    """
+    for cmd in dernieres_commandes:
+        badge = 'badge-info'
+        if cmd['statut'] == 'Livrée': badge = 'badge-success'
+        elif cmd['statut'] == 'En cours': badge = 'badge-warning'
+        elif cmd['statut'] == 'Annulée': badge = 'badge-danger'
+
+        content += f"""<tr>
+          <td><strong>{cmd['numero']}</strong></td>
+          <td>{cmd['cl_nom']} {cmd['cl_prenom']}</td>
+          <td><strong style="color:#ff6b35">{cmd['total']:,.0f}</strong> FCFA</td>
+          <td>{cmd['mode_paiement'] or '-'}</td>
+          <td>{cmd['date_commande'][:10]}</td>
+          <td><span class="badge {badge}">{cmd['statut']}</span></td>
+        </tr>"""
+    if not dernieres_commandes:
+        content += '<tr><td colspan="6" class="empty"><i class="fas fa-inbox"></i><br>Aucune commande</td></tr>'
+
+    content += """
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <h3><i class="fas fa-fire"></i> Top 5 produits</h3>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>SKU</th><th>Produit</th><th>Prix</th><th>Stock</th><th>Vendus</th></tr></thead>
+          <tbody>
+    """
+    for prod in top_produits:
+        stock_badge = 'badge-success' if prod['stock'] > prod['stock_alerte'] else 'badge-warning'
+        content += f"""<tr>
+          <td><strong>{prod['sku']}</strong></td>
+          <td>{prod['nom'][:50]}</td>
+          <td><strong>{prod['prix_vente']:,.0f}</strong> FCFA</td>
+          <td><span class="badge {stock_badge}">{prod['stock']}</span></td>
+          <td><strong style="color:#10b981">{prod['total_vendu']}</strong></td>
+        </tr>"""
+    if not top_produits:
+        content += '<tr><td colspan="5" class="empty"><i class="fas fa-box-open"></i><br>Aucune vente</td></tr>'
+
+    content += "</tbody></table></div></div>"
+    return render_page(content, active='dashboard', page_title='Dashboard')
+
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8000, debug=False)

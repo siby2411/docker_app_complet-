@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Ticket {{ v.numero }}</title>
+<style>
+@page { margin: 0; size: 58mm auto; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: 'Courier New', monospace;
+    font-size: 11px;
+    width: 58mm;
+    padding: 3mm;
+    color: #000;
+    line-height: 1.3;
+}
+.center { text-align: center; }
+.bold { font-weight: bold; }
+.big { font-size: 14px; font-weight: 900; }
+.line { border-top: 1px dashed #000; margin: 3px 0; }
+.line-solid { border-top: 2px solid #000; margin: 4px 0; }
+table { width: 100%; border-collapse: collapse; }
+td { padding: 1px 0; font-size: 10px; vertical-align: top; }
+.right { text-align: right; }
+.total { font-size: 15px; font-weight: 900; }
+.logo { font-size: 16px; font-weight: 900; letter-spacing: 1px; }
+.info { font-size: 9px; }
+.btn-print {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    background: #ff6b35;
+    color: #fff;
+    border: none;
+    padding: 12px 24px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 700;
+    font-size: 14px;
+    z-index: 100;
+}
+.btn-print:hover { background: #e85a2a; }
+.qr { margin: 5px 0; }
+@media print {
+    .btn-print { display: none; }
+    body { width: 100%; padding: 2mm; }
+}
+</style>
+</head>
+<body>
+
+<button class="btn-print" onclick="window.print()">🖨️ IMPRIMER</button>
+
+<!-- ═══ EN-TÊTE ═══ -->
+<div class="center">
+    <div class="logo">🔧 OMEGA PARTS</div>
+    <div class="info">{{ settings.adresse or 'Dakar, Sénégal' }}</div>
+    <div class="info">Tél : {{ settings.telephone or '+221 33 821 00 00' }}</div>
+    <div class="info">{{ settings.email or 'contact@omega-parts.sn' }}</div>
+</div>
+
+<div class="line-solid"></div>
+
+<!-- ═══ INFOS TICKET ═══ -->
+<table>
+    <tr><td><strong>N°</strong></td><td class="right">{{ v.numero }}</td></tr>
+    <tr><td><strong>Date</strong></td><td class="right">{{ v.date_vente|dte }}</td></tr>
+    <tr><td><strong>Heure</strong></td><td class="right">{{ v.created_at[11:16] if v.created_at else '' }}</td></tr>
+    <tr><td><strong>PDV</strong></td><td class="right">{{ v.pdv_nom or 'Magasin' }}</td></tr>
+    <tr><td><strong>Vendeur</strong></td><td class="right">{{ v.vendeur_nom or 'N/A' }}</td></tr>
+</table>
+
+{% if v.client_nom %}
+<div class="line"></div>
+<table>
+    <tr><td><strong>Client</strong></td><td class="right">{{ v.client_prenom or '' }} {{ v.client_nom }}</td></tr>
+    {% if v.client_tel %}<tr><td><strong>Tél</strong></td><td class="right">{{ v.client_tel }}</td></tr>{% endif %}
+</table>
+{% endif %}
+
+<div class="line"></div>
+
+<!-- ═══ ARTICLES ═══ -->
+<table>
+{% for l in lignes %}
+    <tr>
+        <td colspan="2" class="bold">{{ l.piece_nom[:42] }}</td>
+    </tr>
+    <tr>
+        <td>{{ l.quantite }} × {{ l.prix_unitaire|money }}</td>
+        <td class="right bold">{{ l.montant|money }}</td>
+    </tr>
+{% endfor %}
+</table>
+
+<div class="line"></div>
+
+<!-- ═══ TOTAUX ═══ -->
+<table>
+    <tr><td>Sous-total</td><td class="right">{{ v.sous_total|money }}</td></tr>
+    {% if v.remise_montant > 0 %}
+    <tr><td>Remise ({{ v.remise_pct }}%)</td><td class="right">-{{ v.remise_montant|money }}</td></tr>
+    {% endif %}
+    <tr><td class="info">TVA incluse</td><td class="right info">{{ v.tva|money }}</td></tr>
+</table>
+
+<div class="line-solid"></div>
+
+<table>
+    <tr>
+        <td class="total">TOTAL TTC</td>
+        <td class="right total">{{ v.montant_ttc|money }}</td>
+    </tr>
+</table>
+
+<div class="line"></div>
+
+<table>
+    <tr><td>Payé ({{ v.mode_paiement }})</td><td class="right">{{ v.montant_paye|money }}</td></tr>
+    {% if v.monnaie > 0 %}
+    <tr><td><strong>Monnaie</strong></td><td class="right bold">{{ v.monnaie|money }}</td></tr>
+    {% endif %}
+</table>
+
+<div class="line-solid"></div>
+
+<!-- ═══ PIED DE PAGE ═══ -->
+<div class="center" style="margin-top:8px">
+    <div class="bold">MERCI DE VOTRE VISITE</div>
+    <div class="info">À bientôt chez OMEGA PARTS</div>
+</div>
+
+<div class="center" style="margin-top:6px">
+    <div class="info">{{ settings.site_web or 'www.omega-parts.sn' }}</div>
+</div>
+
+<div class="center info" style="margin-top:6px;font-size:8px">
+    <div>Les pièces vendues sont garanties</div>
+    <div>selon les conditions du fournisseur</div>
+    <div>Aucun retour sans facture d'origine</div>
+</div>
+
+<div class="center" style="margin-top:8px;font-size:8px">
+    <div>{{ v.numero }}</div>
+</div>
+
+</body>
+</html>

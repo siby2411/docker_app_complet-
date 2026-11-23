@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}{{ vente.numero }}{% endblock %}
+{% block page_title %}💰 Vente {{ vente.numero }}{% endblock %}
+{% block content %}
+<div class="row g-3">
+  <div class="col-lg-8">
+    <div class="card-premium">
+      <div class="d-flex justify-content-between mb-3">
+        <div>
+          <h4 class="mb-1">{{ vente.marque_nom }} {{ vente.modele_nom }}</h4>
+          <p class="text-muted mb-0">{{ vente.veh_code }} · {{ vente.immatriculation }} · {{ vente.annee }} · {{ vente.kilometrage|int }} km</p>
+        </div>
+        <div><span class="badge-statut badge-{{ vente.statut }}">{{ vente.statut }}</span></div>
+      </div>
+
+      <hr>
+      <div class="row g-3">
+        <div class="col-md-6">
+          <h6>👤 Client</h6>
+          <p><strong>{{ vente.client_prenom or '' }} {{ vente.client_nom }}</strong><br>
+          {{ vente.client_tel }}<br>
+          {{ vente.client_email or '' }}<br>
+          {{ vente.client_adresse or '' }}<br>
+          Code : {{ vente.client_code }} — Score : {{ vente.client_score }}/100</p>
+        </div>
+        <div class="col-md-6">
+          <h6>🏢 Vendeur / Agence</h6>
+          <p><strong>{{ vente.vendeur_nom or '—' }}</strong><br>
+          {{ vente.agence_nom or '—' }}<br>
+          {{ vente.agence_adresse or '' }}<br>
+          {{ vente.agence_tel or '' }}</p>
+        </div>
+      </div>
+
+      <hr>
+      <h6>💵 Détail financier</h6>
+      <table class="table table-omega table-sm">
+        <tr><td>Prix vente</td><td class="text-end">{{ vente.prix_vente|money }}</td></tr>
+        <tr><td>Remise</td><td class="text-end">- {{ vente.remise|money }}</td></tr>
+        <tr style="background:#fff3cd"><td><strong>Total TTC</strong></td><td class="text-end"><strong>{{ vente.montant_ttc|money }}</strong></td></tr>
+        <tr><td>Acompte versé</td><td class="text-end text-success">{{ vente.acompte|money }}</td></tr>
+        <tr style="background:#fce4e8"><td><strong>Reste à payer</strong></td><td class="text-end"><strong style="color:#ef476f">{{ vente.reste_a_payer|money }}</strong></td></tr>
+        <tr><td>Mode</td><td class="text-end">{{ vente.mode_paiement }}</td></tr>
+        <tr><td>Type</td><td class="text-end">{{ vente.type_vente }}</td></tr>
+        <tr><td>Marge</td><td class="text-end text-success fw-bold">+ {{ vente.marge|money }}</td></tr>
+      </table>
+
+      {% if vente.notes %}<div class="alert alert-secondary"><strong>Notes :</strong> {{ vente.notes }}</div>{% endif %}
+    </div>
+
+    <div class="card-premium">
+      <h5>💰 Historique paiements ({{ paiements|length }})</h5>
+      <table class="table table-omega table-sm mb-3">
+        <thead><tr><th>Date</th><th>Mode</th><th>Opérateur</th><th class="text-end">Montant</th></tr></thead>
+        <tbody>
+          {% for p in paiements %}
+          <tr>
+            <td>{{ p.date_paiement|dte }}</td>
+            <td>{{ p.mode }}</td>
+            <td>{{ p.operateur or '—' }}</td>
+            <td class="text-end fw-bold">{{ p.montant|money }}</td>
+          </tr>
+          {% else %}<tr><td colspan="4" class="text-muted text-center py-2">Aucun paiement</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      {% if vente.reste_a_payer > 0 and vente.statut not in ('annulee','livree') %}
+      <form method="POST" action="{{ url_for('vente_paiement', vente_id=vente.id) }}" class="row g-2">
+        <div class="col-md-3"><input type="number" name="montant" class="form-control" placeholder="Montant" required></div>
+        <div class="col-md-3"><select name="mode" class="form-select">
+          {% for m in ['especes','virement','orange_money','wave','free_money'] %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+        </select></div>
+        <div class="col-md-3"><input type="text" name="telephone" class="form-control" placeholder="Tél (si mobile money)"></div>
+        <div class="col-md-3"><button class="btn btn-accent w-100"><i class="bi bi-plus-lg"></i> Encaisser</button></div>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card-premium">
+      <h6>Actions</h6>
+      <div class="d-grid gap-2">
+        <a href="{{ url_for('vente_contrat', vente_id=vente.id) }}" target="_blank" class="btn btn-accent"><i class="bi bi-file-earmark-text"></i> Voir contrat</a>
+        {% if vente.statut == 'devis' %}
+        <form method="POST" action="{{ url_for('vente_statut', vente_id=vente.id) }}">
+          <input type="hidden" name="statut" value="acompte">
+          <button class="btn btn-primary-omega w-100"><i class="bi bi-arrow-right"></i> Passer à « acompte »</button>
+        </form>
+        {% endif %}
+        {% if vente.statut in ('devis','acompte') %}
+        <form method="POST" action="{{ url_for('vente_statut', vente_id=vente.id) }}">
+          <input type="hidden" name="statut" value="livree">
+          <button class="btn btn-success w-100" onclick="return confirm('Marquer comme livrée ? Le véhicule sera marqué vendu.')"><i class="bi bi-check-lg"></i> Marquer livrée</button>
+        </form>
+        {% endif %}
+        {% if vente.statut not in ('livree','annulee') %}
+        <form method="POST" action="{{ url_for('vente_statut', vente_id=vente.id) }}">
+          <input type="hidden" name="statut" value="annulee">
+          <button class="btn btn-outline-danger w-100" onclick="return confirm('Annuler cette vente ?')"><i class="bi bi-x-lg"></i> Annuler</button>
+        </form>
+        {% endif %}
+        {% if current_user.is_admin() %}
+        <form method="POST" action="{{ url_for('vente_delete', vente_id=vente.id) }}" onsubmit="return confirm('Supprimer définitivement ?')">
+          <button class="btn btn-outline-danger w-100"><i class="bi bi-trash"></i> Supprimer</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,441 @@
+"""
+🌾 Omega Agro-Industrie — Migration v2
+Vues SQL + Données démo (production, traçabilité, export)
+"""
+import sqlite3
+import random
+import hashlib
+from datetime import datetime, timedelta
+
+DB_PATH = "/app/data/agro.db"
+
+
+def get_conn():
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def migrate():
+    print("[MIGRATE v2] Démarrage...")
+    conn = get_conn()
+    c = conn.cursor()
+
+    # ==================== VUES SQL ====================
+
+    c.execute("DROP VIEW IF EXISTS v_produits_complets")
+    c.execute("""CREATE VIEW v_produits_complets AS
+                 SELECT p.*,
+                        (SELECT COALESCE(SUM(quantite_kg), 0) FROM stocks_produits WHERE produit_id=p.id) AS stock_kg,
+                        (SELECT COUNT(*) FROM ordres_fabrication WHERE produit_fini_id=p.id) AS nb_of
+                 FROM produits_finis p
+                 WHERE p.actif = 1""")
+    print("[MIGRATE v2] ✅ Vue v_produits_complets créée")
+
+    c.execute("DROP VIEW IF EXISTS v_of_complets")
+    c.execute("""CREATE VIEW v_of_complets AS
+                 SELECT of.*,
+                        p.nom AS produit_nom, p.code AS produit_code,
+                        lp.nom AS ligne_nom,
+                        s.nom AS site_nom
+                 FROM ordres_fabrication of
+                 LEFT JOIN produits_finis p ON of.produit_fini_id = p.id
+                 LEFT JOIN lignes_production lp ON of.ligne_id = lp.id
+                 LEFT JOIN sites s ON lp.site_id = s.id""")
+    print("[MIGRATE v2] ✅ Vue v_of_complets créée")
+
+    c.execute("DROP VIEW IF EXISTS v_exports_complets")
+    c.execute("""CREATE VIEW v_exports_complets AS
+                 SELECT e.*,
+                        c.nom AS client_nom, c.pays AS client_pays,
+                        p.nom AS produit_nom, p.code AS produit_code
+                 FROM exports e
+                 LEFT JOIN clients_b2b c ON e.client_id = c.id
+                 LEFT JOIN produits_finis p ON e.produit_id = p.id""")
+    print("[MIGRATE v2] ✅ Vue v_exports_complets créée")
+
+    c.execute("DROP VIEW IF EXISTS v_producteurs_complets")
+    c.execute("""CREATE VIEW v_producteurs_complets AS
+                 SELECT p.*,
+                        r.nom AS region_nom,
+                        co.nom AS cooperative_nom,
+                        (SELECT COUNT(*) FROM parcelles WHERE producteur_id=p.id) AS nb_parcelles,
+                        (SELECT COUNT(*) FROM livraisons_producteurs WHERE producteur_id=p.id) AS nb_livraisons,
+                        (SELECT COALESCE(SUM(quantite_kg), 0) FROM livraisons_producteurs WHERE producteur_id=p.id) AS total_livre_kg
+                 FROM producteurs p
+                 LEFT JOIN regions r ON p.region_id = r.id
+                 LEFT JOIN cooperatives co ON p.cooperative_id = co.id
+                 WHERE p.actif = 1""")
+    print("[MIGRATE v2] ✅ Vue v_producteurs_complets créée")
+
+    c.execute("DROP VIEW IF EXISTS v_tracabilite_complete")
+    c.execute("""CREATE VIEW v_tracabilite_complete AS
+                 SELECT t.*,
+                        p.nom AS produit_nom, p.code AS produit_code,
+                        pr.nom AS producteur_nom, pr.prenom AS producteur_prenom,
+                        pr.village AS producteur_village
+                 FROM tracabilite t
+                 LEFT JOIN produits_finis p ON t.produit_fini_id = p.id
+                 LEFT JOIN producteurs pr ON t.producteur_id = pr.id""")
+    print("[MIGRATE v2] ✅ Vue v_tracabilite_complete créée")
+
+    c.execute("DROP VIEW IF EXISTS v_dashboard_kpi")
+    c.execute("""CREATE VIEW v_dashboard_kpi AS
+                 SELECT
+                    (SELECT COUNT(*) FROM producteurs WHERE actif=1) AS total_producteurs,
+                    (SELECT COUNT(*) FROM produits_finis WHERE actif=1) AS total_produits,
+                    (SELECT COUNT(*) FROM ordres_fabrication WHERE statut='En cours') AS of_en_cours,
+                    (SELECT COALESCE(SUM(quantite_kg), 0) FROM stocks_produits) AS stock_total_kg,
+                    (SELECT COUNT(*) FROM exports WHERE statut IN ('En préparation', 'En transit')) AS exports_en_cours,
+                    (SELECT COUNT(*) FROM certifications WHERE statut='Active') AS certifications_actives,
+                    (SELECT COUNT(*) FROM controles_qualite WHERE resultat='Non conforme') AS nc_total,
+                    (SELECT COUNT(*) FROM sessions_formation WHERE statut='Planifiée') AS formations_planifiees""")
+    print("[MIGRATE v2] ✅ Vue v_dashboard_kpi créée")
+
+    conn.commit()
+
+    # ==================== DONNÉES DÉMO ====================
+    c.execute("SELECT COUNT(*) FROM producteurs")
+    if c.fetchone()[0] == 0:
+        print("[MIGRATE v2] Génération données démo...")
+        _seed_exploitation(c, conn)
+
+    conn.close()
+    print("[MIGRATE v2] ✅ Migration terminée")
+
+
+def _seed_exploitation(c, conn):
+    """Génère producteurs, récoltes, production, exports, traçabilité"""
+    random.seed(42)
+    now = datetime.now()
+
+    # ============ COOPÉRATIVES ============
+    coops = [
+        ('COOP-001', 'Coopérative Mangue Casamance', 'Mangue', 'Bignona', 13),
+        ('COOP-002', 'Coopérative Cajou Kolda', 'Cajou', 'Kolda', 12),
+        ('COOP-003', 'Coopérative Maraîchage Niayes', 'Légumes', 'Mboro', 2),
+        ('COOP-004', 'Coopérative Bissap Fatick', 'Bissap', 'Fatick', 4),
+        ('COOP-005', 'Coopérative Mangue Bambali', 'Mangue', 'Bambali', 14),
+    ]
+    for code, nom, typ, village, reg in coops:
+        c.execute("""INSERT INTO cooperatives
+            (code, nom, type, village, region_id, nb_membres, actif)
+            VALUES (?,?,?,?,?,?,1)""",
+            (code, nom, typ, village, reg, random.randint(50, 300)))
+
+    # ============ PRODUCTEURS (100) ============
+    noms_sen = [
+        ('Diop', 'Mamadou'), ('Ndiaye', 'Fatou'), ('Fall', 'Omar'), ('Sow', 'Aminata'),
+        ('Ba', 'Ibrahima'), ('Diallo', 'Awa'), ('Sarr', 'Cheikh'), ('Kane', 'Mariama'),
+        ('Gueye', 'Abdoulaye'), ('Sylla', 'Kadidiatou'), ('Cisse', 'Moussa'), ('Barry', 'Alpha'),
+        ('Toure', 'Ousmane'), ('Beye', 'Saliou'), ('Mbaye', 'Alioune'), ('Faye', 'Bineta'),
+        ('Diagne', 'Lamine'), ('Sene', 'Fatoumata'), ('Badji', 'Moussa'), ('Diatta', 'Rokhaya'),
+        ('Dieng', 'Ousmane'), ('Ka', 'Aminata'), ('Lo', 'Pape'), ('Niang', 'Awa'),
+        ('Thiam', 'Moustapha'), ('Sagna', 'Coumba'), ('Mendy', 'Jean'), ('Coly', 'Aline'),
+        ('Goudiaby', 'Saliou'), ('Sambou', 'Marie'), ('Diédhiou', 'Pierre'), ('Sane', 'Awa'),
+        ('Camara', 'Moussa'), ('Sy', 'Fatou'), ('Sow', 'Mariama'), ('Balde', 'Amadou'),
+        ('Bah', 'Aissatou'), ('Barry', 'Mamadou'), ('Diallo', 'Binta'), ('Sow', 'Ousmane'),
+        ('Kouyaté', 'Seydou'), ('Camara', 'Fanta'), ('Traoré', 'Boubacar'), ('Cissé', 'Adama'),
+        ('Konaté', 'Moussa'), ('Doumbia', 'Kadiatou'), ('Sanogo', 'Ibrahim'), ('Coulibaly', 'Awa'),
+        ('Touré', 'Oumar'), ('Sidibé', 'Mariam'), ('Diakité', 'Seydou'), ('Dembélé', 'Fatoumata'),
+        ('Koné', 'Moussa'), ('Samaké', 'Awa'), ('Traoré', 'Bakary'), ('Cissoko', 'Aminata'),
+        ('Diombana', 'Seydou'), ('Barry', 'Oumou'), ('Bah', 'Mamadou'), ('Diallo', 'Aissatou'),
+        ('Sylla', 'Sekou'), ('Camara', 'MMah'), ('Kourouma', 'Siba'), ('Doumbouya', 'Moussa'),
+        ('Keita', 'Bintou'), ('Tounkara', 'Souleymane'), ('Soumah', 'Mariam'), ('Bangoura', 'Ibrahima'),
+        ('Mansaré', 'Fatou'), ('Haba', 'Sekou'), ('Kourouma', 'Alseny'), ('Camara', 'Néné'),
+        ('Soumah', 'Sékou'), ('Cissé', 'Tenin'), ('Tolno', 'Marie'), ('Kolié', 'Cécé'),
+        ('Diop', 'Awa'), ('Gueye', 'Fatou'), ('Diouf', 'Cheikh'), ('Fall', 'Aminata'),
+        ('Ndiaye', 'Ibrahima'), ('Sall', 'Awa'), ('Samb', 'Moussa'), ('Diedhiou', 'Aline'),
+        ('Badji', 'Célestin'), ('Sagna', 'Jeanne'), ('Mendy', 'Paul'), ('Coly', 'Léonie'),
+        ('Diatta', 'Sophie'), ('Diédhiou', 'Henri'), ('Sagna', 'Colette'), ('Badji', 'Joseph'),
+    ]
+
+    clients_b2b_ids = [1, 2, 3, 4, 5]
+    produits_finis = list(range(1, 16))  # 15 produits
+    coop_ids = [1, 2, 3, 4, 5]
+
+    producteur_ids = []
+
+    for i, (nom, prenom) in enumerate(noms_sen[:100], 1):
+        code = f"PRD-{i:05d}"
+        region_id = random.choice([2, 4, 5, 6, 12, 13, 14])
+        coop_id = random.choice(coop_ids)
+
+        # Produits agricoles par région
+        produits_agri = random.choice(['Mangue', 'Noix cajou', 'Bissap', 'Légumes', 'Mangue, Bissap'])
+
+        c.execute("""INSERT INTO producteurs
+            (code, nom, prenom, sexe, telephone, village, region_id,
+             superficie_ha, type_exploitation, produits_agricoles,
+             cooperative_id, mobile_money_type, mobile_money_numero, actif)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1)""",
+            (code, nom, prenom, random.choice(['M', 'F']),
+             f"77{random.randint(1000000, 9999999)}",
+             f"Village {random.randint(1, 50)}",
+             region_id,
+             round(random.uniform(0.5, 10.0), 2),
+             random.choice(['Familiale', 'Coopérative', 'Agro-industrielle']),
+             produits_agri,
+             coop_id,
+             random.choice(['Wave', 'Orange Money', 'Free Money']),
+             f"77{random.randint(1000000, 9999999)}"))
+        producteur_ids.append(c.lastrowid)
+
+    print(f"[MIGRATE v2] ✅ {len(producteur_ids)} producteurs créés")
+
+    # ============ PARCELLES (200) ============
+    for prod_id in producteur_ids[:80]:
+        nb = random.randint(1, 3)
+        for j in range(nb):
+            code = f"PAR-{prod_id:05d}-{j+1:02d}"
+            c.execute("""INSERT INTO parcelles
+                (code, producteur_id, nom, superficie_ha,
+                 type_sol, cultures_principales, irrigation_disponible, certification_bio, actif)
+                VALUES (?,?,?,?,?,?,?,?,1)""",
+                (code, prod_id, f"Parcelle {j+1}",
+                 round(random.uniform(0.3, 5.0), 2),
+                 random.choice(['Sablo-limoneux', 'Argileux', 'Limono-argileux']),
+                 random.choice(['Mangue', 'Cajou', 'Bissap', 'Légumes']),
+                 1 if random.random() < 0.4 else 0,
+                 1 if random.random() < 0.3 else 0))
+
+    print(f"[MIGRATE v2] ✅ ~150 parcelles créées")
+
+    # ============ RÉCOLTES (300) ============
+    nb_recoltes = 0
+    for prod_id in producteur_ids[:80]:
+        nb = random.randint(2, 6)
+        for _ in range(nb):
+            produit = random.choice(['Mangue', 'Noix cajou', 'Bissap', 'Légumes', 'Tamarin'])
+            date_r = now - timedelta(days=random.randint(30, 400))
+            code = f"REC-{date_r.strftime('%Y%m%d')}-{nb_recoltes+1:04d}"
+
+            c.execute("""INSERT INTO recoltes
+                (code, producteur_id, produit, variete, date_recolte,
+                 quantite_kg, qualite, prix_kg, statut, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (code, prod_id, produit,
+                 random.choice(['Kent', 'Keitt', 'Valencia', 'Local']),
+                 date_r.date().isoformat(),
+                 round(random.uniform(50, 2000), 1),
+                 random.choice(['Excellente', 'Bonne', 'Moyenne']),
+                 random.randint(200, 800),
+                 random.choice(['Disponible', 'Livrée', 'Transformée']),
+                 date_r.isoformat()))
+            nb_recoltes += 1
+
+    print(f"[MIGRATE v2] ✅ {nb_recoltes} récoltes créées")
+
+    # ============ CONTRATS ACHAT (40) ============
+    for i in range(40):
+        prod_id = random.choice(producteur_ids)
+        produit = random.choice(['Mangue', 'Noix cajou', 'Bissap'])
+        qte = random.randint(500, 5000)
+        prix = random.randint(300, 800)
+        date_sig = now - timedelta(days=random.randint(10, 300))
+        ref = f"CTR-{date_sig.strftime('%Y%m%d')}-{i+1:04d}"
+
+        c.execute("""INSERT INTO contrats_achat
+            (reference, producteur_id, produit, quantite_kg, prix_kg,
+             montant_total, date_signature, date_livraison_prevue, statut)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (ref, prod_id, produit, qte, prix,
+             qte * prix, date_sig.date().isoformat(),
+             (date_sig + timedelta(days=random.randint(10, 60))).date().isoformat(),
+             random.choice(['Actif', 'Livré', 'Livré'])))
+
+    print(f"[MIGRATE v2] ✅ 40 contrats d'achat créés")
+
+    # ============ LIGNES PRODUCTION (6) ============
+    lignes = [
+        ('LIG-MNG-01', 'Ligne séchage mangue 1', 1, 1, 500),
+        ('LIG-MNG-02', 'Ligne séchage mangue 2', 1, 2, 400),
+        ('LIG-CAJ-01', 'Ligne cajou grillée', 1, 6, 300),
+        ('LIG-CAJ-02', 'Ligne cajou salée', 1, 7, 300),
+        ('LIG-AUT-01', 'Ligne bissap/bouye', 2, 10, 200),
+        ('LIG-LEG-01', 'Ligne légumes déshydratés', 2, 14, 250),
+    ]
+    for code, nom, site_id, pf_id, cap in lignes:
+        c.execute("""INSERT INTO lignes_production
+            (code, nom, site_id, produit_fini_id, capacite_kg_heure, statut, date_mise_service)
+            VALUES (?,?,?,?,?,?,?)""",
+            (code, nom, site_id, pf_id, cap, 'Active', f'{now.year-1}-06-15'))
+
+    print(f"[MIGRATE v2] ✅ 6 lignes de production créées")
+
+    # ============ ORDRES FABRICATION (150) ============
+    nb_of = 0
+    for i in range(150):
+        ligne_id = random.randint(1, 6)
+        produit_fini_id = random.randint(1, 15)
+        qte = random.randint(50, 500)
+        mp_kg = qte * random.uniform(1.5, 3.0)
+
+        date_debut = now - timedelta(days=random.randint(1, 300))
+        date_fin = date_debut + timedelta(days=random.randint(1, 5))
+
+        statut = random.choice(['Terminé', 'Terminé', 'Terminé', 'En cours', 'Planifié'])
+        lot = f"LOT-{date_debut.strftime('%Y%m')}-{i+1:04d}"
+        ref = f"OF-{date_debut.strftime('%Y%m%d')}-{i+1:04d}"
+
+        cout_mp = int(mp_kg * 500)
+        cout_mo = random.randint(50000, 200000)
+        cout_energie = random.randint(30000, 100000)
+        cout_emballage = int(qte * 200)
+        cout_total = cout_mp + cout_mo + cout_energie + cout_emballage
+
+        rendement = random.uniform(85, 98)
+
+        c.execute("""INSERT INTO ordres_fabrication
+            (reference, ligne_id, produit_fini_id, quantite_kg, matiere_premiere_kg,
+             date_debut, date_fin_prevue, date_fin_reelle, lot_production, statut,
+             cout_matiere, cout_main_oeuvre, cout_energie, cout_emballage, cout_total,
+             rendement_pct, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (ref, ligne_id, produit_fini_id, qte, round(mp_kg, 2),
+             date_debut.date().isoformat(), date_fin.date().isoformat(),
+             date_fin.date().isoformat() if statut == 'Terminé' else None,
+             lot, statut,
+             cout_mp, cout_mo, cout_energie, cout_emballage, cout_total,
+             round(rendement, 2), date_debut.isoformat()))
+        nb_of += 1
+
+        # Stocker si terminé
+        if statut == 'Terminé':
+            date_per = date_debut + timedelta(days=365)
+            c.execute("""INSERT INTO stocks_produits
+                (produit_id, site_id, lot, date_fabrication, date_peremption,
+                 quantite_kg, quantite_reservee, emplacement)
+                VALUES (?,?,?,?,?,?,0,?)""",
+                (produit_fini_id, random.randint(1, 2), lot,
+                 date_debut.date().isoformat(), date_per.date().isoformat(),
+                 qte, f"Zone {random.choice(['A', 'B', 'C'])}-R{random.randint(1, 20)}"))
+
+    print(f"[MIGRATE v2] ✅ {nb_of} ordres de fabrication créés")
+
+    # ============ TRACABILITÉ (100 lots) ============
+    c.execute("SELECT id, lot, produit_id FROM stocks_produits LIMIT 100")
+    stocks = c.fetchall()
+
+    for s in stocks:
+        qr_data = f"AGRO|{s['lot']}|{s['produit_id']}|{now.isoformat()}"
+        qr_hash = hashlib.sha256(qr_data.encode()).hexdigest()[:32]
+
+        prod_id = random.choice(producteur_ids)
+
+        date_rec = now - timedelta(days=random.randint(30, 300))
+        date_trans = date_rec + timedelta(days=random.randint(2, 15))
+        date_cond = date_trans + timedelta(days=random.randint(1, 5))
+
+        c.execute("""INSERT INTO tracabilite
+            (code_qr, produit_fini_id, lot, producteur_id,
+             date_recolte, date_reception, date_transformation, date_conditionnement,
+             destination, temperature_chaine, donnees_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (qr_hash, s['produit_id'], s['lot'], prod_id,
+             date_rec.date().isoformat(), date_rec.date().isoformat(),
+             date_trans.date().isoformat(), date_cond.date().isoformat(),
+             random.choice(['Stock local', 'Export UE', 'Export UE', 'Distribution']),
+             f"Chaîne du froid : 18-20°C",
+             f'{{"origine": "Sénégal", "certifications": "HACCP, ISO 22000"}}'))
+
+    print(f"[MIGRATE v2] ✅ 100 lots tracés avec QR code")
+
+    # ============ EXPORTS (30) ============
+    pays_ue = ['France', 'Allemagne', 'Belgique', 'Pays-Bas', 'Espagne', 'Italie']
+    ports = ['Port de Dakar', 'Aéroport AIBD']
+
+    for i in range(30):
+        client_id = random.choice(clients_b2b_ids)
+        produit_id = random.randint(1, 15)
+        qte = random.randint(500, 5000)
+        prix = random.randint(8000, 20000)
+        date_cmd = now - timedelta(days=random.randint(5, 200))
+
+        ref = f"EXP-{date_cmd.strftime('%Y%m%d')}-{i+1:04d}"
+        statut = random.choice(['En préparation', 'En transit', 'Livré', 'Livré'])
+
+        c.execute("""INSERT INTO exports
+            (reference, client_id, pays_destination, port_embarquement,
+             produit_id, quantite_kg, prix_unitaire, montant_total,
+             devise, incoterm, date_commande, date_expedition, date_arrivee_prevue,
+             transporteur, statut)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (ref, client_id, random.choice(pays_ue), random.choice(ports),
+             produit_id, qte, prix, qte * prix,
+             'EUR', random.choice(['CIF', 'FOB', 'DAP']),
+             date_cmd.date().isoformat(),
+             (date_cmd + timedelta(days=15)).date().isoformat() if statut != 'En préparation' else None,
+             (date_cmd + timedelta(days=35)).date().isoformat(),
+             random.choice(['Maersk', 'CMA CGM', 'Air France Cargo']),
+             statut))
+
+    print(f"[MIGRATE v2] ✅ 30 exports créés")
+
+    # ============ CONTRÔLES QUALITÉ (200) ============
+    for i in range(200):
+        resultat = random.choices(['Conforme', 'Non conforme'], weights=[95, 5])[0]
+        ref = f"CTL-{now.strftime('%Y%m%d')}-{i+1:05d}"
+
+        c.execute("""INSERT INTO controles_qualite
+            (reference, produit_fini_id, lot, date_controle, type_controle,
+             parametre, valeur_mesuree, valeur_cible, tolerance, resultat, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (ref, random.randint(1, 15),
+             f"LOT-{now.strftime('%Y%m')}-{random.randint(1, 150):04d}",
+             (now - timedelta(days=random.randint(1, 200))).date().isoformat(),
+             random.choice(['Microbiologie', 'Humidité', 'Aspect', 'Emballage']),
+             random.choice(['Coliformes', 'Humidité', 'Aspect visuel', 'Étanchéité']),
+             round(random.uniform(1, 15), 2),
+             round(random.uniform(1, 15), 2),
+             round(random.uniform(0.5, 2), 2),
+             resultat, now.isoformat()))
+
+    print(f"[MIGRATE v2] ✅ 200 contrôles qualité créés")
+
+    # ============ NON-CONFORMITÉS (10) ============
+    for i in range(10):
+        ref = f"NC-{now.strftime('%Y%m%d')}-{i+1:04d}"
+        c.execute("""INSERT INTO non_conformites
+            (reference, produit_id, lot, date_detection, type_nc, gravite,
+             description, cause_racine, action_corrective, statut, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (ref, random.randint(1, 15),
+             f"LOT-{now.strftime('%Y%m')}-{random.randint(1, 150):04d}",
+             (now - timedelta(days=random.randint(1, 100))).date().isoformat(),
+             random.choice(['Microbiologie', 'Humidité', 'Emballage']),
+             random.choice(['Mineure', 'Majeure', 'Critique']),
+             f"Détection de non-conformité sur lot",
+             f"Température de séchage trop basse",
+             f"Ajustement de la température + formation opérateurs",
+             random.choice(['Ouverte', 'Clôturée']),
+             now.isoformat()))
+
+    print(f"[MIGRATE v2] ✅ 10 non-conformités créées")
+
+    # ============ SESSIONS FORMATION (10) ============
+    for i in range(10):
+        date_deb = now + timedelta(days=random.randint(-60, 90))
+        date_fin = date_deb + timedelta(days=random.randint(2, 10))
+
+        c.execute("""INSERT INTO sessions_formation
+            (formation_id, date_debut, date_fin, lieu, site_id,
+             capacite_max, nb_inscrits, statut, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (random.randint(1, 8),
+             date_deb.date().isoformat(), date_fin.date().isoformat(),
+             random.choice(['Bambali', 'Ziguinchor', 'Dakar']),
+             random.choice([1, 2, 3]),
+             random.randint(15, 30),
+             random.randint(5, 25),
+             'Terminée' if date_fin < now else 'Planifiée',
+             now.isoformat()))
+
+    print(f"[MIGRATE v2] ✅ 10 sessions formation créées")
+
+    conn.commit()
+    print("[MIGRATE v2] ✅ Toutes les données démo générées")
+
+
+if __name__ == '__main__':
+    migrate()

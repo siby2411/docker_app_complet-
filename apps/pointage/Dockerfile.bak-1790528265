@@ -1,0 +1,24 @@
+FROM docker2-transport-v2:latest
+
+WORKDIR /app
+
+# Installer les dépendances système
+RUN apt-get update && apt-get install -y \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt --timeout 100 --retries 5
+
+COPY main.py .
+
+RUN mkdir -p /app/data /app/static/qrcodes /app/static/uploads
+
+EXPOSE 8000
+
+# Utiliser uvicorn avec plus de workers et timeout
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--timeout-keep-alive", "120"]

@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}{{ p.type }}{% endblock %}
+{% block page_title %}📄 {{ p.type|capitalize }} — {{ p.veh_code }}{% endblock %}
+{% block content %}
+<div class="row g-3">
+  <div class="col-lg-8">
+    <div class="card-premium">
+      <div class="d-flex justify-content-between mb-3">
+        <h4>{{ p.type|capitalize }}</h4>
+        <span class="badge-statut badge-{{ p.statut }}">{{ p.statut }}</span>
+      </div>
+      {% if jours is not none %}
+      <div class="alert {% if jours < 0 %}alert-danger{% elif jours <= 7 %}alert-warning{% elif jours <= 30 %}alert-info{% else %}alert-success{% endif %}">
+        {% if jours < 0 %}❌ Expiré depuis {{ -jours }} jour(s){% else %}⏱️ Expire dans {{ jours }} jour(s){% endif %}
+      </div>
+      {% endif %}
+
+      <table class="table table-omega">
+        <tr><td>Véhicule</td><td>{{ p.veh_code }} — {{ p.marque_nom }} {{ p.modele_nom }}<br><small>{{ p.immatriculation }} · VIN : {{ p.vin_chassis or '—' }}</small></td></tr>
+        <tr><td>Type</td><td>{{ p.type }}</td></tr>
+        <tr><td>Numéro</td><td>{{ p.numero or '—' }}</td></tr>
+        <tr><td>Émission</td><td>{{ p.date_emission|dte }}</td></tr>
+        <tr><td>Expiration</td><td>{{ p.date_expiration|dte }}</td></tr>
+        <tr><td>Compagnie</td><td>{{ p.compagnie or '—' }}</td></tr>
+        <tr><td>Montant</td><td>{{ p.montant|money }}</td></tr>
+      </table>
+
+      {% if p.fichier_path %}
+      <a href="{{ url_for('uploaded_file', subpath='papiers', filename=p.fichier_path) }}" target="_blank" class="btn btn-light"><i class="bi bi-file-earmark-pdf"></i> Ouvrir le document</a>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card-premium text-center">
+      <h6>QR anti-fraude</h6>
+      <img src="{{ url_for('papier_qr', pid=p.id) }}" style="max-width:200px" class="mb-2">
+      <div class="d-grid gap-2">
+        <a href="{{ url_for('papier_qr', pid=p.id) }}" download="qr-papier-{{ p.id }}.png" class="btn btn-sm btn-light">Télécharger QR</a>
+        <button class="btn btn-sm btn-primary-omega" data-bs-toggle="modal" data-bs-target="#modalQr">Voir le payload</button>
+      </div>
+    </div>
+
+    <div class="card-premium">
+      <h6>Actions</h6>
+      <div class="d-grid gap-2">
+        <a href="{{ url_for('papier_edit', pid=p.id) }}" class="btn btn-accent"><i class="bi bi-pencil"></i> Modifier</a>
+        {% if current_user.is_admin() %}
+        <form method="POST" action="{{ url_for('papier_delete', pid=p.id) }}" onsubmit="return confirm('Supprimer ?')">
+          <button class="btn btn-outline-danger w-100"><i class="bi bi-trash"></i> Supprimer</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="modalQr" tabindex="-1">
+  <div class="modal-dialog modal-lg"><div class="modal-content">
+    <div class="modal-header"><h5 class="modal-title">Payload QR</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body">
+      <pre style="background:#f5f7fa;padding:16px;border-radius:8px;font-size:12px;white-space:pre-wrap">{{ qr_payload }}</pre>
+    </div>
+  </div></div>
+</div>
+{% endblock %}

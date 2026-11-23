@@ -1,0 +1,321 @@
+"""Module d'authentification Flask-Login + gestion des rôles"""
+from flask import Blueprint, render_template_string, request, redirect, url_for, flash, session
+from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+from functools import wraps
+import sqlite3
+import os
+from datetime import datetime
+
+DB_PATH = "/app/data/ecole.db"
+
+login_manager = LoginManager()
+login_manager.login_view = '/login'
+login_manager.login_message = "Veuillez vous connecter pour accéder à cette page."
+login_manager.login_message_category = "warning"
+login_manager.session_protection = "strong"
+
+
+def get_db():
+    os.makedirs("/app/data", exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+class User(UserMixin):
+    """Utilisateur Flask-Login"""
+    def __init__(self, id, username, role, etudiant_id=None, professeur_id=None, email=None):
+        self.id = str(id)
+        self.username = username
+        self.role = role
+        self.etudiant_id = etudiant_id
+        self.professeur_id = professeur_id
+        self.email = email
+
+    @property
+    def is_admin(self):
+        return self.role == 'admin'
+
+    @property
+    def is_professeur(self):
+        return self.role == 'professeur'
+
+    @property
+    def is_etudiant(self):
+        return self.role == 'etudiant'
+
+    def can_edit(self):
+        """Admin + professeur peuvent modifier"""
+        return self.role in ('admin', 'professeur')
+
+    def can_delete(self):
+        """Seul admin peut supprimer"""
+        return self.role == 'admin'
+
+    def can_manage_users(self):
+        return self.role == 'admin'
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT id, username, role, etudiant_id, professeur_id, email
+        FROM utilisateurs WHERE id = ? AND actif = 1""", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return User(row['id'], row['username'], row['role'],
+                    row['etudiant_id'], row['professeur_id'], row['email'])
+    return None
+
+
+def log_action(user_id, action, table_cible=None, enregistrement_id=None, details=None, ip=None):
+    """Journalise une action dans audit_log"""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""INSERT INTO audit_log 
+            (user_id, action, table_cible, enregistrement_id, details, ip)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_id, action, table_cible, enregistrement_id, details, ip))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[AUDIT] Erreur: {e}")
+
+
+def init_auth(app):
+    """Initialise Flask-Login et enregistre les routes auth"""
+    login_manager.init_app(app)
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        if current_user.is_authenticated:
+            return redirect("/")
+
+        if request.method == "POST":
+            username = request.form.get('username', '').strip()
+            password = request.form.get('password', '')
+
+            if not username or not password:
+                flash("Nom d'utilisateur et mot de passe requis", "danger")
+                return render_template_string(LOGIN_HTML)
+
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("""SELECT id, username, password_hash, role, etudiant_id,
+                professeur_id, email, actif FROM utilisateurs WHERE username = ?""",
+                (username,))
+            row = c.fetchone()
+
+            if row and row['actif']:
+                pwd_ok = False
+                stored_hash = row['password_hash']
+
+                # 1. Essayer Werkzeug
+                try:
+                    if stored_hash.startswith(('pbkdf2:', 'scrypt:')):
+                        pwd_ok = check_password_hash(stored_hash, password)
+                except Exception:
+                    pass
+
+                # 2. Fallback sha256 (legacy) → migrer automatiquement
+                if not pwd_ok:
+                    from hashlib import sha256
+                    if stored_hash == sha256(password.encode()).hexdigest():
+                        pwd_ok = True
+                        new_hash = generate_password_hash(password)
+                        c.execute("UPDATE utilisateurs SET password_hash=? WHERE id=?",
+                                  (new_hash, row['id']))
+                        conn.commit()
+                        print(f"[AUTH] Hash migré vers Werkzeug pour {username}")
+
+                if pwd_ok:
+                    user = User(row['id'], row['username'], row['role'],
+                                row['etudiant_id'], row['professeur_id'], row['email'])
+                    login_user(user, remember=True)
+
+                    c.execute("UPDATE utilisateurs SET derniere_connexion=? WHERE id=?",
+                              (datetime.now().isoformat(), row['id']))
+                    conn.commit()
+                    conn.close()
+
+                    # Audit
+                    log_action(row['id'], 'LOGIN', 'utilisateurs', row['id'],
+                               f"Connexion réussie", request.remote_addr)
+
+                    flash(f"Bienvenue {user.username} !", "success")
+                    next_page = request.args.get('next')
+                    if next_page and next_page.startswith('/'):
+                        return redirect(next_page)
+                    return redirect("/")
+                else:
+                    conn.close()
+                    log_action(None, 'LOGIN_FAILED', 'utilisateurs', None,
+                               f"Tentative échouée pour {username}", request.remote_addr)
+                    flash("Mot de passe incorrect", "danger")
+            else:
+                conn.close()
+                flash("Utilisateur inconnu ou désactivé", "danger")
+
+        return render_template_string(LOGIN_HTML)
+
+    @app.route("/logout")
+    @login_required
+    def logout():
+        log_action(current_user.id, 'LOGOUT', 'utilisateurs', current_user.id,
+                   "Déconnexion", request.remote_addr)
+        logout_user()
+        flash("Vous êtes déconnecté", "success")
+        return redirect("/login")
+
+    @app.route("/auth/me")
+    def auth_me():
+        """Debug : infos utilisateur connecté"""
+        if not current_user.is_authenticated:
+            return {"authenticated": False}
+        return {
+            "authenticated": True,
+            "username": current_user.username,
+            "role": current_user.role,
+            "can_edit": current_user.can_edit(),
+            "can_delete": current_user.can_delete()
+        }
+
+    return app
+
+
+# ==================== DÉCORATEURS DE RÔLE ====================
+def admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not current_user.is_authenticated:
+            flash("Veuillez vous connecter", "warning")
+            return redirect('/login?next=' + request.path)
+        if not current_user.is_admin:
+            flash("Accès réservé aux administrateurs", "danger")
+            return redirect("/")
+        return f(*args, **kwargs)
+    return decorated
+
+
+def prof_or_admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not current_user.is_authenticated:
+            flash("Veuillez vous connecter", "warning")
+            return redirect('/login?next=' + request.path)
+        if not current_user.can_edit():
+            flash("Accès réservé aux professeurs et administrateurs", "danger")
+            return redirect("/")
+        return f(*args, **kwargs)
+    return decorated
+
+
+# ==================== TEMPLATE LOGIN ====================
+LOGIN_HTML = """
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connexion - Omega Ecole</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; font-family:'Segoe UI',sans-serif; }
+        body {
+            background: linear-gradient(135deg,#1a1a2e 0%,#0f3460 100%);
+            min-height:100vh; display:flex; align-items:center; justify-content:center;
+            padding:20px;
+        }
+        .login-card {
+            background:white; border-radius:16px; padding:40px;
+            max-width:420px; width:100%; box-shadow:0 20px 60px rgba(0,0,0,0.3);
+            border-top:5px solid #e94560;
+        }
+        .login-header { text-align:center; margin-bottom:30px; }
+        .login-header h1 { color:#1a1a2e; font-size:1.8rem; margin-bottom:5px; }
+        .login-header h1 span { color:#e94560; }
+        .login-header p { color:#718096; font-size:0.9rem; }
+        .login-icon {
+            width:70px; height:70px; margin:0 auto 15px;
+            background:linear-gradient(135deg,#e94560,#c73652);
+            border-radius:50%; display:flex; align-items:center; justify-content:center;
+            color:white; font-size:1.8rem;
+        }
+        .form-group { margin-bottom:18px; }
+        .form-group label { display:block; font-weight:600; color:#4a5568; margin-bottom:6px; font-size:0.9rem; }
+        .form-group input {
+            width:100%; padding:12px 14px; border:2px solid #e2e8f0;
+            border-radius:8px; font-size:1rem; transition:0.3s;
+        }
+        .form-group input:focus { outline:none; border-color:#e94560; }
+        .btn-login {
+            width:100%; padding:14px; background:#e94560; color:white;
+            border:none; border-radius:8px; font-size:1rem; font-weight:600;
+            cursor:pointer; transition:0.3s; margin-top:10px;
+        }
+        .btn-login:hover { background:#c73652; transform:translateY(-1px); }
+        .flash { padding:10px 15px; border-radius:6px; margin-bottom:15px; font-size:0.9rem; }
+        .flash-success { background:#d1fae5; color:#065f46; }
+        .flash-danger { background:#fee2e2; color:#991b1b; }
+        .flash-warning { background:#fef3c7; color:#92400e; }
+        .login-footer {
+            text-align:center; margin-top:25px; padding-top:20px;
+            border-top:1px solid #e2e8f0; font-size:0.75rem; color:#a0aec0;
+        }
+        .demo-accounts {
+            background:#f7fafc; border-radius:8px; padding:12px;
+            margin-top:20px; font-size:0.75rem; color:#4a5568;
+        }
+        .demo-accounts strong { color:#1a1a2e; display:block; margin-bottom:5px; }
+        .demo-accounts code {
+            background:#e2e8f0; padding:2px 6px; border-radius:3px;
+            font-family:monospace; color:#e94560;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <div class="login-header">
+            <div class="login-icon"><i class="fas fa-graduation-cap"></i></div>
+            <h1>OMEGA <span>ECOLE</span></h1>
+            <p>Système LMD - Connexion sécurisée</p>
+        </div>
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                <div class="flash flash-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        <form method="POST">
+            <div class="form-group">
+                <label><i class="fas fa-user"></i> Nom d'utilisateur</label>
+                <input type="text" name="username" required autofocus placeholder="admin" autocomplete="username">
+            </div>
+            <div class="form-group">
+                <label><i class="fas fa-lock"></i> Mot de passe</label>
+                <input type="password" name="password" required placeholder="••••••••" autocomplete="current-password">
+            </div>
+            <button type="submit" class="btn-login">
+                <i class="fas fa-sign-in-alt"></i> Se connecter
+            </button>
+        </form>
+        <div class="demo-accounts">
+            <strong>🔑 Comptes de test :</strong>
+            <div>Admin : <code>admin</code> / <code>admin123</code></div>
+            <div>Prof : <code>prof001</code> / <code>prof123</code></div>
+            <div>Étudiant : <code>etudiant001</code> / <code>etu123</code></div>
+        </div>
+        <div class="login-footer">
+            &copy; 2026 Omega Consulting
+        </div>
+    </div>
+</body>
+</html>
+"""

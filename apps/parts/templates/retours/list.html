@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Retours{% endblock %}
+{% block page_title %}↩️ Retours & RMA{% endblock %}
+{% block content %}
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-arrow-return-left"></i></div><div><div class="kpi-val">{{ kpi.total }}</div><div class="kpi-lbl">Total</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-gold-grad"><i class="bi bi-hourglass"></i></div><div><div class="kpi-val">{{ kpi.en_attente }}</div><div class="kpi-lbl">En attente</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-check"></i></div><div><div class="kpi-val">{{ kpi.acceptes }}</div><div class="kpi-lbl">Acceptés</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-cash-stack"></i></div><div><div class="kpi-val">{{ kpi.montant_total|money_short }}</div><div class="kpi-lbl">Remboursé</div></div></div></div>
+</div>
+
+<div class="card-premium">
+  <div class="d-flex justify-content-between mb-3">
+    <h5 class="mb-0">Retours</h5>
+    <a href="{{ url_for('retour_new') }}" class="btn btn-accent"><i class="bi bi-plus-lg"></i> Nouveau retour</a>
+  </div>
+  <table class="table table-omega">
+    <thead><tr><th>N°</th><th>Vente</th><th>Client</th><th>Pièce</th><th class="text-center">Qté</th><th class="text-end">Remboursé</th><th>Statut</th><th></th></tr></thead>
+    <tbody>
+      {% for r in retours %}
+      <tr>
+        <td><a href="{{ url_for('retour_detail', rid=r.id) }}"><code style="font-size:11px">{{ r.numero }}</code></a></td>
+        <td><small>{{ r.vente_numero or '—' }}</small></td>
+        <td>{% if r.client_nom %}{{ r.client_prenom or '' }} {{ r.client_nom }}{% else %}—{% endif %}</td>
+        <td><small>{{ r.piece_nom[:40] if r.piece_nom else '—' }}</small></td>
+        <td class="text-center">{{ r.quantite }}</td>
+        <td class="text-end fw-bold">{{ r.montant_rembourse|money }}</td>
+        <td><span class="badge-statut badge-{{ r.statut }}">{{ r.statut }}</span></td>
+        <td><a href="{{ url_for('retour_detail', rid=r.id) }}" class="btn btn-sm btn-light"><i class="bi bi-eye"></i></a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" class="text-center text-muted py-4">Aucun retour</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

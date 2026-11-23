@@ -1,0 +1,124 @@
+from flask import Flask, render_template_string, request, redirect, url_for
+import sqlite3
+
+app = Flask(__name__)
+DB_PATH = "ecole.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Cycles
+    c.execute("CREATE TABLE IF NOT EXISTS cycles (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, nom TEXT)")
+    
+    # Filières (type IAM Dakar)
+    c.execute("CREATE TABLE IF NOT EXISTS filieres (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, nom TEXT, cycle_id INTEGER)")
+    
+    # Élèves
+    c.execute("CREATE TABLE IF NOT EXISTS eleves (id INTEGER PRIMARY KEY AUTOINCREMENT, nom TEXT, prenom TEXT, classe TEXT, cycle_id INTEGER, filiere_id INTEGER)")
+    
+    # Données initiales
+    c.execute("SELECT COUNT(*) FROM cycles")
+    if c.fetchone()[0] == 0:
+        c.executemany("INSERT INTO cycles (code, nom) VALUES (?, ?)",
+            [("LIC", "Licence"), ("MAS", "Master"), ("DOC", "Doctorat")])
+        
+        c.executemany("INSERT INTO filieres (code, nom, cycle_id) VALUES (?, ?, ?)",
+            [("IA", "Informatique Appliquee", 1),
+             ("SE", "Systemes Embarques", 1),
+             ("RS", "Reseaux et Securite", 1),
+             ("DS", "Data Science", 1),
+             ("GL", "Genie Logiciel", 1),
+             ("MIAGE", "MIAGE", 1)])
+        conn.commit()
+    
+    c.execute("SELECT COUNT(*) FROM eleves")
+    if c.fetchone()[0] == 0:
+        c.executemany("INSERT INTO eleves (nom,prenom,classe,cycle_id,filiere_id) VALUES (?,?,?,?,?)",
+            [("Diop","Mamadou","CM2",1,1), ("Fall","Aminata","CM1",1,2)])
+        conn.commit()
+    conn.close()
+
+init_db()
+
+HTML = """
+<!DOCTYPE html>
+<html>
+<head><title>Omega Ecole - LMD</title>
+<style>
+body { font-family: Arial; margin:20px; background:#f0f4f8; }
+.container { max-width:1200px; margin:0 auto; background:white; padding:20px; border-radius:12px; }
+h1 { color:#1a365d; }
+table { width:100%; border-collapse:collapse; margin-top:20px; }
+th, td { padding:12px; text-align:left; border-bottom:1px solid #e2e8f0; }
+th { background:#f7fafc; }
+.btn { padding:10px 20px; background:#2b6cb0; color:white; border:none; border-radius:4px; cursor:pointer; }
+input, select { padding:8px; margin:5px; border:1px solid #e2e8f0; border-radius:4px; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>🎓 Omega Ecole - Systeme LMD</h1>
+<h3>Cycles & Filières</h3>
+<form action="/ajouter" method="POST" style="display:flex; gap:10px; flex-wrap:wrap;">
+<input type="text" name="nom" placeholder="Nom" required>
+<input type="text" name="prenom" placeholder="Prenom" required>
+<input type="text" name="classe" placeholder="Classe" required>
+<select name="cycle_id">
+    {% for c in cycles %}
+    <option value="{{ c[0] }}">{{ c[2] }}</option>
+    {% endfor %}
+</select>
+<select name="filiere_id">
+    {% for f in filieres %}
+    <option value="{{ f[0] }}">{{ f[2] }}</option>
+    {% endfor %}
+</select>
+<button type="submit" class="btn">Ajouter</button>
+</form>
+<h3>Eleves</h3>
+<table>
+<thead><tr><th>Nom</th><th>Prenom</th><th>Classe</th><th>Cycle</th><th>Filiere</th></tr></thead>
+<tbody>
+{% for e in eleves %}
+<tr>
+    <td>{{ e[1] }}</td>
+    <td>{{ e[2] }}</td>
+    <td>{{ e[3] }}</td>
+    <td>{{ e[5] }}</td>
+    <td>{{ e[6] }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+</body>
+</html>
+"""
+
+@app.route("/")
+def index():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT e.*, cy.nom, f.nom FROM eleves e LEFT JOIN cycles cy ON e.cycle_id = cy.id LEFT JOIN filieres f ON e.filiere_id = f.id ORDER BY e.id DESC")
+    eleves = c.fetchall()
+    c.execute("SELECT * FROM cycles")
+    cycles = c.fetchall()
+    c.execute("SELECT * FROM filieres")
+    filieres = c.fetchall()
+    conn.close()
+    return render_template_string(HTML, eleves=eleves, cycles=cycles, filieres=filieres)
+
+@app.route("/ajouter", methods=["POST"])
+def ajouter():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT INTO eleves (nom,prenom,classe,cycle_id,filiere_id) VALUES (?,?,?,?,?)",
+        (request.form["nom"], request.form["prenom"], request.form["classe"], 
+         int(request.form["cycle_id"]), int(request.form["filiere_id"])))
+    conn.commit()
+    conn.close()
+    return redirect(url_for("index"))
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000)

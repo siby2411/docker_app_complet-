@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Analyse Stock{% endblock %}
+{% block page_title %}📦 Analyse Stock{% endblock %}
+{% block content %}
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-boxes"></i></div><div><div class="kpi-val">{{ kpi.total_refs }}</div><div class="kpi-lbl">Références</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-cash-stack"></i></div><div><div class="kpi-val">{{ kpi.valeur_vente|money_short }}</div><div class="kpi-lbl">Valeur vente</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-graph-up"></i></div><div><div class="kpi-val">{{ kpi.marge_potentielle|money_short }}</div><div class="kpi-lbl">Marge ({{ kpi.taux_marge }}%)</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-danger-grad"><i class="bi bi-exclamation-triangle"></i></div><div><div class="kpi-val">{{ kpi.ruptures }}</div><div class="kpi-lbl">Ruptures</div></div></div></div>
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-6"><div class="card-premium"><h5>Par catégorie</h5>
+    <table class="table table-omega table-sm"><thead><tr><th>Catégorie</th><th class="text-center">Réf</th><th class="text-end">Valeur</th></tr></thead>
+    <tbody>{% for c in par_categorie %}<tr><td>{{ c.icone }} {{ c.nom }}</td><td class="text-center">{{ c.nb }}</td><td class="text-end fw-bold">{{ c.valeur|money }}</td></tr>{% endfor %}</tbody></table>
+  </div></div>
+  <div class="col-lg-6"><div class="card-premium"><h5>Par point de vente</h5>
+    <table class="table table-omega table-sm"><thead><tr><th>PDV</th><th class="text-center">Unités</th><th class="text-end">Valeur</th></tr></thead>
+    <tbody>{% for p in par_pdv %}<tr><td>{{ p.nom }}<br><small class="text-muted">{{ p.ville }}</small></td><td class="text-center">{{ p.unites }}</td><td class="text-end fw-bold">{{ p.valeur|money }}</td></tr>{% endfor %}</tbody></table>
+  </div></div>
+</div>
+
+<a href="{{ url_for('export_stock') }}" class="btn btn-light mt-3"><i class="bi bi-download"></i> Export CSV</a>
+{% endblock %}

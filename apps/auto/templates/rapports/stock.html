@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Analyse Stock{% endblock %}
+{% block page_title %}📦 Analyse Stock{% endblock %}
+{% block content %}
+<div class="row g-3 mb-3">
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-car-front"></i></div><div><div class="kpi-val">{{ kpi.nb_total }}</div><div class="kpi-lbl">Véhicules stock</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-box-seam"></i></div><div><div class="kpi-val">{{ kpi.valeur_totale|money }}</div><div class="kpi-lbl">Valeur vente</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-graph-up-arrow"></i></div><div><div class="kpi-val">{{ kpi.marge_latente|money }}</div><div class="kpi-lbl">Marge latente ({{ kpi.marge_pct }}%)</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-info-grad"><i class="bi bi-key"></i></div><div><div class="kpi-val">{{ kpi.nb_location }}</div><div class="kpi-lbl">Dispo location</div></div></div></div>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-6"><div class="card-premium"><h6>Par agence</h6>
+    <table class="table table-omega table-sm mb-0">
+      <thead><tr><th>Agence</th><th>Nb</th><th class="text-end">Valeur achat</th><th class="text-end">Valeur vente</th><th class="text-end">Marge</th></tr></thead>
+      <tbody>
+        {% for a in par_agence %}
+        <tr><td>{{ a.agence }}<br><small class="text-muted">{{ a.ville }}</small></td><td>{{ a.nb }}</td><td class="text-end">{{ a.valeur_achat|money }}</td><td class="text-end">{{ a.valeur_vente|money }}</td><td class="text-end text-success">{{ a.marge|money }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div></div>
+
+  <div class="col-lg-6"><div class="card-premium"><h6>Par marque</h6>
+    <table class="table table-omega table-sm mb-0">
+      <thead><tr><th>Marque</th><th>Nb</th><th class="text-end">Valeur vente</th></tr></thead>
+      <tbody>
+        {% for m in par_marque %}
+        <tr><td>{{ m.marque }}</td><td>{{ m.nb }}</td><td class="text-end fw-bold">{{ m.valeur_vente|money }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div></div>
+
+  <div class="col-lg-6"><div class="card-premium"><h6>Par état</h6>
+    {% for e in par_etat %}<div class="d-flex justify-content-between mb-2"><span>{{ e.etat }}</span><strong>{{ e.nb }} ({{ e.valeur|money }})</strong></div>{% endfor %}
+  </div></div>
+
+  <div class="col-lg-6"><div class="card-premium"><h6>Par année</h6>
+    {% for a in par_annee %}<div class="d-flex justify-content-between mb-2"><span>{{ a.annee }}</span><strong>{{ a.nb }} ({{ a.valeur|money }})</strong></div>{% endfor %}
+  </div></div>
+</div>
+
+{% if immo %}
+<div class="card-premium mb-3" style="border-left:4px solid #f4b400">
+  <h6 class="text-warning">⏰ Immobilisations &gt; 90 jours ({{ immo|length }})</h6>
+  <table class="table table-omega table-sm mb-0">
+    <thead><tr><th>Code</th><th>Véhicule</th><th>Acquis le</th><th>Jours stock</th><th class="text-end">Valeur</th></tr></thead>
+    <tbody>
+      {% for v in immo %}
+      <tr><td><a href="{{ url_for('vehicule_detail', vid=v.id) }}">{{ v.code }}</a></td><td>{{ v.marque_nom }} {{ v.modele_nom }}</td><td>{{ v.date_acquisition|dte }}</td><td class="text-warning fw-bold">{{ v.jours }} j</td><td class="text-end">{{ v.prix_vente|money }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if depreciation %}
+<div class="card-premium mb-3" style="border-left:4px solid #ef476f">
+  <h6 class="text-danger">📉 Véhicules &gt; 5 ans ({{ depreciation|length }})</h6>
+  <table class="table table-omega table-sm mb-0">
+    <thead><tr><th>Code</th><th>Véhicule</th><th>Année</th><th>Âge</th><th class="text-end">Valeur</th></tr></thead>
+    <tbody>
+      {% for v in depreciation %}
+      <tr><td>{{ v.code }}</td><td>{{ v.marque_nom }} {{ v.modele_nom }}</td><td>{{ v.annee }}</td><td>{{ v.age }} ans</td><td class="text-end">{{ v.prix_vente|money }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<a href="{{ url_for('export_stock') }}" class="btn btn-light mt-2"><i class="bi bi-download"></i> Export CSV</a>
+{% endblock %}

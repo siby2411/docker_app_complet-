@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}{{ f.nom }}{% endblock %}
+{% block page_title %}🏭 {{ f.nom }}{% endblock %}
+{% block content %}
+
+<div class="row g-3 mb-3">
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-gear"></i></div><div><div class="kpi-val">{{ stats.nb_pieces }}</div><div class="kpi-lbl">Pièces fournies</div></div></div></div>
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-clipboard-check"></i></div><div><div class="kpi-val">{{ stats.nb_commandes }}</div><div class="kpi-lbl">Commandes</div></div></div></div>
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-cash-stack"></i></div><div><div class="kpi-val">{{ stats.total_achats|money_short }}</div><div class="kpi-lbl">Total achats</div></div></div></div>
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-4">
+    <div class="card-premium">
+      <h6>Coordonnées</h6>
+      <p><strong>Type :</strong> {{ f.type }}</p>
+      <p><strong>Contact :</strong> {{ f.contact_nom or '—' }}</p>
+      <p><strong>Tél :</strong> {{ f.telephone or '—' }}</p>
+      <p><strong>Email :</strong> {{ f.email or '—' }}</p>
+      <p><strong>Pays :</strong> {{ f.pays or '—' }}{% if f.ville %} / {{ f.ville }}{% endif %}</p>
+      <p><strong>Adresse :</strong> {{ f.adresse or '—' }}</p>
+      <p><strong>Délai livraison :</strong> {{ f.delai_livraison_jours }} jours</p>
+      <p><strong>Note :</strong> {{ '⭐' * f.note }}</p>
+    </div>
+
+    <div class="card-premium">
+      <h6>Actions</h6>
+      <div class="d-grid gap-2">
+        <a href="{{ url_for('fournisseur_edit', fid=f.id) }}" class="btn btn-accent"><i class="bi bi-pencil"></i> Modifier</a>
+        <a href="{{ url_for('commande_new') }}?fournisseur_id={{ f.id }}" class="btn btn-primary-omega"><i class="bi bi-plus-circle"></i> Nouvelle commande</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-8">
+    <div class="card-premium">
+      <h5>Pièces fournies ({{ pieces|length }})</h5>
+      <div class="table-responsive">
+        <table class="table table-omega table-sm">
+          <thead><tr><th>SKU</th><th>Nom</th><th class="text-end">Prix</th><th class="text-center">Stock</th></tr></thead>
+          <tbody>
+            {% for p in pieces %}
+            <tr>
+              <td><a href="{{ url_for('piece_detail', pid=p.id) }}" style="text-decoration:none"><code style="font-size:11px">{{ p.sku }}</code></a></td>
+              <td><small>{{ p.nom[:50] }}</small></td>
+              <td class="text-end"><strong>{{ p.prix_vente_detail|money }}</strong></td>
+              <td class="text-center">
+                {% if p.stock_total == 0 %}
+                <span class="badge-statut badge-rupture">0</span>
+                {% else %}
+                <span class="badge-statut badge-disponible">{{ p.stock_total }}</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4" class="text-center text-muted py-3">Aucune pièce</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card-premium">
+      <h5>Commandes récentes</h5>
+      <div class="table-responsive">
+        <table class="table table-omega table-sm">
+          <thead><tr><th>N°</th><th>Date</th><th class="text-end">Montant</th><th>Statut</th></tr></thead>
+          <tbody>
+            {% for c in commandes %}
+            <tr>
+              <td><a href="{{ url_for('commande_detail', cid=c.id) }}" style="text-decoration:none"><code style="font-size:11px">{{ c.numero }}</code></a></td>
+              <td><small>{{ c.date_commande|dte }}</small></td>
+              <td class="text-end"><strong>{{ c.montant_total|money }}</strong></td>
+              <td><span class="badge-statut badge-{{ c.statut }}">{{ c.statut }}</span></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4" class="text-center text-muted py-3">Aucune commande</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

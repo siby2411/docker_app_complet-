@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Véhicules{% endblock %}
+{% block page_title %}🚗 Véhicules — {{ kpi.total }}{% endblock %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+  <form class="d-flex gap-2 flex-grow-1" style="max-width:600px">
+    <input type="text" name="q" value="{{ q }}" class="form-control" placeholder="Immat, VIN, marque, modèle...">
+    <select name="marque" class="form-select" style="max-width:180px">
+      <option value="">Toutes marques</option>
+      {% for m in marques %}<option value="{{ m }}" {% if m==marque %}selected{% endif %}>{{ m }}</option>{% endfor %}
+    </select>
+    <button class="btn btn-primary">🔍</button>
+  </form>
+  <a href="{{ url_for('vehicule_new') }}" class="btn btn-success">➕ Nouveau véhicule</a>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="card-premium p-3"><small>Total</small><h3>{{ kpi.total }}</h3></div></div>
+  <div class="col-md-3"><div class="card-premium p-3"><small>Actifs</small><h3>{{ kpi.actifs }}</h3></div></div>
+  <div class="col-md-3"><div class="card-premium p-3"><small>Avec fiches</small><h3>{{ kpi.avec_fiches }}</h3></div></div>
+  <div class="col-md-3"><div class="card-premium p-3"><small>Page</small><h3>{{ page }}/{{ pages }}</h3></div></div>
+</div>
+
+<div class="card-premium">
+  <table class="table table-hover">
+    <thead><tr>
+      <th>Photo</th><th>Code</th><th>Immatriculation</th><th>Véhicule</th>
+      <th>Client</th><th>Km</th><th>Interventions</th><th>Actions</th>
+    </tr></thead>
+    <tbody>
+    {% for v in vehicules %}
+      <tr>
+        <td>
+          {% if v.photo_principale %}
+            <img src="{{ url_for('uploaded_file', subpath='parts', filename=v.photo_principale) }}"
+                 style="width:48px;height:48px;object-fit:cover;border-radius:8px">
+          {% else %}<span style="font-size:24px">🚗</span>{% endif %}
+        </td>
+        <td><code>{{ v.code }}</code></td>
+        <td><strong>{{ v.immatriculation }}</strong></td>
+        <td>{{ v.marque }} {{ v.modele }} {% if v.annee %}<small>({{ v.annee }})</small>{% endif %}</td>
+        <td>
+          {% if v.client_nom %}
+            {{ v.client_prenom or '' }} {{ v.client_nom }}
+            <br><small>{{ v.client_tel or '' }}</small>
+          {% else %}<em class="text-muted">—</em>{% endif %}
+        </td>
+        <td>{{ '{:,}'.format(v.kilometrage or 0).replace(',', ' ') }} km</td>
+        <td><span class="badge bg-info">{{ v.nb_interventions }}</span></td>
+        <td>
+          <a href="{{ url_for('vehicule_detail', vid=v.id) }}" class="btn btn-sm btn-primary">👁️</a>
+          <a href="{{ url_for('vehicule_edit', vid=v.id) }}" class="btn btn-sm btn-warning">✏️</a>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="8" class="text-center text-muted py-4">Aucun véhicule. <a href="{{ url_for('vehicule_new') }}">Créer le premier</a></td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if pages > 1 %}
+<nav class="mt-3"><ul class="pagination justify-content-center">
+  {% for p in range(1, pages + 1) %}
+    <li class="page-item {% if p == page %}active{% endif %}">
+      <a class="page-link" href="?page={{ p }}&q={{ q }}&marque={{ marque }}">{{ p }}</a>
+    </li>
+  {% endfor %}
+</ul></nav>
+{% endif %}
+
+{% endblock %}

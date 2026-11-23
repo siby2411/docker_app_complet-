@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Modifier' if modele else 'Nouveau' }} modèle{% endblock %}
+{% block page_title %}{{ '✏️ Modifier' if modele else '➕ Nouveau' }} modèle{% endblock %}
+{% block content %}
+<form method="POST" class="card-premium">
+  <div class="row g-3">
+    <div class="col-md-6"><label class="form-label">Marque *</label>
+      <select name="marque_id" class="form-select" required>
+        {% for m in marques %}<option value="{{ m.id }}" {% if modele and modele.marque_id==m.id %}selected{% endif %}>{{ m.nom }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="col-md-6"><label class="form-label">Nom *</label><input type="text" name="nom" class="form-control" required value="{{ modele.nom if modele else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Type</label><input type="text" name="type" class="form-control" value="{{ modele.type if modele else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Carburant</label><input type="text" name="carburant" class="form-control" value="{{ modele.carburant if modele else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Transmission</label><input type="text" name="transmission" class="form-control" value="{{ modele.transmission if modele else '' }}"></div>
+    <div class="col-md-2"><label class="form-label">Année début</label><input type="number" name="annee_debut" class="form-control" value="{{ modele.annee_debut if modele else '' }}"></div>
+    <div class="col-md-1 d-flex align-items-end"><button class="btn btn-accent w-100"><i class="bi bi-check-lg"></i></button></div>
+  </div>
+  <a href="{{ url_for('modeles_list') }}" class="btn btn-light mt-3">Annuler</a>
+</form>
+{% endblock %}

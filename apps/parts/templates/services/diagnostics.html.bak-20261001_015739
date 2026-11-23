@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Diagnostics{% endblock %}
+{% block page_title %}Diagnostics{% endblock %}
+{% block content %}
+
+<div class="row g-3 mb-4">
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-search"></i></div><div><div class="kpi-val">{{ kpi.total }}</div><div class="kpi-lbl">Total</div></div></div></div>
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-calendar-check"></i></div><div><div class="kpi-val">{{ kpi.aujourdhui }}</div><div class="kpi-lbl">Aujourd'hui</div></div></div></div>
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-cash-stack"></i></div><div><div class="kpi-val">{{ kpi.ca_mois|money_short }}</div><div class="kpi-lbl">CA mois</div></div></div></div>
+</div>
+
+<div class="card-premium">
+  <h5>Diagnostics</h5>
+  <div class="table-responsive">
+    <table class="table table-omega">
+      <thead><tr><th>N°</th><th>Vehicule</th><th>Client</th><th>Type</th><th class="text-end">Cout</th></tr></thead>
+      <tbody>
+        {% for d in diagnostics %}
+        <tr>
+          <td><code style="font-size:11px">{{ d.numero }}</code></td>
+          <td>{{ d.immatriculation or '-' }}</td>
+          <td>{{ d.client_prenom or '' }} {{ d.client_nom or '-' }}</td>
+          <td>{{ d.type_diag }}</td>
+          <td class="text-end fw-bold">{{ d.cout|money }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="text-center text-muted py-4">Aucun diagnostic</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

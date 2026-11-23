@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}{{ r.numero }}{% endblock %}
+{% block page_title %}↩️ Retour {{ r.numero }}{% endblock %}
+{% block content %}
+<div class="row g-3">
+  <div class="col-lg-8">
+    <div class="card-premium">
+      <div class="d-flex justify-content-between mb-3">
+        <h4 style="color:#0a2540">{{ r.numero }}</h4>
+        <span class="badge-statut badge-{{ r.statut }}">{{ r.statut }}</span>
+      </div>
+      <table class="table table-sm">
+        <tr><td width="40%">Vente d'origine</td><td>{{ r.vente_numero or '—' }} ({{ r.date_vente|dte }})</td></tr>
+        <tr><td>Client</td><td>{% if r.client_nom %}{{ r.client_prenom or '' }} {{ r.client_nom }} — {{ r.client_tel }}{% else %}—{% endif %}</td></tr>
+        <tr><td>Pièce</td><td><strong>{{ r.piece_nom }}</strong> ({{ r.sku }})</td></tr>
+        <tr><td>Quantité retournée</td><td>{{ r.quantite }}</td></tr>
+        <tr><td>Montant remboursé</td><td><strong style="color:#ff6b35;font-size:18px">{{ r.montant_rembourse|money }}</strong></td></tr>
+        <tr><td>Motif</td><td>{{ r.motif or '—' }}</td></tr>
+        <tr><td>Type</td><td><span class="badge-statut badge-en_cours">{{ r.type_retour }}</span></td></tr>
+      </table>
+    </div>
+  </div>
+  <div class="col-lg-4">
+    <div class="card-premium">
+      <h6>Actions</h6>
+      <div class="d-grid gap-2">
+        {% if r.statut == 'en_attente' %}
+        <form method="POST" action="{{ url_for('retour_change_statut', rid=r.id) }}"><input type="hidden" name="statut" value="accepte"><button class="btn btn-success w-100">✅ Accepter (remettre en stock)</button></form>
+        <form method="POST" action="{{ url_for('retour_change_statut', rid=r.id) }}"><input type="hidden" name="statut" value="refuse"><button class="btn btn-light w-100">❌ Refuser</button></form>
+        {% endif %}
+        {% if r.statut == 'accepte' %}
+        <form method="POST" action="{{ url_for('retour_change_statut', rid=r.id) }}"><input type="hidden" name="statut" value="rembourse"><button class="btn btn-accent w-100">💸 Marquer remboursé</button></form>
+        {% endif %}
+        {% if current_user.is_admin() %}
+        <form method="POST" action="{{ url_for('retour_delete', rid=r.id) }}" onsubmit="return confirm('Supprimer ?')"><button class="btn btn-outline-danger w-100">🗑️ Supprimer</button></form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

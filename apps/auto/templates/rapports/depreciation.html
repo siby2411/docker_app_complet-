@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Dépréciation{% endblock %}
+{% block page_title %}📉 Dépréciation du parc{% endblock %}
+{% block content %}
+<div class="row g-3 mb-3">
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-box-seam"></i></div><div><div class="kpi-val">{{ kpi.total_valeur|money }}</div><div class="kpi-lbl">Valeur affichée</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-info-grad"><i class="bi bi-calculator"></i></div><div><div class="kpi-val">{{ kpi.valeur_corrigee|money }}</div><div class="kpi-lbl">Valeur corrigée</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-danger-grad"><i class="bi bi-graph-down-arrow"></i></div><div><div class="kpi-val">{{ kpi.perte_totale|money }}</div><div class="kpi-lbl">Perte potentielle ({{ kpi.taux_depr }}%)</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-gold-grad"><i class="bi bi-exclamation-triangle"></i></div><div><div class="kpi-val">{{ kpi.nb_immo_90j }}</div><div class="kpi-lbl">Immo. &gt; 90j</div></div></div></div>
+</div>
+
+<div class="card-premium">
+  <h6>Calcul : 6% de dépréciation par an, plafonné à 60%</h6>
+  <table class="table table-omega">
+    <thead><tr><th>Code</th><th>Véhicule</th><th>Année</th><th>Âge</th><th class="text-end">Valeur</th><th class="text-end">% depr.</th><th class="text-end">Valeur corrigée</th><th class="text-end">Perte</th></tr></thead>
+    <tbody>
+      {% for v in vehicules %}
+      <tr>
+        <td><a href="{{ url_for('vehicule_detail', vid=v.v.id) }}">{{ v.v.code }}</a></td>
+        <td>{{ v.v.marque_nom }} {{ v.v.modele_nom }}</td>
+        <td>{{ v.v.annee }}</td>
+        <td>{{ v.age }} ans</td>
+        <td class="text-end">{{ v.v.prix_vente|money }}</td>
+        <td class="text-end text-warning">{{ v.depr_pct }}%</td>
+        <td class="text-end fw-bold">{{ v.valeur_corrigee|money }}</td>
+        <td class="text-end text-danger">-{{ v.perte|money }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" class="text-center text-muted py-3">Aucun véhicule en stock</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

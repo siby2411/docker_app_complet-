@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Mon profil{% endblock %}
+{% block page_title %}👤 Mon profil{% endblock %}
+{% block content %}
+
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <form method="POST" class="card-premium">
+      <h5>Informations personnelles</h5>
+      <div class="row g-3">
+        <div class="col-md-6"><label class="form-label">Nom complet</label><input type="text" name="nom_complet" class="form-control" value="{{ u.nom_complet or '' }}"></div>
+        <div class="col-md-6"><label class="form-label">Email</label><input type="email" name="email" class="form-control" value="{{ u.email or '' }}"></div>
+        <div class="col-md-6"><label class="form-label">Téléphone</label><input type="text" name="telephone" class="form-control" value="{{ u.telephone or '' }}"></div>
+        <div class="col-12">
+          <hr>
+          <label class="form-label">Nouveau mot de passe (laisser vide pour ne pas changer)</label>
+          <input type="password" name="password" class="form-control">
+        </div>
+      </div>
+      <div class="mt-4 d-flex gap-2">
+        <button class="btn btn-accent"><i class="bi bi-check-lg"></i> Mettre à jour</button>
+        <a href="{{ url_for('dashboard') }}" class="btn btn-light">Retour</a>
+      </div>
+    </form>
+
+    <div class="card-premium">
+      <h6>Informations compte</h6>
+      <p><strong>Username :</strong> {{ u.username }}</p>
+      <p><strong>Rôle :</strong> <span class="badge-statut badge-en_cours">{{ u.role }}</span></p>
+      <p><strong>Point de vente :</strong> {{ u.point_vente or '—' }}</p>
+      <p><strong>Créé le :</strong> {{ u.created_at|dte }}</p>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

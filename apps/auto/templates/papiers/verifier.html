@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Vérification QR{% endblock %}
+{% block page_title %}🛡️ Vérification anti-fraude{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <div class="card-premium">
+      <h5>Vérifier un QR code</h5>
+      <p class="text-muted">Collez le payload JSON ou scannez avec le <a href="{{ url_for('papier_scan') }}">scanner mobile</a>.</p>
+      <form method="POST">
+        <textarea name="payload" class="form-control mb-3" rows="6" placeholder='{"app":"OMEGA_AUTO",...}' required></textarea>
+        <button class="btn btn-accent"><i class="bi bi-shield-check"></i> Vérifier</button>
+        <a href="{{ url_for('papier_scan') }}" class="btn btn-light"><i class="bi bi-qr-code-scan"></i> Scanner avec caméra</a>
+      </form>
+    </div>
+
+    {% if result %}
+    <div class="card-premium {% if result.ok %}border-success{% else %}border-danger{% endif %}" style="border:2px solid {% if result.ok %}#06d6a0{% else %}#ef476f{% endif %}">
+      <h4 class="{% if result.ok %}text-success{% else %}text-danger{% endif %}">{{ result.message }}</h4>
+      {% if data %}
+      <hr>
+      <pre style="background:#f5f7fa;padding:16px;border-radius:8px;font-size:12px;white-space:pre-wrap">{{ data|tojson(indent=2) }}</pre>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

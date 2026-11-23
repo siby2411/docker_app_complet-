@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Modifier' if piece else 'Nouvelle' }} pièce{% endblock %}
+{% block page_title %}{{ '✏️ Modifier' if piece else '➕ Nouvelle' }} pièce{% endblock %}
+{% block content %}
+
+<form method="POST" enctype="multipart/form-data" class="card-premium">
+  <h5>Identification</h5>
+  <div class="row g-3 mb-4">
+    <div class="col-md-3"><label class="form-label">SKU</label><input type="text" name="sku" class="form-control" value="{{ piece.sku if piece else '' }}" placeholder="Auto si vide"></div>
+    <div class="col-md-3"><label class="form-label">Code OEM</label><input type="text" name="code_oem" class="form-control" value="{{ piece.code_oem if piece else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Code-barres</label><input type="text" name="code_barre" class="form-control" value="{{ piece.code_barre if piece else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Catégorie</label>
+      <select name="categorie_id" class="form-select">
+        <option value="">—</option>
+        {% for c in categories %}<option value="{{ c.id }}" {% if piece and piece.categorie_id==c.id %}selected{% endif %}>{{ c.nom }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="col-12"><label class="form-label">Nom *</label><input type="text" name="nom" class="form-control" required value="{{ piece.nom if piece else '' }}"></div>
+    <div class="col-12"><label class="form-label">Description</label><textarea name="description" class="form-control" rows="2">{{ piece.description if piece else '' }}</textarea></div>
+  </div>
+
+  <h5>Caractéristiques</h5>
+  <div class="row g-3 mb-4">
+    <div class="col-md-3"><label class="form-label">Marque pièce</label><input type="text" name="marque_piece" class="form-control" value="{{ piece.marque_piece if piece else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Type</label><input type="text" name="type_piece" class="form-control" value="{{ piece.type_piece if piece else '' }}"></div>
+    <div class="col-md-2"><label class="form-label">Unité</label><input type="text" name="unite" class="form-control" value="{{ piece.unite if piece else 'pièce' }}"></div>
+    <div class="col-md-2"><label class="form-label">Qualité</label>
+      <select name="qualite" class="form-select">
+        <option value="standard" {% if piece and piece.qualite=='standard' %}selected{% endif %}>Standard</option>
+        <option value="premium" {% if piece and piece.qualite=='premium' %}selected{% endif %}>Premium</option>
+        <option value="équivalent" {% if piece and piece.qualite=='équivalent' %}selected{% endif %}>Équivalent</option>
+      </select>
+    </div>
+    <div class="col-md-2"><label class="form-label">Garantie (mois)</label><input type="number" name="garantie_mois" class="form-control" value="{{ piece.garantie_mois if piece else 0 }}"></div>
+    <div class="col-md-3"><label class="form-label">Pays d'origine</label><input type="text" name="pays_origine" class="form-control" value="{{ piece.pays_origine if piece else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Poids (kg)</label><input type="number" step="0.01" name="poids_kg" class="form-control" value="{{ piece.poids_kg if piece else 0 }}"></div>
+    <div class="col-md-3"><label class="form-label">Dimensions</label><input type="text" name="dimensions" class="form-control" value="{{ piece.dimensions if piece else '' }}"></div>
+  </div>
+
+  <h5>Prix & Marges</h5>
+  <div class="row g-3 mb-4">
+    <div class="col-md-3"><label class="form-label">Prix achat (FCFA)</label><input type="number" name="prix_achat" class="form-control" value="{{ piece.prix_achat if piece else 0 }}"></div>
+    <div class="col-md-3"><label class="form-label">Prix DÉTAIL</label><input type="number" name="prix_vente_detail" class="form-control" value="{{ piece.prix_vente_detail if piece else 0 }}"></div>
+    <div class="col-md-2"><label class="form-label">Prix GROS</label><input type="number" name="prix_vente_gros" class="form-control" value="{{ piece.prix_vente_gros if piece else 0 }}"></div>
+    <div class="col-md-2"><label class="form-label">Prix MÉCANO</label><input type="number" name="prix_vente_mecano" class="form-control" value="{{ piece.prix_vente_mecano if piece else 0 }}"></div>
+    <div class="col-md-2"><label class="form-label">TVA %</label><input type="number" name="tva_pct" class="form-control" value="{{ piece.tva_pct if piece else 18 }}"></div>
+  </div>
+
+  <h5>Stock & Alertes</h5>
+  <div class="row g-3 mb-4">
+    <div class="col-md-3"><label class="form-label">Stock min</label><input type="number" name="stock_min" class="form-control" value="{{ piece.stock_min if piece else 5 }}"></div>
+    <div class="col-md-3"><label class="form-label">Stock max</label><input type="number" name="stock_max" class="form-control" value="{{ piece.stock_max if piece else 100 }}"></div>
+    <div class="col-md-3"><label class="form-label">Seuil alerte</label><input type="number" name="stock_alerte" class="form-control" value="{{ piece.stock_alerte if piece else 10 }}"></div>
+    <div class="col-md-3"><label class="form-label">Emplacement</label><input type="text" name="emplacement" class="form-control" value="{{ piece.emplacement if piece else '' }}"></div>
+  </div>
+
+  {% if points_vente %}
+  <h5>Stock par point de vente</h5>
+  <div class="row g-3 mb-4">
+    {% for pv in points_vente %}
+    <div class="col-md-3">
+      <label class="form-label">{{ pv.nom }}</label>
+      <input type="number" name="stock_pv_{{ pv.id }}" class="form-control" value="{{ stock_actuel.get(pv.id, 0) if stock_actuel else 0 }}">
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <h5>Fournisseur & Photo</h5>
+  <div class="row g-3">
+    <div class="col-md-6"><label class="form-label">Fournisseur principal</label>
+      <select name="fournisseur_principal_id" class="form-select">
+        <option value="">—</option>
+        {% for f in fournisseurs %}<option value="{{ f.id }}" {% if piece and piece.fournisseur_principal_id==f.id %}selected{% endif %}>{{ f.nom }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="col-md-6"><label class="form-label">Photo principale</label><input type="file" name="photo_principale" class="form-control" accept="image/*"></div>
+    <div class="col-md-6"><label class="form-label">Statut</label>
+      <select name="statut" class="form-select">
+        <option value="disponible" {% if piece and piece.statut=='disponible' %}selected{% endif %}>Disponible</option>
+        <option value="indisponible" {% if piece and piece.statut=='indisponible' %}selected{% endif %}>Indisponible</option>
+        <option value="archive" {% if piece and piece.statut=='archive' %}selected{% endif %}>Archivé</option>
+      </select>
+    </div>
+    <div class="col-md-6"><label class="form-label">Tags</label><input type="text" name="tags" class="form-control" value="{{ piece.tags if piece else '' }}"></div>
+  </div>
+
+  <div class="mt-4 d-flex gap-2">
+    <button class="btn btn-accent"><i class="bi bi-check-lg"></i> Enregistrer</button>
+    <a href="{{ url_for('pieces_list') }}" class="btn btn-light">Annuler</a>
+  </div>
+</form>
+
+{% endblock %}

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}{{ agence.nom }}{% endblock %}
+{% block page_title %}🏢 {{ agence.nom }}{% endblock %}
+{% block content %}
+<div class="row g-3 mb-4">
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-car-front"></i></div><div><div class="kpi-val">{{ kpi.total }}</div><div class="kpi-lbl">Véhicules</div></div></div></div>
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-check-circle"></i></div><div><div class="kpi-val">{{ kpi.dispo }}</div><div class="kpi-lbl">Disponibles</div></div></div></div>
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-box-seam"></i></div><div><div class="kpi-val">{{ kpi.valeur|money }}</div><div class="kpi-lbl">Valeur stock</div></div></div></div>
+</div>
+
+<div class="card-premium">
+  <h5>Coordonnées</h5>
+  <div class="row">
+    <div class="col-md-6"><p><strong>Adresse :</strong> {{ agence.adresse or '—' }}</p><p><strong>Ville :</strong> {{ agence.ville or '—' }}</p><p><strong>Pays :</strong> {{ agence.pays or '—' }}</p></div>
+    <div class="col-md-6"><p><strong>Téléphone :</strong> {{ agence.telephone or '—' }}</p><p><strong>WhatsApp :</strong> {{ agence.whatsapp or '—' }}</p><p><strong>Horaires :</strong> {{ agence.horaires or '—' }}</p></div>
+  </div>
+</div>
+
+<div class="card-premium">
+  <h5>Véhicules de l'agence (50 derniers)</h5>
+  <div class="table-responsive">
+    <table class="table table-omega">
+      <thead><tr><th>Code</th><th>Marque / Modèle</th><th>Immat.</th><th>Prix</th><th>Statut</th><th></th></tr></thead>
+      <tbody>
+        {% for v in vehicules %}
+        <tr>
+          <td><a href="{{ url_for('vehicule_detail', vid=v.id) }}" class="fw-semibold text-decoration-none">{{ v.code }}</a></td>
+          <td>{{ v.marque_nom }} {{ v.modele_nom }}</td>
+          <td>{{ v.immatriculation }}</td>
+          <td class="fw-bold">{{ v.prix_vente|money }}</td>
+          <td><span class="badge-statut badge-{{ v.statut }}">{{ v.statut }}</span></td>
+          <td><a href="{{ url_for('vehicule_detail', vid=v.id) }}" class="btn btn-sm btn-light"><i class="bi bi-eye"></i></a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="text-center text-muted py-3">Aucun véhicule</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

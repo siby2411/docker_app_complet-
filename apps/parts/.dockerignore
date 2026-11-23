@@ -1,0 +1,79 @@
+# ═══════════════════════════════════════════════════════════
+# .dockerignore — OMEGA PARTS
+# Exclut tout sauf le code nécessaire au build
+# ═══════════════════════════════════════════════════════════
+
+# ─── Données (montées via volumes) ───
+data/
+uploads/
+instance/
+media/
+static/uploads/
+
+# ─── Environnements virtuels ───
+venv/
+env/
+.venv/
+ENV/
+
+# ─── Cache Python ───
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ─── Bases de données ───
+*.db
+*.sqlite
+*.sqlite3
+
+# ─── Logs ───
+*.log
+logs/
+
+# ─── IDE / OS ───
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ─── Git ───
+.git/
+.gitignore
+.gitattributes
+
+# ─── Docker ───
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# ─── Tests ───
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ─── Docs ───
+README*
+*.md
+docs/
+
+# ─── Sauvegardes ───
+*.bak
+*.tmp
+*.backup
+*~
+*.tar
+*.zip
+*.gz
+
+# ─── Scripts shell inutiles ───
+*.sh
+!entrypoint.sh

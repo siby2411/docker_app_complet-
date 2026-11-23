@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Contrat de vente {{ vente.numero }}</title>
+<style>
+body { font-family: 'Times New Roman', serif; max-width: 800px; margin: 30px auto; padding: 20px; color: #333; }
+h1 { text-align: center; color: #0a2540; border-bottom: 3px double #0a2540; padding-bottom: 10px; }
+.header { display: flex; justify-content: space-between; margin-bottom: 30px; }
+.header div { font-size: 13px; }
+.section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 8px; }
+.section h3 { margin-top: 0; color: #0a2540; font-size: 15px; }
+table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+table td { padding: 8px; border-bottom: 1px solid #eee; font-size: 14px; }
+table td:last-child { text-align: right; font-weight: bold; }
+.total { background: #f4b400; color: #000; }
+.signature { display: flex; justify-content: space-between; margin-top: 60px; }
+.signature div { width: 45%; text-align: center; border-top: 2px solid #333; padding-top: 8px; }
+.print-btn { position: fixed; top: 20px; right: 20px; background: #ff6b35; color: #fff; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-weight: 700; }
+@media print { .print-btn { display: none; } }
+</style>
+</head>
+<body>
+<button class="print-btn" onclick="window.print()">🖨️ Imprimer</button>
+
+<h1>CONTRAT DE VENTE AUTOMOBILE</h1>
+<p style="text-align:center">N° <strong>{{ vente.numero }}</strong> — Date : {{ vente.date_vente|dte }}</p>
+
+<div class="header">
+  <div><strong>OMEGA AUTO</strong><br>{{ vente.agence_nom }}<br>{{ vente.agence_adresse }}<br>Tél : {{ vente.agence_tel }}</div>
+  <div style="text-align:right"><strong>Vendeur</strong><br>{{ vente.vendeur_nom or '—' }}<br>Date : {{ vente.date_vente|dte }}</div>
+</div>
+
+<div class="section">
+  <h3>1. ACHETEUR</h3>
+  <p><strong>{{ vente.client_prenom or '' }} {{ vente.client_nom }}</strong><br>
+  Tél : {{ vente.client_tel }}<br>
+  Adresse : {{ vente.client_adresse or '—' }}<br>
+  Pièce d'identité : {{ vente.piece_identite or '—' }}</p>
+</div>
+
+<div class="section">
+  <h3>2. VÉHICULE</h3>
+  <table>
+    <tr><td>Marque / Modèle</td><td>{{ vente.marque_nom }} {{ vente.modele_nom }}</td></tr>
+    <tr><td>Code interne</td><td>{{ vente.veh_code }}</td></tr>
+    <tr><td>Immatriculation</td><td>{{ vente.immatriculation }}</td></tr>
+    <tr><td>VIN / Châssis</td><td>{{ vente.vin_chassis or '—' }}</td></tr>
+    <tr><td>Année</td><td>{{ vente.annee }}</td></tr>
+    <tr><td>Kilométrage</td><td>{{ vente.kilometrage|int }} km</td></tr>
+    <tr><td>Couleur</td><td>{{ vente.couleur or '—' }}</td></tr>
+  </table>
+</div>
+
+<div class="section">
+  <h3>3. CONDITIONS FINANCIÈRES</h3>
+  <table>
+    <tr><td>Prix de vente</td><td>{{ vente.prix_vente|money }}</td></tr>
+    <tr><td>Remise accordée</td><td>- {{ vente.remise|money }}</td></tr>
+    <tr class="total"><td><strong>TOTAL TTC</strong></td><td><strong>{{ vente.montant_ttc|money }}</strong></td></tr>
+    <tr><td>Acompte versé</td><td>{{ vente.acompte|money }}</td></tr>
+    <tr><td><strong>Reste à payer</strong></td><td><strong>{{ vente.reste_a_payer|money }}</strong></td></tr>
+    <tr><td>Mode de paiement</td><td>{{ vente.mode_paiement }}</td></tr>
+    <tr><td>Type</td><td>{{ vente.type_vente }}{% if vente.duree_credit_mois %} sur {{ vente.duree_credit_mois }} mois{% endif %}</td></tr>
+  </table>
+</div>
+
+<div class="section">
+  <h3>4. CLAUSES</h3>
+  <p style="font-size:13px;line-height:1.6">
+  Le vendeur cède et l'acheteur accepte le véhicule désigné ci-dessus dans l'état où il se trouve, sans garantie autre que celle prévue par la loi. Le transfert de propriété s'opère au paiement intégral du prix.<br><br>
+  L'acheteur déclare avoir examiné le véhicule et l'accepter en l'état. Les documents administratifs (carte grise, assurance) seront remis à l'acheteur lors de la livraison.<br><br>
+  Tout litige relatif au présent contrat sera de la compétence exclusive des tribunaux du lieu de signature.
+  </p>
+</div>
+
+<div class="signature">
+  <div>L'ACHETEUR</div>
+  <div>LE VENDEUR</div>
+</div>
+
+<p style="text-align:center;margin-top:40px;color:#888;font-size:11px">Document généré par OMEGA AUTO — {{ now.strftime('%d/%m/%Y %H:%M') }}</p>
+</body>
+</html>

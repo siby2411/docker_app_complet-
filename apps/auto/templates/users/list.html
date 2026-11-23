@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Utilisateurs{% endblock %}
+{% block page_title %}👤 Utilisateurs{% endblock %}
+{% block content %}
+<div class="card-premium">
+  <div class="d-flex justify-content-between mb-3">
+    <h5 class="mb-0">{{ users|length }} utilisateur(s)</h5>
+    <a href="{{ url_for('user_new') }}" class="btn btn-accent"><i class="bi bi-plus-lg"></i> Nouvel utilisateur</a>
+  </div>
+  <table class="table table-omega">
+    <thead><tr><th>Nom</th><th>Username</th><th>Rôle</th><th>Email</th><th>Tél</th><th>Ventes</th><th>Statut</th><th></th></tr></thead>
+    <tbody>
+      {% for u in users %}
+      <tr>
+        <td>{{ u.nom_complet or '—' }}</td>
+        <td><code>{{ u.username }}</code></td>
+        <td><span class="badge-statut badge-en_cours">{{ u.role }}</span></td>
+        <td>{{ u.email or '—' }}</td>
+        <td>{{ u.telephone or '—' }}</td>
+        <td><span class="badge-statut badge-disponible">{{ u.nb_ventes }}</span></td>
+        <td><span class="badge-statut badge-{{ 'disponible' if u.actif else 'annulee' }}">{{ 'actif' if u.actif else 'inactif' }}</span></td>
+        <td class="text-end">
+          <a href="{{ url_for('user_edit', uid=u.id) }}" class="btn btn-sm btn-light"><i class="bi bi-pencil"></i></a>
+          {% if u.id != current_user.id %}
+          <form method="POST" action="{{ url_for('user_delete', uid=u.id) }}" class="d-inline" onsubmit="return confirm('Supprimer ?')">
+            <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Contrat de location {{ loc.numero }}</title>
+<style>
+body { font-family: 'Times New Roman', serif; max-width: 800px; margin: 30px auto; padding: 20px; color: #333; }
+h1 { text-align: center; color: #0a2540; border-bottom: 3px double #0a2540; padding-bottom: 10px; }
+.header { display: flex; justify-content: space-between; margin-bottom: 30px; font-size: 13px; }
+.section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 8px; }
+.section h3 { margin-top: 0; color: #0a2540; font-size: 15px; }
+table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+table td { padding: 8px; border-bottom: 1px solid #eee; font-size: 13px; }
+table td:last-child { text-align: right; font-weight: bold; }
+.total { background: #ff6b35; color: #fff; }
+.signature { display: flex; justify-content: space-between; margin-top: 60px; }
+.signature div { width: 45%; text-align: center; border-top: 2px solid #333; padding-top: 8px; }
+.print-btn { position: fixed; top: 20px; right: 20px; background: #ff6b35; color: #fff; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-weight: 700; }
+@media print { .print-btn { display: none; } }
+</style>
+</head>
+<body>
+<button class="print-btn" onclick="window.print()">🖨️ Imprimer</button>
+
+<h1>CONTRAT DE LOCATION DE VÉHICULE</h1>
+<p style="text-align:center">N° <strong>{{ loc.numero }}</strong></p>
+
+<div class="header">
+  <div><strong>OMEGA AUTO</strong><br>{{ loc.agence_nom }}<br>{{ loc.agence_adresse }}<br>Tél : {{ loc.agence_tel }}</div>
+  <div style="text-align:right">Date : {{ loc.date_debut|dte }}</div>
+</div>
+
+<div class="section">
+  <h3>1. LOCATAIRE</h3>
+  <p><strong>{{ loc.client_prenom or '' }} {{ loc.client_nom }}</strong><br>
+  Tél : {{ loc.client_tel }}<br>
+  Adresse : {{ loc.client_adresse or '—' }}<br>
+  Pièce d'identité : {{ loc.piece_identite or '—' }}<br>
+  Permis de conduire : {{ loc.permis_conduire or '—' }}</p>
+</div>
+
+<div class="section">
+  <h3>2. VÉHICULE LOUÉ</h3>
+  <table>
+    <tr><td>Marque / Modèle</td><td>{{ loc.marque_nom }} {{ loc.modele_nom }}</td></tr>
+    <tr><td>Immatriculation</td><td>{{ loc.immatriculation }}</td></tr>
+    <tr><td>VIN / Châssis</td><td>{{ loc.vin_chassis or '—' }}</td></tr>
+    <tr><td>Année</td><td>{{ loc.annee }}</td></tr>
+    <tr><td>Couleur</td><td>{{ loc.couleur or '—' }}</td></tr>
+    <tr><td>Km au départ</td><td>{{ loc.km_depart|int }} km</td></tr>
+    <tr><td>Carburant au départ</td><td>{{ loc.carburant_depart or '—' }}</td></tr>
+  </table>
+</div>
+
+<div class="section">
+  <h3>3. DURÉE & CONDITIONS FINANCIÈRES</h3>
+  <table>
+    <tr><td>Date de début</td><td>{{ loc.date_debut|dte }}</td></tr>
+    <tr><td>Date de fin prévue</td><td>{{ loc.date_fin_prevue|dte }}</td></tr>
+    <tr><td>Durée</td><td>{{ loc.duree_jours }} jour(s)</td></tr>
+    <tr><td>Tarif journalier</td><td>{{ loc.tarif_journalier|money }}</td></tr>
+    <tr><td>Montant HT</td><td>{{ loc.montant_ht|money }}</td></tr>
+    <tr><td>Caution</td><td>{{ loc.caution|money }}</td></tr>
+    <tr><td>Frais supplémentaires</td><td>{{ loc.frais_supplementaires|money }}</td></tr>
+    <tr class="total"><td><strong>TOTAL</strong></td><td><strong>{{ loc.montant_total|money }}</strong></td></tr>
+  </table>
+</div>
+
+<div class="section">
+  <h3>4. CLAUSES</h3>
+  <p style="font-size:12px;line-height:1.6">
+  Le locataire s'engage à :<br>
+  • Utiliser le véhicule conformément au code de la route en vigueur.<br>
+  • Ne pas sous-louer ou prêter le véhicule à un tiers non autorisé.<br>
+  • Restituer le véhicule dans l'état où il lui a été confié, avec le même niveau de carburant.<br>
+  • Signaler immédiatement tout accident ou dommage.<br>
+  • Respecter une limite de 250 km/jour inclus. Au-delà, des frais de 100 FCFA/km seront facturés.<br><br>
+  La caution sera restituée après vérification de l'état du véhicule. Toute dégradation sera déduite de la caution ou facturée en supplément.<br><br>
+  En cas de retard de restitution, une pénalité équivalente au tarif journalier sera facturée par jour de retard.
+  </p>
+</div>
+
+<div class="signature">
+  <div>LE LOCATAIRE</div>
+  <div>LE BAILLEUR</div>
+</div>
+
+<p style="text-align:center;margin-top:40px;color:#888;font-size:11px">Document généré par OMEGA AUTO — {{ now.strftime('%d/%m/%Y %H:%M') }}</p>
+</body>
+</html>

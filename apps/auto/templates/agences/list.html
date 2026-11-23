@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Agences{% endblock %}
+{% block page_title %}🏢 Agences & Concessions{% endblock %}
+{% block content %}
+<div class="card-premium">
+  <div class="d-flex flex-wrap gap-2 align-items-center mb-3">
+    <form class="d-flex gap-2 flex-grow-1" method="GET">
+      <input type="search" name="q" class="form-control" placeholder="Rechercher nom, ville, téléphone…" value="{{ q }}">
+      <select name="statut" class="form-select" style="max-width:160px">
+        <option value="">Tous statuts</option>
+        <option value="actif" {% if statut=='actif' %}selected{% endif %}>Actif</option>
+        <option value="inactif" {% if statut=='inactif' %}selected{% endif %}>Inactif</option>
+      </select>
+      <button class="btn btn-primary-omega"><i class="bi bi-search"></i></button>
+    </form>
+    {% if current_user.is_admin() %}
+    <a href="{{ url_for('agence_new') }}" class="btn btn-accent"><i class="bi bi-plus-lg"></i> Nouvelle agence</a>
+    {% endif %}
+  </div>
+
+  <div class="table-responsive">
+    <table class="table table-omega">
+      <thead><tr><th>Nom</th><th>Ville</th><th>Téléphone</th><th>Véhicules</th><th>Dispo</th><th>Statut</th><th></th></tr></thead>
+      <tbody>
+        {% for a in agences %}
+        <tr>
+          <td><a href="{{ url_for('agence_detail', aid=a.id) }}" class="fw-semibold text-decoration-none" style="color:#0a2540">{{ a.nom }}</a><br><small class="text-muted">{{ a.type or '' }}</small></td>
+          <td>{{ a.ville or '—' }}</td>
+          <td>{{ a.telephone or '—' }}</td>
+          <td><span class="badge-statut badge-disponible">{{ a.nb_vehicules }}</span></td>
+          <td><span class="badge-statut badge-en_cours">{{ a.nb_dispo }}</span></td>
+          <td><span class="badge-statut badge-{{ 'disponible' if a.statut=='actif' else 'annulee' }}">{{ a.statut }}</span></td>
+          <td class="text-end">
+            <a href="{{ url_for('agence_detail', aid=a.id) }}" class="btn btn-sm btn-light"><i class="bi bi-eye"></i></a>
+            {% if current_user.is_admin() %}
+            <a href="{{ url_for('agence_edit', aid=a.id) }}" class="btn btn-sm btn-light"><i class="bi bi-pencil"></i></a>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="text-center text-muted py-4">Aucune agence</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

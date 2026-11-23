@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Pièces{% endblock %}
+{% block page_title %}🔧 Catalogue Pièces ({{ kpi.total }}){% endblock %}
+{% block content %}
+
+<div class="row g-3 mb-4">
+  <div class="col-6 col-lg-3"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-gear-wide-connected"></i></div><div><div class="kpi-val">{{ kpi.total }}</div><div class="kpi-lbl">Références</div></div></div></div>
+  <div class="col-6 col-lg-3"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-check-circle"></i></div><div><div class="kpi-val">{{ kpi.disponibles }}</div><div class="kpi-lbl">Disponibles</div></div></div></div>
+  <div class="col-6 col-lg-3"><div class="kpi-card"><div class="icon bg-gold-grad"><i class="bi bi-exclamation-triangle"></i></div><div><div class="kpi-val">{{ kpi.alertes }}</div><div class="kpi-lbl">Alertes</div></div></div></div>
+  <div class="col-6 col-lg-3"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-cash-stack"></i></div><div><div class="kpi-val">{{ kpi.valeur_stock|money_short }}</div><div class="kpi-lbl">Valeur stock</div></div></div></div>
+</div>
+
+<div class="card-premium">
+  <form method="GET" class="row g-2 mb-3">
+    <div class="col-md-3"><input type="search" name="q" class="form-control" placeholder="SKU, OEM, nom…" value="{{ q }}"></div>
+    <div class="col-md-2"><select name="categorie_id" class="form-select">
+      <option value="">Catégories</option>
+      {% for c in categories %}<option value="{{ c.id }}" {% if categorie_id==c.id %}selected{% endif %}>{{ c.nom }}</option>{% endfor %}
+    </select></div>
+    <div class="col-md-2"><select name="marque" class="form-select">
+      <option value="">Marque</option>
+      {% for m in marques_pieces %}<option value="{{ m }}" {% if marque==m %}selected{% endif %}>{{ m }}</option>{% endfor %}
+    </select></div>
+    <div class="col-md-2"><select name="alerte" class="form-select">
+      <option value="">Tout stock</option>
+      <option value="1" {% if alerte=='1' %}selected{% endif %}>⚠️ Alertes</option>
+    </select></div>
+    <div class="col-md-2 d-flex gap-2">
+      <button class="btn btn-primary-omega flex-grow-1"><i class="bi bi-funnel"></i></button>
+      <a href="{{ url_for('pieces_list') }}" class="btn btn-light"><i class="bi bi-x"></i></a>
+    </div>
+  </form>
+
+  <div class="text-end mb-3">
+    <a href="{{ url_for('piece_new') }}" class="btn btn-accent"><i class="bi bi-plus-lg"></i> Nouvelle pièce</a>
+  </div>
+
+  <div class="row g-3">
+    {% for p in pieces %}
+    <div class="col-md-6 col-lg-4">
+      <div class="card" style="border-radius:12px;overflow:hidden;border:1px solid #f0f4f8">
+        <a href="{{ url_for('piece_detail', pid=p.id) }}" class="text-decoration-none text-dark">
+          <div style="height:140px;background:#f5f7fa;display:flex;align-items:center;justify-content:center;overflow:hidden">
+            {% if p.photo_principale %}
+            <img src="{{ url_for('uploaded_file', subpath='parts', filename=p.photo_principale) }}" style="width:100%;height:100%;object-fit:cover">
+            {% else %}
+            <i class="bi bi-gear" style="font-size:60px;color:#cbd5e1"></i>
+            {% endif %}
+          </div>
+          <div style="padding:12px">
+            <div class="d-flex justify-content-between mb-1">
+              <code style="font-size:10px;color:#0a2540">{{ p.sku }}</code>
+              <span class="badge-statut badge-{{ p.qualite }}">{{ p.qualite }}</span>
+            </div>
+            <div style="font-weight:700;color:#0a2540;font-size:13px">{{ p.nom[:45] }}</div>
+            <div class="text-muted" style="font-size:11px">{% if p.code_oem %}OEM: {{ p.code_oem }}{% endif %}{% if p.marque_piece %} · {{ p.marque_piece }}{% endif %}</div>
+            <div class="d-flex justify-content-between align-items-center mt-2">
+              <div style="font-weight:800;color:#ff6b35;font-size:15px">{{ p.prix_vente_detail|money_short }}</div>
+              <div>
+                {% if p.stock_total == 0 %}<span class="badge-statut badge-rupture">Rupture</span>
+                {% elif p.stock_total <= p.stock_alerte %}<span class="badge-statut badge-alerte">{{ p.stock_total }}</span>
+                {% else %}<span class="badge-statut badge-disponible">{{ p.stock_total }}</span>{% endif %}
+              </div>
+            </div>
+          </div>
+        </a>
+      </div>
+    </div>
+    {% else %}
+    <div class="col-12 text-center text-muted py-5">
+      <i class="bi bi-inbox" style="font-size:48px"></i>
+      <p class="mt-3">Aucune pièce trouvée</p>
+      <a href="{{ url_for('piece_new') }}" class="btn btn-accent">Ajouter la première pièce</a>
+    </div>
+    {% endfor %}
+  </div>
+
+  {% if pages > 1 %}
+  <nav class="mt-4"><ul class="pagination justify-content-center mb-0">
+    {% if page > 1 %}<li class="page-item"><a class="page-link" href="?page={{ page-1 }}&q={{ q }}">«</a></li>{% endif %}
+    {% for p in range(1, pages+1) %}
+      {% if p == page or (p >= page-2 and p <= page+2) or p == 1 or p == pages %}
+      <li class="page-item {% if p==page %}active{% endif %}"><a class="page-link" href="?page={{ p }}&q={{ q }}">{{ p }}</a></li>
+      {% endif %}
+    {% endfor %}
+    {% if page < pages %}<li class="page-item"><a class="page-link" href="?page={{ page+1 }}&q={{ q }}">»</a></li>{% endif %}
+  </ul></nav>
+  {% endif %}
+</div>
+
+{% endblock %}

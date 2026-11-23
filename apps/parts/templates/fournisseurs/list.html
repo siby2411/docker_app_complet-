@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Fournisseurs{% endblock %}
+{% block page_title %}🏭 Fournisseurs{% endblock %}
+{% block content %}
+
+<div class="row g-3 mb-4">
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-truck"></i></div><div><div class="kpi-val">{{ kpi.total }}</div><div class="kpi-lbl">Fournisseurs</div></div></div></div>
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-check-circle"></i></div><div><div class="kpi-val">{{ kpi.actifs }}</div><div class="kpi-lbl">Actifs</div></div></div></div>
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-info-grad"><i class="bi bi-gear"></i></div><div><div class="kpi-val">{{ kpi.pieces_fournies }}</div><div class="kpi-lbl">Avec pièces</div></div></div></div>
+</div>
+
+<div class="card-premium">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h5 class="mb-0">{{ fournisseurs|length }} fournisseur(s)</h5>
+    <a href="{{ url_for('fournisseur_new') }}" class="btn btn-accent"><i class="bi bi-plus-lg"></i> Nouveau</a>
+  </div>
+
+  <form method="GET" class="row g-2 mb-3">
+    <div class="col-md-4"><input type="search" name="q" class="form-control" placeholder="Nom, téléphone, email…" value="{{ q }}"></div>
+    <div class="col-md-2"><select name="type" class="form-select">
+      <option value="">Type</option>
+      {% for t in ['grossiste','importateur','fabricant','détaillant'] %}
+      <option value="{{ t }}" {% if type_f==t %}selected{% endif %}>{{ t }}</option>
+      {% endfor %}
+    </select></div>
+    <div class="col-md-2"><select name="pays" class="form-select">
+      <option value="">Pays</option>
+      {% for p in pays_list %}<option value="{{ p }}" {% if pays==p %}selected{% endif %}>{{ p }}</option>{% endfor %}
+    </select></div>
+    <div class="col-md-2"><button class="btn btn-primary-omega w-100"><i class="bi bi-funnel"></i></button></div>
+  </form>
+
+  <div class="table-responsive">
+    <table class="table table-omega">
+      <thead><tr><th>Nom</th><th>Type</th><th>Pays/Ville</th><th>Téléphone</th><th>Délai</th><th>Pièces</th><th></th></tr></thead>
+      <tbody>
+        {% for f in fournisseurs %}
+        <tr>
+          <td><a href="{{ url_for('fournisseur_detail', fid=f.id) }}" style="text-decoration:none;font-weight:600;color:#0a2540">{{ f.nom }}</a></td>
+          <td><span class="badge-statut badge-en_cours">{{ f.type }}</span></td>
+          <td>{{ f.pays or '—' }}{% if f.ville %} / {{ f.ville }}{% endif %}</td>
+          <td>{{ f.telephone or '—' }}</td>
+          <td>{{ f.delai_livraison_jours }} j</td>
+          <td><span class="badge-statut badge-disponible">{{ f.nb_pieces }}</span></td>
+          <td><a href="{{ url_for('fournisseur_detail', fid=f.id) }}" class="btn btn-sm btn-light"><i class="bi bi-eye"></i></a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="text-center text-muted py-4">Aucun fournisseur</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

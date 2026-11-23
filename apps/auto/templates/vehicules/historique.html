@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Historique {{ v.code }}{% endblock %}
+{% block page_title %}📜 Historique {{ v.code }} — {{ v.marque_nom }} {{ v.modele_nom }}{% endblock %}
+{% block content %}
+<div class="card-premium no-print">
+  <button onclick="window.print()" class="btn btn-accent"><i class="bi bi-printer"></i> Imprimer</button>
+  <a href="{{ url_for('vehicule_detail', vid=v.id) }}" class="btn btn-light">Retour</a>
+</div>
+
+<div class="card-premium">
+  <h5>🚗 Véhicule</h5>
+  <div class="row">
+    <div class="col-md-6">
+      <p><strong>Code :</strong> {{ v.code }}</p>
+      <p><strong>Marque / Modèle :</strong> {{ v.marque_nom }} {{ v.modele_nom }}</p>
+      <p><strong>Année :</strong> {{ v.annee }}</p>
+      <p><strong>Km actuel :</strong> {{ v.kilometrage|int }} km</p>
+    </div>
+    <div class="col-md-6">
+      <p><strong>Immatriculation :</strong> {{ v.immatriculation }}</p>
+      <p><strong>VIN :</strong> {{ v.vin_chassis or '—' }}</p>
+      <p><strong>Couleur :</strong> {{ v.couleur }}</p>
+      <p><strong>Coût entretiens total :</strong> <strong class="text-danger">{{ total_cout|money }}</strong></p>
+    </div>
+  </div>
+</div>
+
+<div class="card-premium">
+  <h5>🔧 Entretiens ({{ entretiens|length }})</h5>
+  <table class="table table-omega">
+    <thead><tr><th>Date</th><th>Type</th><th>Description</th><th>Km</th><th>Coût</th><th>Garage</th></tr></thead>
+    <tbody>
+      {% for e in entretiens %}
+      <tr>
+        <td>{{ e.date_entretien|dte }}</td>
+        <td>{{ e.type }}</td>
+        <td>{{ e.description }}</td>
+        <td>{{ e.kilometrage|int }} km</td>
+        <td>{{ e.cout|money }}</td>
+        <td>{{ e.garage or '—' }}</td>
+      </tr>
+      {% else %}<tr><td colspan="6" class="text-muted text-center py-3">Aucun entretien enregistré</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card-premium">
+  <h5>📄 Papiers ({{ papiers|length }})</h5>
+  <table class="table table-omega">
+    <thead><tr><th>Type</th><th>Numéro</th><th>Émission</th><th>Expiration</th><th>Statut</th></tr></thead>
+    <tbody>
+      {% for p in papiers %}
+      <tr>
+        <td>{{ p.type }}</td>
+        <td>{{ p.numero or '—' }}</td>
+        <td>{{ p.date_emission|dte }}</td>
+        <td>{{ p.date_expiration|dte }}</td>
+        <td><span class="badge-statut badge-{{ p.statut }}">{{ p.statut }}</span></td>
+      </tr>
+      {% else %}<tr><td colspan="5" class="text-muted text-center py-3">Aucun papier</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

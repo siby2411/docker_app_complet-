@@ -1,0 +1,36 @@
+FROM python:3.10-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONFAULTHANDLER=1
+ENV PIP_NO_CACHE_DIR=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_DEFAULT_TIMEOUT=300
+ENV PIP_RETRIES=5
+
+WORKDIR /app
+
+COPY requirements.txt .
+
+RUN pip install --upgrade pip setuptools wheel --quiet && pip install -r requirements.txt --timeout 300 --retries 5
+
+COPY main.py /app/
+COPY auth.py /app/
+COPY crud.py /app/
+COPY rapports.py /app/
+COPY portail.py /app/
+COPY stock.py /app/
+COPY compta.py /app/
+COPY pdf_gen.py /app/
+COPY labo.py /app/
+COPY imagerie.py /app/
+COPY notifications.py /app/
+COPY init_db.py /app/
+COPY init_db_v2.py /app/
+COPY entrypoint.sh /app/
+
+RUN chmod +x /app/entrypoint.sh && mkdir -p /app/data && chmod 755 /app/data
+
+EXPOSE 8000
+
+ENTRYPOINT ["/app/entrypoint.sh"]

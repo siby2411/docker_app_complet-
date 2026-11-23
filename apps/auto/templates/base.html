@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}OMEGA AUTO{% endblock %} · Gestion Parc Automobile</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+<style>
+:root {
+  --omega-primary: #0a2540;
+  --omega-accent: #ff6b35;
+  --omega-gold: #f4b400;
+  --omega-success: #06d6a0;
+  --omega-danger: #ef476f;
+  --omega-warning: #ffd166;
+  --omega-dark: #1a1a2e;
+  --omega-bg: #f5f7fa;
+}
+* { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; }
+body { background: var(--omega-bg); }
+.sidebar {
+  position: fixed; top: 0; left: 0; height: 100vh; width: 260px;
+  background: linear-gradient(180deg, var(--omega-primary) 0%, var(--omega-dark) 100%);
+  color: #fff; overflow-y: auto; z-index: 1000;
+  transition: transform .3s;
+  box-shadow: 4px 0 20px rgba(0,0,0,.1);
+}
+.sidebar .brand {
+  padding: 20px; text-align: center;
+  border-bottom: 1px solid rgba(255,255,255,.1);
+}
+.sidebar .brand h3 {
+  margin: 0; font-weight: 800;
+  background: linear-gradient(135deg, #fff, var(--omega-gold));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  letter-spacing: 1px;
+}
+.sidebar .brand small { color: var(--omega-gold); font-size: 11px; letter-spacing: 2px; }
+.sidebar nav { padding: 12px 0; }
+.sidebar nav a {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 20px; color: #b8c4d4; text-decoration: none;
+  font-size: 14px; transition: all .2s;
+  border-left: 3px solid transparent;
+}
+.sidebar nav a:hover { background: rgba(255,255,255,.05); color: #fff; border-left-color: var(--omega-accent); }
+.sidebar nav a.active { background: rgba(255,107,53,.15); color: #fff; border-left-color: var(--omega-accent); font-weight: 600; }
+.sidebar nav .section {
+  padding: 14px 20px 6px; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 1.5px; color: #6c7a8c;
+}
+.sidebar nav a .badge {
+  margin-left: auto; font-size: 10px;
+  background: var(--omega-accent); color: #fff;
+}
+.main-content { margin-left: 260px; min-height: 100vh; }
+.topbar {
+  background: #fff; padding: 14px 28px;
+  box-shadow: 0 2px 12px rgba(0,0,0,.06);
+  display: flex; align-items: center; gap: 16px;
+  position: sticky; top: 0; z-index: 999;
+}
+.topbar .page-title { font-size: 20px; font-weight: 700; color: var(--omega-primary); margin: 0; }
+.topbar .search-box { flex: 1; max-width: 400px; }
+.topbar .search-box input {
+  border: 1px solid #e0e6ed; border-radius: 24px; padding: 8px 16px 8px 40px;
+  background: #f5f7fa url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="%23888" viewBox="0 0 16 16"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/></svg>') no-repeat 14px center;
+  width: 100%;
+}
+.topbar .user-menu { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.topbar .user-menu .avatar {
+  width: 40px; height: 40px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--omega-accent), var(--omega-gold));
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 700;
+}
+.content-wrapper { padding: 24px 28px 60px; }
+.card-premium {
+  background: #fff; border: none; border-radius: 16px;
+  box-shadow: 0 4px 24px rgba(10,37,64,.06);
+  padding: 22px; margin-bottom: 20px;
+}
+.kpi-card {
+  background: #fff; border-radius: 16px; padding: 20px;
+  box-shadow: 0 4px 24px rgba(10,37,64,.06);
+  display: flex; align-items: center; gap: 16px;
+  transition: transform .2s;
+  height: 100%;
+}
+.kpi-card:hover { transform: translateY(-3px); }
+.kpi-card .icon {
+  width: 56px; height: 56px; border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px; color: #fff; flex-shrink: 0;
+}
+.kpi-card .kpi-val { font-size: 24px; font-weight: 800; color: var(--omega-primary); line-height: 1; }
+.kpi-card .kpi-lbl { font-size: 12px; color: #8896aa; text-transform: uppercase; letter-spacing: .8px; margin-top: 4px; }
+.bg-primary-grad { background: linear-gradient(135deg, #0a2540, #1a3a5c); }
+.bg-accent-grad { background: linear-gradient(135deg, #ff6b35, #ff8e5e); }
+.bg-gold-grad { background: linear-gradient(135deg, #f4b400, #ffd166); }
+.bg-success-grad { background: linear-gradient(135deg, #06d6a0, #4cd7b5); }
+.bg-danger-grad { background: linear-gradient(135deg, #ef476f, #f57492); }
+.bg-info-grad { background: linear-gradient(135deg, #118ab2, #4db8d9); }
+.btn-accent {
+  background: linear-gradient(135deg, var(--omega-accent), #ff8e5e);
+  border: none; color: #fff; font-weight: 600;
+  border-radius: 10px; padding: 9px 20px;
+  transition: all .2s;
+}
+.btn-accent:hover { color: #fff; transform: translateY(-1px); box-shadow: 0 6px 16px rgba(255,107,53,.35); }
+.btn-primary-omega {
+  background: var(--omega-primary); color: #fff;
+  border-radius: 10px; font-weight: 600; border: none;
+  padding: 9px 20px;
+}
+.btn-primary-omega:hover { background: #0d3055; color: #fff; }
+.badge-statut {
+  padding: 5px 12px; border-radius: 20px;
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .5px;
+}
+.badge-disponible, .badge-valide, .badge-livree, .badge-terminee, .badge-dedouane { background: #d4f7ec; color: #067a52; }
+.badge-vendu, .badge-expire, .badge-annulee { background: #fce4e8; color: #b12a4b; }
+.badge-en_location, .badge-en_cours, .badge-acompte, .badge-reservee { background: #d6ecf5; color: #0b5674; }
+.badge-devis, .badge-bientot { background: #fff3cd; color: #856404; }
+.badge-critique { background: #ffe0b3; color: #b35c00; }
+.badge-neuf, .badge-occasion { background: #e2e8f0; color: #475569; }
+table.table-omega { background: #fff; border-radius: 12px; overflow: hidden; }
+table.table-omega thead { background: #f5f7fa; }
+table.table-omega thead th {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
+  color: #64748b; font-weight: 700; padding: 14px 12px; border: none;
+}
+table.table-omega tbody td { padding: 14px 12px; border-bottom: 1px solid #f0f4f8; vertical-align: middle; }
+table.table-omega tbody tr:hover { background: #fafbfd; }
+.vehicule-card {
+  background: #fff; border-radius: 16px; overflow: hidden;
+  box-shadow: 0 4px 20px rgba(10,37,64,.08);
+  transition: transform .25s;
+}
+.vehicule-card:hover { transform: translateY(-5px); box-shadow: 0 12px 32px rgba(10,37,64,.15); }
+.vehicule-card .img-wrap {
+  height: 180px; background: #f5f7fa;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+}
+.vehicule-card .img-wrap img { width: 100%; height: 100%; object-fit: cover; }
+.vehicule-card .price { font-size: 18px; font-weight: 800; color: var(--omega-accent); }
+.flash-container { position: fixed; top: 80px; right: 24px; z-index: 1100; max-width: 400px; }
+.flash-container .alert { border-radius: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.15); }
+@media (max-width: 991px) {
+  .sidebar { transform: translateX(-100%); }
+  .sidebar.open { transform: translateX(0); }
+  .main-content { margin-left: 0; }
+  .content-wrapper { padding: 16px; }
+}
+@media print {
+  .sidebar, .topbar, .no-print { display: none !important; }
+  .main-content { margin-left: 0; }
+}
+</style>
+{% block extra_css %}{% endblock %}
+</head>
+<body>
+
+<aside class="sidebar" id="sidebar">
+  <div class="brand">
+    <h3>🚗 OMEGA AUTO</h3>
+    <small>VENTE · LOCATION · CEDEAO</small>
+  </div>
+  <nav>
+    <div class="section">Principal</div>
+    <a href="{{ url_for('dashboard') }}" class="{% if request.endpoint=='dashboard' %}active{% endif %}">
+      <i class="bi bi-speedometer2"></i> Tableau de bord
+    </a>
+    <a href="{{ url_for('recherche_globale') }}" class="{% if request.endpoint=='recherche_globale' %}active{% endif %}">
+      <i class="bi bi-search"></i> Recherche
+    </a>
+
+    <div class="section">Véhicules</div>
+    <a href="{{ url_for('vehicules_list') }}" class="{% if 'vehicule' in (request.endpoint or "") %}active{% endif %}">
+      <i class="bi bi-car-front-fill"></i> Véhicules
+      <span class="badge">{{ stats_sidebar.vehicules_total }}</span>
+    </a>
+    <a href="{{ url_for('marques_list') }}" class="{% if 'marque' in (request.endpoint or "") %}active{% endif %}">
+      <i class="bi bi-bookmark-star"></i> Marques
+    </a>
+    <a href="{{ url_for('modeles_list') }}" class="{% if 'modele' in (request.endpoint or "") %}active{% endif %}">
+      <i class="bi bi-list-ul"></i> Modèles
+    </a>
+    <a href="{{ url_for('agences_list') }}" class="{% if 'agence' in (request.endpoint or "") %}active{% endif %}">
+      <i class="bi bi-shop"></i> Agences
+    </a>
+
+    <div class="section">Commercial</div>
+    <a href="{{ url_for('clients_list') }}" class="{% if 'client' in (request.endpoint or "") %}active{% endif %}">
+      <i class="bi bi-people-fill"></i> Clients
+      <span class="badge">{{ stats_sidebar.clients_total }}</span>
+    </a>
+    <a href="{{ url_for('ventes_list') }}" class="{% if 'vente' in (request.endpoint or "") %}active{% endif %}">
+      <i class="bi bi-cash-coin"></i> Ventes
+      <span class="badge">{{ stats_sidebar.ventes_mois }}</span>
+    </a>
+    <a href="{{ url_for('locations_list') }}" class="{% if 'location' in (request.endpoint or "") %}active{% endif %}">
+      <i class="bi bi-key-fill"></i> Locations
+      <span class="badge">{{ stats_sidebar.locations_actives }}</span>
+    </a>
+    <a href="{{ url_for('paiements_list') }}" class="{% if 'paiement' in (request.endpoint or "") %}active{% endif %}">
+      <i class="bi bi-credit-card-2-front"></i> Paiements
+    </a>
+
+    <div class="section">Gestion</div>
+    <a href="{{ url_for('papiers_list') }}" class="{% if 'papier' in (request.endpoint or "") and 'alertes' not in (request.endpoint or "") %}active{% endif %}">
+      <i class="bi bi-file-earmark-text"></i> Papiers
+      {% if stats_sidebar.alertes_papiers > 0 %}
+      <span class="badge" style="background:var(--omega-danger)">{{ stats_sidebar.alertes_papiers }}</span>
+      {% endif %}
+    </a>
+    <a href="{{ url_for('papiers_alertes') }}" class="{% if request.endpoint=='papiers_alertes' %}active{% endif %}">
+      <i class="bi bi-exclamation-triangle"></i> Alertes
+    </a>
+    <a href="{{ url_for('entretiens_list') }}" class="{% if 'entretien' in (request.endpoint or "") %}active{% endif %}">
+      <i class="bi bi-tools"></i> Entretiens
+    </a>
+    <a href="{{ url_for('douane_list') }}" class="{% if 'douane' in (request.endpoint or "") %}active{% endif %}">
+      <i class="bi bi-globe-americas"></i> Douane
+    </a>
+    <a href="{{ url_for('whatsapp_dashboard') }}" class="{% if 'whatsapp' in (request.endpoint or "") %}active{% endif %}">
+      <i class="bi bi-whatsapp"></i> WhatsApp
+    </a>
+    <a href="{{ url_for('anti_fraude_dashboard') }}" class="{% if 'anti_fraude' in (request.endpoint or "") %}active{% endif %}">
+      <i class="bi bi-shield-check"></i> Anti-fraude
+    </a>
+
+    <div class="section">Analyse</div>
+    <a href="{{ url_for('rapports_home') }}" class="{% if 'rapport' in (request.endpoint or "") %}active{% endif %}">
+      <i class="bi bi-graph-up-arrow"></i> Rapports
+    </a>
+
+    {% if current_user.is_admin() %}
+    <div class="section">Admin</div>
+    <a href="{{ url_for('users_list') }}" class="{% if 'user' in (request.endpoint or "") and request.endpoint!='profil' %}active{% endif %}">
+      <i class="bi bi-person-badge"></i> Utilisateurs
+    </a>
+    <a href="{{ url_for('audit_list') }}" class="{% if 'audit' in (request.endpoint or "") %}active{% endif %}">
+      <i class="bi bi-clock-history"></i> Journal audit
+    </a>
+    {% endif %}
+
+    <div class="section">Client</div>
+    <a href="{{ url_for('mobile_home') }}" target="_blank">
+      <i class="bi bi-phone"></i> Portail mobile
+    </a>
+    <a href="{{ url_for('logout') }}">
+      <i class="bi bi-box-arrow-right"></i> Déconnexion
+    </a>
+  </nav>
+</aside>
+
+<div class="main-content">
+  <div class="topbar">
+    <button class="btn btn-sm btn-light d-lg-none" onclick="document.getElementById('sidebar').classList.toggle('open')">
+      <i class="bi bi-list"></i>
+    </button>
+    <h1 class="page-title">{% block page_title %}Tableau de bord{% endblock %}</h1>
+    <form method="GET" action="{{ url_for('recherche_globale') }}" class="search-box d-none d-md-block">
+      <input type="search" name="q" placeholder="Rechercher véhicule, client, vente…" value="{{ request.args.get('q','') }}">
+    </form>
+    <div class="user-menu">
+      <a href="{{ url_for('profil') }}" class="text-decoration-none d-flex align-items-center gap-2">
+        <div class="avatar">{{ current_user.nom_complet[0]|upper }}</div>
+        <div class="d-none d-md-block">
+          <div style="font-size:13px;font-weight:600;color:#0a2540">{{ current_user.nom_complet }}</div>
+          <div style="font-size:11px;color:#8896aa">{{ current_user.role|capitalize }}</div>
+        </div>
+      </a>
+    </div>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div class="flash-container">
+      {% for cat, msg in messages %}
+      <div class="alert alert-{{ 'success' if cat=='success' else 'danger' if cat=='error' else 'info' }} alert-dismissible fade show">
+        {{ msg }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  {% endwith %}
+
+  <div class="content-wrapper">
+    {% block content %}{% endblock %}
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+setTimeout(() => document.querySelectorAll('.flash-container .alert').forEach(a => {
+  new bootstrap.Alert(a).close();
+}), 5000);
+</script>
+{% block extra_js %}{% endblock %}
+</body>
+</html>

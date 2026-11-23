@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Analyse Marges{% endblock %}
+{% block page_title %}📈 Analyse Marges — {{ label }}{% endblock %}
+{% block content %}
+{% include "rapports/_periode.html" %}
+
+<div class="row g-3 mb-3">
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-cash-stack"></i></div><div><div class="kpi-val">{{ kpi.ca|money }}</div><div class="kpi-lbl">CA</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-info-grad"><i class="bi bi-box-seam"></i></div><div><div class="kpi-val">{{ kpi.cout|money }}</div><div class="kpi-lbl">Coût achat</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-graph-up"></i></div><div><div class="kpi-val">{{ kpi.marge|money }}</div><div class="kpi-lbl">Marge ({{ kpi.taux }}%)</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-danger-grad"><i class="bi bi-percent"></i></div><div><div class="kpi-val">{{ kpi.remises|money }}</div><div class="kpi-lbl">Remises</div></div></div></div>
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-7"><div class="card-premium"><h6>🏆 Top 20 ventes par marge</h6>
+    <table class="table table-omega table-sm mb-0">
+      <thead><tr><th>Numéro</th><th>Véhicule</th><th>Client</th><th class="text-end">Prix</th><th class="text-end">Marge</th></tr></thead>
+      <tbody>
+        {% for v in top_ventes %}
+        <tr>
+          <td><a href="{{ url_for('vente_detail', vente_id=v.id) if v.id else '#' }}">{{ v.numero }}</a></td>
+          <td>{{ v.marque_nom }} {{ v.modele_nom }}</td>
+          <td>{{ v.client_prenom or '' }} {{ v.client_nom or '—' }}</td>
+          <td class="text-end">{{ v.montant_ttc|money }}</td>
+          <td class="text-end text-success fw-bold">{{ v.marge|money }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div></div>
+
+  <div class="col-lg-5"><div class="card-premium"><h6>Par marque</h6>
+    <table class="table table-omega table-sm mb-0">
+      <thead><tr><th>Marque</th><th>Nb</th><th class="text-end">CA</th><th class="text-end">Marge</th></tr></thead>
+      <tbody>
+        {% for m in par_marque %}<tr><td>{{ m.marque }}</td><td>{{ m.nb }}</td><td class="text-end">{{ m.ca|money }}</td><td class="text-end text-success">{{ m.marge|money }}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div></div>
+
+  {% if top_marges_neg %}
+  <div class="col-12"><div class="card-premium" style="border-left:4px solid #ef476f">
+    <h6 class="text-danger">⚠️ Ventes à marge négative</h6>
+    <table class="table table-omega table-sm mb-0">
+      <thead><tr><th>Numéro</th><th>Véhicule</th><th class="text-end">Prix</th><th class="text-end">Marge</th></tr></thead>
+      <tbody>
+        {% for v in top_marges_neg %}<tr><td>{{ v.numero }}</td><td>{{ v.marque_nom }} {{ v.modele_nom }}</td><td class="text-end">{{ v.montant_ttc|money }}</td><td class="text-end text-danger fw-bold">{{ v.marge|money }}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div></div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Modifier' if categorie else 'Nouvelle' }} catégorie{% endblock %}
+{% block page_title %}{{ '✏️ Modifier' if categorie else '➕ Nouvelle' }} catégorie{% endblock %}
+{% block content %}
+
+<form method="POST" class="card-premium">
+  <div class="row g-3">
+    <div class="col-md-6"><label class="form-label">Nom *</label><input type="text" name="nom" class="form-control" required value="{{ categorie.nom if categorie else '' }}"></div>
+    <div class="col-md-6"><label class="form-label">Code</label><input type="text" name="code" class="form-control" value="{{ categorie.code if categorie else '' }}" placeholder="Auto si vide"></div>
+    <div class="col-md-6"><label class="form-label">Catégorie parente</label>
+      <select name="parent_id" class="form-select">
+        <option value="">— Racine —</option>
+        {% for p in parents %}<option value="{{ p.id }}" {% if categorie and categorie.parent_id == p.id %}selected{% endif %}>{{ p.icone }} {{ p.nom }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="col-md-3"><label class="form-label">Icône (emoji)</label><input type="text" name="icone" class="form-control" value="{{ categorie.icone if categorie else '🔧' }}" maxlength="4"></div>
+    <div class="col-md-3"><label class="form-label">Ordre</label><input type="number" name="ordre" class="form-control" value="{{ categorie.ordre if categorie else 0 }}"></div>
+    <div class="col-12"><label class="form-label">Description</label><textarea name="description" class="form-control" rows="2">{{ categorie.description if categorie else '' }}</textarea></div>
+  </div>
+
+  <div class="mt-4 d-flex gap-2">
+    <button class="btn btn-accent"><i class="bi bi-check-lg"></i> Enregistrer</button>
+    <a href="{{ url_for('categories_list') }}" class="btn btn-light">Annuler</a>
+  </div>
+</form>
+
+{% endblock %}

@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Nouvelle vente{% endblock %}
+{% block page_title %}➕ Nouvelle vente{% endblock %}
+{% block content %}
+<form method="POST" class="card-premium" id="venteForm">
+  <div class="row g-3">
+    <div class="col-md-6"><label class="form-label">Véhicule *</label>
+      <select name="vehicule_id" id="veh_sel" class="form-select" required onchange="majPrix()">
+        <option value="">— Choisir —</option>
+        {% for v in vehicules %}
+        <option value="{{ v.id }}" data-prix="{{ v.prix_vente }}">{{ v.code }} — {{ v.marque_nom }} {{ v.modele_nom }} ({{ v.immatriculation }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-6"><label class="form-label">Client *</label>
+      <select name="client_id" class="form-select" required>
+        <option value="">— Choisir —</option>
+        {% for c in clients %}<option value="{{ c.id }}">{{ c.prenom or '' }} {{ c.nom }} — {{ c.telephone }}</option>{% endfor %}
+      </select>
+      <small class="text-muted">Client absent ? <a href="{{ url_for('client_new') }}" target="_blank">Créer</a></small>
+    </div>
+    <div class="col-md-3"><label class="form-label">Date vente</label><input type="date" name="date_vente" class="form-control" value="{{ now.strftime('%Y-%m-%d') }}"></div>
+    <div class="col-md-3"><label class="form-label">Prix vente (FCFA)</label><input type="number" name="prix_vente" id="prix_vente" class="form-control" required></div>
+    <div class="col-md-3"><label class="form-label">Remise (FCFA)</label><input type="number" name="remise" id="remise" class="form-control" value="0" oninput="calcTotal()"></div>
+    <div class="col-md-3"><label class="form-label">Type vente</label>
+      <select name="type_vente" id="type_vente" class="form-select" onchange="calcTotal()">
+        <option value="comptant">Comptant</option>
+        <option value="credit">Crédit</option>
+      </select>
+    </div>
+    <div class="col-md-3"><label class="form-label">Mode paiement</label>
+      <select name="mode_paiement" class="form-select">
+        {% for m in ['especes','virement','orange_money','wave','free_money','cheque'] %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="col-md-3"><label class="form-label">Acompte (FCFA)</label><input type="number" name="acompte" id="acompte" class="form-control" value="0" oninput="calcTotal()"></div>
+    <div class="col-md-3" id="credit_bloc" style="display:none"><label class="form-label">Durée crédit (mois)</label><input type="number" name="duree_credit_mois" class="form-control" value="0"></div>
+    <div class="col-md-3"><label class="form-label">Total TTC</label><input type="text" id="total_ttc" class="form-control" readonly style="font-weight:700;color:#ff6b35"></div>
+    <div class="col-md-3"><label class="form-label">Reste à payer</label><input type="text" id="reste" class="form-control" readonly style="font-weight:700;color:#ef476f"></div>
+    <div class="col-12"><label class="form-label">Notes</label><textarea name="notes" class="form-control" rows="2"></textarea></div>
+  </div>
+  <div class="mt-4 d-flex gap-2">
+    <button class="btn btn-accent"><i class="bi bi-check-lg"></i> Créer la vente</button>
+    <a href="{{ url_for('ventes_list') }}" class="btn btn-light">Annuler</a>
+  </div>
+</form>
+
+<script>
+function majPrix() {
+  const sel = document.getElementById('veh_sel');
+  const opt = sel.options[sel.selectedIndex];
+  if (opt && opt.dataset.prix) document.getElementById('prix_vente').value = opt.dataset.prix;
+  calcTotal();
+}
+function calcTotal() {
+  const p = parseFloat(document.getElementById('prix_vente').value || 0);
+  const r = parseFloat(document.getElementById('remise').value || 0);
+  const a = parseFloat(document.getElementById('acompte').value || 0);
+  const ttc = Math.max(0, p - r);
+  document.getElementById('total_ttc').value = ttc.toLocaleString('fr-FR') + ' FCFA';
+  document.getElementById('reste').value = Math.max(0, ttc - a).toLocaleString('fr-FR') + ' FCFA';
+}
+document.getElementById('type_vente').addEventListener('change', e => {
+  document.getElementById('credit_bloc').style.display = e.target.value === 'credit' ? 'block' : 'none';
+});
+</script>
+{% endblock %}

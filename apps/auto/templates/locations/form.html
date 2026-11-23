@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Nouvelle location{% endblock %}
+{% block page_title %}➕ Nouvelle location{% endblock %}
+{% block content %}
+<form method="POST" class="card-premium">
+  <div class="row g-3">
+    <div class="col-md-6"><label class="form-label">Véhicule *</label>
+      <select name="vehicule_id" class="form-select" required>
+        <option value="">— Choisir —</option>
+        {% for v in vehicules %}
+        <option value="{{ v.id }}">{{ v.code }} — {{ v.marque_nom }} {{ v.modele_nom }} — {{ v.prix_location_jour|money }}/jour</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-6"><label class="form-label">Client *</label>
+      <select name="client_id" class="form-select" required>
+        <option value="">— Choisir —</option>
+        {% for c in clients %}<option value="{{ c.id }}">{{ c.prenom or '' }} {{ c.nom }} — {{ c.telephone }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="col-md-3"><label class="form-label">Date début *</label><input type="date" name="date_debut" class="form-control" required value="{{ now.strftime('%Y-%m-%d') }}"></div>
+    <div class="col-md-3"><label class="form-label">Date fin prévue *</label><input type="date" name="date_fin_prevue" class="form-control" required value="{{ (now + timedelta(days=7)).strftime('%Y-%m-%d') }}"></div>
+    <div class="col-md-2"><label class="form-label">Km départ</label><input type="number" name="km_depart" class="form-control" value="0"></div>
+    <div class="col-md-2"><label class="form-label">Carburant départ</label>
+      <select name="carburant_depart" class="form-select">
+        <option value="plein">Plein</option>
+        <option value="3/4">3/4</option>
+        <option value="1/2">1/2</option>
+        <option value="1/4">1/4</option>
+        <option value="vide">Vide</option>
+      </select>
+    </div>
+    <div class="col-md-2"><label class="form-label">Caution (FCFA)</label><input type="number" name="caution" class="form-control" value="0"></div>
+    <div class="col-md-4"><label class="form-label">État au départ</label><input type="text" name="etat_depart" class="form-control" placeholder="Rayures, pneus, etc."></div>
+    <div class="col-md-4"><label class="form-label">Mode paiement caution</label>
+      <select name="mode_paiement" class="form-select">
+        {% for m in ['especes','virement','orange_money','wave'] %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="col-md-4"><label class="form-label">Frais supplémentaires</label><input type="number" name="frais_supplementaires" class="form-control" value="0"></div>
+    <div class="col-12"><label class="form-label">Notes</label><textarea name="notes" class="form-control" rows="2"></textarea></div>
+  </div>
+  <div class="mt-4 d-flex gap-2">
+    <button class="btn btn-accent"><i class="bi bi-check-lg"></i> Créer la location</button>
+    <a href="{{ url_for('locations_list') }}" class="btn btn-light">Annuler</a>
+  </div>
+</form>
+{% endblock %}

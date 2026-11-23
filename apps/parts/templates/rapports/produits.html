@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Analyse Produits{% endblock %}
+{% block page_title %}🔧 Analyse Produits — {{ label }}{% endblock %}
+{% block content %}
+<form method="GET" class="row g-2 mb-3">
+  <div class="col-md-3"><select name="periode" class="form-select" onchange="this.form.submit()">
+    <option value="jour" {% if periode=='jour' %}selected{% endif %}>Aujourd'hui</option>
+    <option value="semaine" {% if periode=='semaine' %}selected{% endif %}>Cette semaine</option>
+    <option value="mois" {% if periode=='mois' %}selected{% endif %}>Ce mois</option>
+    <option value="trimestre" {% if periode=='trimestre' %}selected{% endif %}>Trimestre</option>
+    <option value="annee" {% if periode=='annee' %}selected{% endif %}>Année</option>
+  </select></div>
+</form>
+
+<div class="row g-3">
+  <div class="col-lg-8"><div class="card-premium"><h5>🏆 Top 30 pièces vendues</h5>
+    <table class="table table-omega table-sm">
+      <thead><tr><th>#</th><th>Pièce</th><th>SKU</th><th class="text-center">Qté</th><th class="text-end">CA</th></tr></thead>
+      <tbody>
+        {% for p in top_pieces %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td><a href="{{ url_for('piece_detail', pid=p.id) }}">{{ p.nom[:50] }}</a></td>
+          <td><code style="font-size:10px">{{ p.sku }}</code></td>
+          <td class="text-center">{{ p.qte_vendue }}</td>
+          <td class="text-end fw-bold">{{ p.ca|money }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="text-center text-muted py-3">Aucune vente</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div></div>
+
+  <div class="col-lg-4"><div class="card-premium"><h5>📂 Top catégories</h5>
+    {% for c in top_categories %}
+    <div class="d-flex justify-content-between mb-2">
+      <span>{{ c.icone }} {{ c.categorie }}</span>
+      <strong>{{ c.ca|money_short }}</strong>
+    </div>
+    {% endfor %}
+  </div></div>
+</div>
+
+<div class="card-premium mt-3">
+  <h5>😴 Pièces dormantes (pas vendues depuis 90j)</h5>
+  <table class="table table-omega table-sm">
+    <thead><tr><th>SKU</th><th>Nom</th><th class="text-center">Stock</th><th>Dernière vente</th></tr></thead>
+    <tbody>
+      {% for p in dormants %}
+      <tr>
+        <td><code style="font-size:10px">{{ p.sku }}</code></td>
+        <td><a href="{{ url_for('piece_detail', pid=p.id) }}">{{ p.nom[:50] }}</a></td>
+        <td class="text-center">{{ p.stock_total }}</td>
+        <td><small>{{ p.derniere_vente }}</small></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="text-center text-muted py-3">Aucune pièce dormante</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

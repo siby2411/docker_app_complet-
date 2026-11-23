@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Rapport Ventes{% endblock %}
+{% block page_title %}💰 Rapport Ventes — {{ label }}{% endblock %}
+{% block content %}
+{% include "rapports/_periode.html" %}
+
+<div class="row g-3 mb-3">
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-receipt"></i></div><div><div class="kpi-val">{{ kpi.nb_ventes }}</div><div class="kpi-lbl">Ventes livrées</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-cash-stack"></i></div><div><div class="kpi-val">{{ kpi.ca|money }}</div><div class="kpi-lbl">CA</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-graph-up-arrow"></i></div><div><div class="kpi-val">{{ kpi.marge|money }}</div><div class="kpi-lbl">Marge ({{ kpi.taux_marge }}%)</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-gold-grad"><i class="bi bi-cart"></i></div><div><div class="kpi-val">{{ kpi.panier_moyen|money }}</div><div class="kpi-lbl">Panier moyen</div></div></div></div>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-8"><div class="card-premium"><h6>Évolution journalière</h6><canvas id="chartEvo" height="80"></canvas></div></div>
+  <div class="col-lg-4"><div class="card-premium"><h6>Par mode paiement</h6>
+    {% for m in par_mode %}
+    <div class="d-flex justify-content-between mb-2"><span>{{ m.mode_paiement }}</span><strong>{{ m.ca|money }} ({{ m.nb }})</strong></div>
+    {% else %}<p class="text-muted small">—</p>{% endfor %}
+  </div></div>
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-6"><div class="card-premium"><h6>Par marque</h6>
+    <table class="table table-omega table-sm mb-0">
+      <thead><tr><th>Marque</th><th>Nb</th><th class="text-end">CA</th><th class="text-end">Marge</th></tr></thead>
+      <tbody>
+        {% for m in par_marque %}
+        <tr><td>{{ m.marque }}</td><td>{{ m.nb }}</td><td class="text-end">{{ m.ca|money }}</td><td class="text-end text-success">{{ m.marge|money }}</td></tr>
+        {% else %}<tr><td colspan="4" class="text-muted text-center py-2">Aucune donnée</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div></div>
+
+  <div class="col-lg-6"><div class="card-premium"><h6>Par vendeur</h6>
+    <table class="table table-omega table-sm mb-0">
+      <thead><tr><th>Vendeur</th><th>Nb</th><th class="text-end">CA</th><th class="text-end">Marge</th></tr></thead>
+      <tbody>
+        {% for v in par_vendeur %}
+        <tr><td>{{ v.vendeur }}</td><td>{{ v.nb }}</td><td class="text-end">{{ v.ca|money }}</td><td class="text-end text-success">{{ v.marge|money }}</td></tr>
+        {% else %}<tr><td colspan="4" class="text-muted text-center py-2">Aucune donnée</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div></div>
+
+  <div class="col-12"><div class="card-premium"><h6>Par agence</h6>
+    <table class="table table-omega table-sm mb-0">
+      <thead><tr><th>Agence</th><th>Nb</th><th class="text-end">CA</th></tr></thead>
+      <tbody>
+        {% for a in par_agence %}
+        <tr><td>{{ a.agence }}</td><td>{{ a.nb }}</td><td class="text-end">{{ a.ca|money }}</td></tr>
+        {% else %}<tr><td colspan="3" class="text-muted text-center py-2">Aucune donnée</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div></div>
+</div>
+
+<a href="{{ url_for('export_ventes') }}?periode={{ periode }}&date_from={{ d1 }}&date_to={{ d2 }}" class="btn btn-light mt-3"><i class="bi bi-download"></i> Export CSV</a>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+new Chart(document.getElementById('chartEvo'), {
+  type: 'line',
+  data: {
+    labels: [{% for e in evolution %}'{{ e.jour }}',{% endfor %}],
+    datasets: [{ label: 'CA (FCFA)', data: [{% for e in evolution %}{{ e.ca }},{% endfor %}],
+      borderColor: '#ff6b35', backgroundColor: 'rgba(255,107,53,.15)', fill: true, tension: .3 }]
+  },
+  options: { responsive: true, plugins: { legend: { display: false } } }
+});
+</script>
+{% endblock %}

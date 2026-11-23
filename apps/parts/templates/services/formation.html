@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Formation{% endblock %}
+{% block page_title %}Formation Apprentis{% endblock %}
+{% block content %}
+
+<div class="row g-3 mb-4">
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-book"></i></div><div><div class="kpi-val">{{ kpi.modules }}</div><div class="kpi-lbl">Modules</div></div></div></div>
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-people"></i></div><div><div class="kpi-val">{{ kpi.apprentis }}</div><div class="kpi-lbl">Apprentis</div></div></div></div>
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-clock-history"></i></div><div><div class="kpi-val">{{ kpi.heures_total }}h</div><div class="kpi-lbl">Heures</div></div></div></div>
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-8">
+    <div class="card-premium">
+      <h5>Modules de formation</h5>
+      {% for m in modules %}
+      <div class="d-flex gap-3 mb-3 pb-3" style="border-bottom:1px solid #f0f4f8">
+        <div style="width:50px;height:50px;background:linear-gradient(135deg,#0a2540,#1a3a5c);color:#fff;border-radius:12px;display:flex;align-items:center;justify-content:center;font-weight:700">{{ m.ordre }}</div>
+        <div style="flex:1">
+          <div class="d-flex justify-content-between mb-1">
+            <strong style="color:#0a2540">{{ m.titre }}</strong>
+            <span class="badge-statut badge-{{ 'disponible' if m.niveau == 'debutant' else 'en_cours' if m.niveau == 'intermediaire' else 'critique' }}">{{ m.niveau }}</span>
+          </div>
+          <div class="text-muted small">{{ m.description }}</div>
+          <small>{{ m.duree_heures }}h - {{ m.contenu }}</small>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card-premium">
+      <h5>Apprentis actifs</h5>
+      {% for a in apprentis %}
+      <div class="d-flex align-items-center gap-2 mb-2">
+        <div style="width:36px;height:36px;background:linear-gradient(135deg,#ff6b35,#f4b400);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700">{{ a.nom[0] }}</div>
+        <div style="flex:1">
+          <div style="font-weight:600;font-size:13px">{{ a.prenom or '' }} {{ a.nom }}</div>
+          <div class="text-muted" style="font-size:11px">{{ a.telephone }}</div>
+        </div>
+      </div>
+      {% else %}
+      <p class="text-muted small">Aucun apprenti</p>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+{% endblock %}

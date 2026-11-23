@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Portefeuille Clients{% endblock %}
+{% block page_title %}👥 Portefeuille Clients{% endblock %}
+{% block content %}
+<div class="row g-3 mb-3">
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-people"></i></div><div><div class="kpi-val">{{ kpi.total }}</div><div class="kpi-lbl">Total clients</div></div></div></div>
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-check-circle"></i></div><div><div class="kpi-val">{{ kpi.actifs }}</div><div class="kpi-lbl">Actifs</div></div></div></div>
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-cart-check"></i></div><div><div class="kpi-val">{{ kpi.acheteurs }}</div><div class="kpi-lbl">Acheteurs</div></div></div></div>
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-info-grad"><i class="bi bi-key"></i></div><div><div class="kpi-val">{{ kpi.locataires }}</div><div class="kpi-lbl">Locataires</div></div></div></div>
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-gold-grad"><i class="bi bi-star"></i></div><div><div class="kpi-val">{{ kpi.score_moyen }}</div><div class="kpi-lbl">Score moyen</div></div></div></div>
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-cash-stack"></i></div><div><div class="kpi-val">{{ kpi.ca_total|money }}</div><div class="kpi-lbl">CA total</div></div></div></div>
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-8"><div class="card-premium"><h6>Top 20 clients</h6>
+    <table class="table table-omega table-sm mb-0">
+      <thead><tr><th>Client</th><th>Tél</th><th>Score</th><th>Achats</th><th>Locations</th><th class="text-end">CA</th></tr></thead>
+      <tbody>
+        {% for c in top_clients %}
+        <tr>
+          <td><a href="{{ url_for('client_detail', cid=c.id) }}">{{ c.prenom or '' }} {{ c.nom }}</a></td>
+          <td>{{ c.telephone }}</td>
+          <td><span class="badge-statut {% if c.score>=80 %}badge-disponible{% elif c.score>=60 %}badge-devis{% else %}badge-annulee{% endif %}">{{ c.score }}</span></td>
+          <td>{{ c.nb_achats }}</td>
+          <td>{{ c.nb_locations }}</td>
+          <td class="text-end fw-bold">{{ c.total_depense|money }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div></div>
+
+  <div class="col-lg-4">
+    <div class="card-premium mb-3"><h6>Par score</h6>
+      {% for s in par_score %}<div class="d-flex justify-content-between mb-2"><span>{{ s.tranche }}</span><strong>{{ s.nb }}</strong></div>{% endfor %}
+    </div>
+    <div class="card-premium mb-3"><h6>Par type</h6>
+      {% for t in par_type %}<div class="d-flex justify-content-between mb-2"><span>{{ t.type }}</span><strong>{{ t.nb }} ({{ t.ca|money }})</strong></div>{% endfor %}
+    </div>
+    <div class="card-premium"><h6>Par ville</h6>
+      {% for v in par_ville %}<div class="d-flex justify-content-between mb-2"><span>{{ v.ville }}</span><strong>{{ v.nb }} ({{ v.ca|money }})</strong></div>{% endfor %}
+    </div>
+  </div>
+</div>
+
+<a href="{{ url_for('export_clients') }}" class="btn btn-light mt-3"><i class="bi bi-download"></i> Export CSV</a>
+{% endblock %}

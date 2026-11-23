@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Locations{% endblock %}
+{% block page_title %}🔑 Locations{% endblock %}
+{% block content %}
+<div class="row g-3 mb-3">
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-key"></i></div><div><div class="kpi-val">{{ kpi.total }}</div><div class="kpi-lbl">Total</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-play-circle"></i></div><div><div class="kpi-val">{{ kpi.en_cours }}</div><div class="kpi-lbl">En cours</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-gold-grad"><i class="bi bi-calendar-check"></i></div><div><div class="kpi-val">{{ kpi.reservees }}</div><div class="kpi-lbl">Réservées</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-cash-coin"></i></div><div><div class="kpi-val">{{ kpi.ca|money }}</div><div class="kpi-lbl">CA</div></div></div></div>
+</div>
+
+<div class="card-premium">
+  <form method="GET" class="row g-2 mb-3">
+    <div class="col-md-4"><input type="search" name="q" class="form-control" placeholder="Numéro, client, véhicule…" value="{{ q }}"></div>
+    <div class="col-md-2"><select name="statut" class="form-select">
+      <option value="">Statut</option>
+      {% for s in ['reservee','en_cours','terminee','annulee'] %}<option value="{{ s }}" {% if statut==s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select></div>
+    <div class="col-md-2"><button class="btn btn-primary-omega w-100"><i class="bi bi-funnel"></i></button></div>
+    <div class="col-md-4 text-end"><a href="{{ url_for('location_new') }}" class="btn btn-accent"><i class="bi bi-plus-lg"></i> Nouvelle location</a></div>
+  </form>
+
+  <div class="table-responsive">
+    <table class="table table-omega">
+      <thead><tr><th>Numéro</th><th>Véhicule</th><th>Client</th><th>Période</th><th>Durée</th><th class="text-end">Montant</th><th>Statut</th></tr></thead>
+      <tbody>
+        {% for l in locations %}
+        <tr>
+          <td><a href="{{ url_for('location_detail', loc_id=l.id) }}" class="fw-semibold text-decoration-none">{{ l.numero }}</a></td>
+          <td>{{ l.marque_nom }} {{ l.modele_nom }}<br><small class="text-muted">{{ l.veh_code }}</small></td>
+          <td>{{ l.client_prenom or '' }} {{ l.client_nom or '—' }}<br><small>{{ l.client_tel }}</small></td>
+          <td>{{ l.date_debut|dte }} → {{ l.date_fin_prevue|dte }}</td>
+          <td>{{ l.duree_jours }} j</td>
+          <td class="text-end fw-bold">{{ l.montant_total|money }}</td>
+          <td><span class="badge-statut badge-{{ l.statut }}">{{ l.statut }}</span></td>
+        </tr>
+        {% else %}<tr><td colspan="7" class="text-center text-muted py-4">Aucune location</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

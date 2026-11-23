@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Envoyer WhatsApp{% endblock %}
+{% block page_title %}📱 Envoyer un message WhatsApp{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <form method="POST" class="card-premium">
+      <div class="row g-3">
+        <div class="col-md-6"><label class="form-label">Destinataire (téléphone) *</label>
+          <input type="tel" name="destinataire" class="form-control" required value="{{ client.telephone if client else '' }}" placeholder="+221 77 000 00 00">
+        </div>
+        <div class="col-md-3"><label class="form-label">Client</label>
+          <select name="client_id" class="form-select" onchange="if(this.value) location.href='{{ url_for('whatsapp_envoyer') }}?client_id='+this.value">
+            <option value="">—</option>
+            {% for c in clients %}<option value="{{ c.id }}" {% if client and client.id==c.id %}selected{% endif %}>{{ c.prenom or '' }} {{ c.nom }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-md-3"><label class="form-label">Véhicule</label>
+          <select name="vehicule_id" class="form-select">
+            <option value="">—</option>
+            {% for v in vehicules %}<option value="{{ v.id }}" {% if vehicule and vehicule.id==v.id %}selected{% endif %}>{{ v.code }} — {{ v.marque_nom }} {{ v.modele_nom }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-md-4"><label class="form-label">Template auto</label>
+          <select name="template" class="form-select">
+            <option value="">— Manuel —</option>
+            <option value="catalogue">Catalogue véhicule</option>
+            <option value="relance">Relance client</option>
+            <option value="confirmation">Confirmation</option>
+          </select>
+        </div>
+        <div class="col-12"><label class="form-label">Message *</label>
+          <textarea name="message" class="form-control" rows="8" required placeholder="Bonjour…">{{ '' }}</textarea>
+          <small class="text-muted">Support : *gras*, _italique_, emojis OK.</small>
+        </div>
+      </div>
+      <div class="mt-4 d-flex gap-2">
+        <button class="btn" style="background:#25D366;color:#fff;font-weight:600"><i class="bi bi-whatsapp"></i> Envoyer</button>
+        <a href="{{ url_for('whatsapp_dashboard') }}" class="btn btn-light">Annuler</a>
+      </div>
+      <p class="text-muted mt-2"><small>⚠️ Mode simulation : les messages sont loggés en base. Branchez l'API WhatsApp Business pour envoi réel.</small></p>
+    </form>
+  </div>
+</div>
+{% endblock %}

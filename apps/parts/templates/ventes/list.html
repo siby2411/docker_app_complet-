@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Ventes{% endblock %}
+{% block page_title %}💰 Ventes{% endblock %}
+{% block content %}
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-receipt"></i></div><div><div class="kpi-val">{{ kpi.total }}</div><div class="kpi-lbl">Total</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-cart-check"></i></div><div><div class="kpi-val">{{ kpi.aujourdhui }}</div><div class="kpi-lbl">Aujourd'hui</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-gold-grad"><i class="bi bi-cash-coin"></i></div><div><div class="kpi-val">{{ kpi.ca_aujourdhui|money_short }}</div><div class="kpi-lbl">CA jour</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-graph-up"></i></div><div><div class="kpi-val">{{ kpi.ca_periode|money_short }}</div><div class="kpi-lbl">CA période</div></div></div></div>
+</div>
+
+<div class="card-premium">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h5 class="mb-0">Ventes ({{ kpi.nb_periode }})</h5>
+    <a href="{{ url_for('pos') }}" class="btn btn-accent"><i class="bi bi-cart-plus"></i> Nouvelle vente POS</a>
+  </div>
+
+  <form method="GET" class="row g-2 mb-3">
+    <div class="col-md-3"><input type="search" name="q" class="form-control" placeholder="N° vente, client, téléphone…" value="{{ q }}"></div>
+    <div class="col-md-2"><select name="statut" class="form-select">
+      <option value="">Statut</option>
+      <option value="complete" {% if statut=='complete' %}selected{% endif %}>Complète</option>
+      <option value="annulee" {% if statut=='annulee' %}selected{% endif %}>Annulée</option>
+    </select></div>
+    <div class="col-md-2"><select name="mode" class="form-select">
+      <option value="">Mode</option>
+      {% for m in ['especes','wave','orange_money','virement','credit'] %}
+      <option value="{{ m }}" {% if mode==m %}selected{% endif %}>{{ m }}</option>
+      {% endfor %}
+    </select></div>
+    <div class="col-md-2"><select name="vendeur_id" class="form-select">
+      <option value="">Vendeur</option>
+      {% for v in vendeurs %}<option value="{{ v.id }}" {% if vendeur_id==v.id %}selected{% endif %}>{{ v.nom_complet }}</option>{% endfor %}
+    </select></div>
+    <div class="col-md-1"><input type="date" name="date_from" class="form-control" value="{{ date_from }}"></div>
+    <div class="col-md-1"><input type="date" name="date_to" class="form-control" value="{{ date_to }}"></div>
+    <div class="col-md-1"><button class="btn btn-primary-omega w-100"><i class="bi bi-funnel"></i></button></div>
+  </form>
+
+  <div class="table-responsive">
+    <table class="table table-omega">
+      <thead>
+        <tr>
+          <th>N°</th><th>Date</th><th>Client</th><th>Vendeur</th><th>PDV</th>
+          <th class="text-center">Lignes</th><th class="text-end">Montant</th>
+          <th>Paiement</th><th>Statut</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for v in ventes %}
+        <tr>
+          <td><a href="{{ url_for('vente_detail', vid=v.id) }}" style="text-decoration:none"><code style="font-size:11px">{{ v.numero }}</code></a></td>
+          <td><small>{{ v.date_vente|dte }}</small></td>
+          <td>
+            {% if v.client_nom %}
+              <strong>{{ v.client_prenom or '' }} {{ v.client_nom }}</strong><br>
+              <small class="text-muted">{{ v.client_tel }}</small>
+            {% else %}
+              <span class="text-muted">Passage</span>
+            {% endif %}
+          </td>
+          <td><small>{{ v.vendeur_nom or '—' }}</small></td>
+          <td><small>{{ v.pdv_nom or '—' }}</small></td>
+          <td class="text-center">{{ v.nb_lignes }}</td>
+          <td class="text-end fw-bold">{{ v.montant_ttc|money }}</td>
+          <td><span class="badge-statut badge-{{ 'disponible' if v.mode_paiement == 'especes' else 'en_cours' }}">{{ v.mode_paiement }}</span></td>
+          <td><span class="badge-statut badge-{{ 'disponible' if v.statut == 'complete' else 'annulee' }}">{{ v.statut }}</span></td>
+          <td><a href="{{ url_for('vente_detail', vid=v.id) }}" class="btn btn-sm btn-light"><i class="bi bi-eye"></i></a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="10" class="text-center text-muted py-4">Aucune vente — Créez la première via le POS</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if pages > 1 %}
+  <nav class="mt-3"><ul class="pagination justify-content-center mb-0">
+    {% if page > 1 %}<li class="page-item"><a class="page-link" href="?page={{ page-1 }}">«</a></li>{% endif %}
+    {% for p in range(1, pages+1) %}
+      {% if p == page or (p >= page-2 and p <= page+2) or p == 1 or p == pages %}
+      <li class="page-item {% if p==page %}active{% endif %}"><a class="page-link" href="?page={{ p }}">{{ p }}</a></li>
+      {% endif %}
+    {% endfor %}
+    {% if page < pages %}<li class="page-item"><a class="page-link" href="?page={{ page+1 }}">»</a></li>{% endif %}
+  </ul></nav>
+  {% endif %}
+</div>
+
+{% endblock %}

@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Papiers{% endblock %}
+{% block page_title %}📄 Papiers administratifs{% endblock %}
+{% block content %}
+<div class="row g-3 mb-3">
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-file-earmark-text"></i></div><div><div class="kpi-val">{{ kpi.total }}</div><div class="kpi-lbl">Total</div></div></div></div>
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-check-circle"></i></div><div><div class="kpi-val">{{ kpi.valides }}</div><div class="kpi-lbl">Valides</div></div></div></div>
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-gold-grad"><i class="bi bi-clock-history"></i></div><div><div class="kpi-val">{{ kpi.bientot }}</div><div class="kpi-lbl">Bientôt</div></div></div></div>
+  <div class="col-md-2"><div class="kpi-card"><div class="icon" style="background:linear-gradient(135deg,#ff8e5e,#ffb088)"><i class="bi bi-exclamation-triangle"></i></div><div><div class="kpi-val">{{ kpi.critiques }}</div><div class="kpi-lbl">Critiques</div></div></div></div>
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-danger-grad"><i class="bi bi-x-octagon"></i></div><div><div class="kpi-val">{{ kpi.expires }}</div><div class="kpi-lbl">Expirés</div></div></div></div>
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-info-grad"><i class="bi bi-arrow-repeat"></i></div><div style="font-size:11px"><div style="font-size:12px;font-weight:700">Recalculer</div><div class="kpi-lbl">Statuts</div></div></div></div>
+</div>
+
+<div class="card-premium">
+  <form method="GET" class="row g-2 mb-3">
+    <div class="col-md-3"><input type="search" name="q" class="form-control" placeholder="Numéro, code véhicule, immat…" value="{{ q }}"></div>
+    <div class="col-md-2"><select name="type" class="form-select">
+      <option value="">Type</option>
+      {% for t in ['carte_grise','assurance','visite_technique','vignette','patente'] %}<option value="{{ t }}" {% if type_p==t %}selected{% endif %}>{{ t }}</option>{% endfor %}
+    </select></div>
+    <div class="col-md-2"><select name="statut" class="form-select">
+      <option value="">Statut</option>
+      {% for s in ['valide','bientot','critique','expire'] %}<option value="{{ s }}" {% if statut==s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select></div>
+    <div class="col-md-2"><button class="btn btn-primary-omega w-100"><i class="bi bi-funnel"></i></button></div>
+    <div class="col-md-3 text-end">
+      <form method="POST" action="{{ url_for('papiers_recalcul') }}" class="d-inline">
+        <button class="btn btn-light"><i class="bi bi-arrow-repeat"></i> Recalculer statuts</button>
+      </form>
+      <a href="{{ url_for('papier_new') }}" class="btn btn-accent"><i class="bi bi-plus-lg"></i> Nouveau papier</a>
+    </div>
+  </form>
+
+  <div class="table-responsive">
+    <table class="table table-omega">
+      <thead><tr><th>Véhicule</th><th>Type</th><th>Numéro</th><th>Émission</th><th>Expiration</th><th>Compagnie</th><th>Statut</th><th></th></tr></thead>
+      <tbody>
+        {% for p in papiers %}
+        <tr>
+          <td><a href="{{ url_for('vehicule_detail', vid=p.vehicule_id) }}">{{ p.veh_code }}</a><br><small class="text-muted">{{ p.immatriculation }}</small></td>
+          <td>{{ p.type }}</td>
+          <td>{{ p.numero or '—' }}</td>
+          <td>{{ p.date_emission|dte }}</td>
+          <td>{{ p.date_expiration|dte }}</td>
+          <td>{{ p.compagnie or '—' }}</td>
+          <td><span class="badge-statut badge-{{ p.statut }}">{{ p.statut }}</span></td>
+          <td><a href="{{ url_for('papier_detail', pid=p.id) }}" class="btn btn-sm btn-light"><i class="bi bi-eye"></i></a></td>
+        </tr>
+        {% else %}<tr><td colspan="8" class="text-center text-muted py-4">Aucun papier</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

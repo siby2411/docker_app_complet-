@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Services{% endblock %}
+{% block page_title %}Services automobiles{% endblock %}
+{% block content %}
+
+<div class="row g-3 mb-4">
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-tools"></i></div><div><div class="kpi-val">{{ kpi.total }}</div><div class="kpi-lbl">Total</div></div></div></div>
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-wrench"></i></div><div><div class="kpi-val">{{ kpi.entretien }}</div><div class="kpi-lbl">Entretien</div></div></div></div>
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-gear"></i></div><div><div class="kpi-val">{{ kpi.reparation }}</div><div class="kpi-lbl">Réparation</div></div></div></div>
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-info-grad"><i class="bi bi-search"></i></div><div><div class="kpi-val">{{ kpi.diagnostic }}</div><div class="kpi-lbl">Diagnostic</div></div></div></div>
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-gold-grad"><i class="bi bi-droplet"></i></div><div><div class="kpi-val">{{ kpi.lavage }}</div><div class="kpi-lbl">Lavage</div></div></div></div>
+</div>
+
+<div class="card-premium">
+  <div class="d-flex justify-content-between mb-3">
+    <h5 class="mb-0">Catalogue des services</h5>
+    <div class="d-flex gap-2">
+      <a href="{{ url_for('interventions_list') }}" class="btn btn-accent"><i class="bi bi-tools"></i> Interventions</a>
+      <a href="{{ url_for('lavage_list') }}" class="btn btn-primary-omega"><i class="bi bi-droplet"></i> Lavage</a>
+      <a href="{{ url_for('diagnostic_list') }}" class="btn btn-light"><i class="bi bi-search"></i> Diagnostics</a>
+    </div>
+  </div>
+
+  <div class="row g-3">
+    {% for s in services %}
+    <div class="col-md-6 col-lg-4">
+      <div class="card-premium" style="border-left:4px solid {{ '#06d6a0' if s.categorie == 'entretien' else '#ff6b35' if s.categorie == 'reparation' else '#118ab2' if s.categorie == 'diagnostic' else '#f4b400' }}">
+        <div class="d-flex gap-3 align-items-start">
+          <div style="font-size:36px">{{ s.icone }}</div>
+          <div style="flex:1">
+            <div style="font-weight:700;color:#0a2540">{{ s.nom }}</div>
+            <span class="badge-statut badge-{{ 'disponible' if s.categorie == 'entretien' else 'critique' if s.categorie == 'reparation' else 'en_cours' if s.categorie == 'diagnostic' else 'alerte' }}">{{ s.categorie }}</span>
+            <div class="text-muted small mt-2">{{ s.description }}</div>
+            <div class="d-flex justify-content-between mt-2">
+              <small>{{ s.duree_min }} min</small>
+              <strong style="color:#ff6b35">{{ s.prix_min|money_short }} - {{ s.prix_max|money_short }}</strong>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+{% endblock %}

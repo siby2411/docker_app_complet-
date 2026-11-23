@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Ventes{% endblock %}
+{% block page_title %}💰 Ventes{% endblock %}
+{% block content %}
+<div class="row g-3 mb-3">
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-receipt"></i></div><div><div class="kpi-val">{{ kpi.total }}</div><div class="kpi-lbl">Total ventes</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-check-circle"></i></div><div><div class="kpi-val">{{ kpi.livrees }}</div><div class="kpi-lbl">Livrées</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-gold-grad"><i class="bi bi-hourglass-split"></i></div><div><div class="kpi-val">{{ kpi.en_cours }}</div><div class="kpi-lbl">En cours</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-cash-coin"></i></div><div><div class="kpi-val">{{ kpi.ca|money }}</div><div class="kpi-lbl">CA livré</div></div></div></div>
+</div>
+
+<div class="card-premium">
+  <form method="GET" class="row g-2 mb-3">
+    <div class="col-md-4"><input type="search" name="q" class="form-control" placeholder="Numéro, client, véhicule…" value="{{ q }}"></div>
+    <div class="col-md-2"><select name="statut" class="form-select">
+      <option value="">Statut</option>
+      {% for s in ['devis','acompte','livree','annulee'] %}<option value="{{ s }}" {% if statut==s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select></div>
+    <div class="col-md-2"><select name="mode" class="form-select">
+      <option value="">Mode paiement</option>
+      {% for m in ['especes','virement','orange_money','wave','free_money','credit'] %}<option value="{{ m }}" {% if mode==m %}selected{% endif %}>{{ m }}</option>{% endfor %}
+    </select></div>
+    <div class="col-md-2"><button class="btn btn-primary-omega w-100"><i class="bi bi-funnel"></i></button></div>
+    <div class="col-md-2 text-end"><a href="{{ url_for('vente_new') }}" class="btn btn-accent"><i class="bi bi-plus-lg"></i> Nouvelle vente</a></div>
+  </form>
+
+  <div class="table-responsive">
+    <table class="table table-omega">
+      <thead><tr><th>Numéro</th><th>Date</th><th>Véhicule</th><th>Client</th><th>Vendeur</th><th class="text-end">Montant</th><th class="text-end">Reste</th><th>Statut</th></tr></thead>
+      <tbody>
+        {% for v in ventes %}
+        <tr>
+          <td><a href="{{ url_for('vente_detail', vente_id=v.id) }}" class="fw-semibold text-decoration-none">{{ v.numero }}</a></td>
+          <td>{{ v.date_vente|dte }}</td>
+          <td>{{ v.marque_nom }} {{ v.modele_nom }}<br><small class="text-muted">{{ v.veh_code }}</small></td>
+          <td>{{ v.client_prenom or '' }} {{ v.client_nom or '—' }}</td>
+          <td>{{ v.vendeur_nom or '—' }}</td>
+          <td class="text-end fw-bold">{{ v.montant_ttc|money }}</td>
+          <td class="text-end {% if v.reste_a_payer > 0 %}text-danger{% endif %} fw-bold">{{ v.reste_a_payer|money }}</td>
+          <td><span class="badge-statut badge-{{ v.statut }}">{{ v.statut }}</span></td>
+        </tr>
+        {% else %}<tr><td colspan="8" class="text-center text-muted py-4">Aucune vente</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,37 @@
+FROM docker2-transport-v2:latest
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONFAULTHANDLER=1
+ENV PIP_NO_CACHE_DIR=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_DEFAULT_TIMEOUT=300
+ENV PIP_RETRIES=10
+
+WORKDIR /app
+
+COPY requirements.txt .
+
+RUN pip install --upgrade pip setuptools wheel --quiet \
+        --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        --timeout 300 --retries 10 && \
+    pip install -r requirements.txt \
+        --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        --timeout 300 --retries 10
+
+COPY main.py /app/
+COPY auth.py /app/
+COPY init_db.py /app/
+COPY init_db_v2.py /app/
+COPY crud.py /app/
+COPY rh_logic.py /app/
+COPY portail.py /app/
+COPY entrypoint.sh /app/
+
+RUN chmod +x /app/entrypoint.sh && mkdir -p /app/data && chmod 755 /app/data
+
+EXPOSE 8000
+
+ENTRYPOINT ["/app/entrypoint.sh"]

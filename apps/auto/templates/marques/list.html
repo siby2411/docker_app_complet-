@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Marques{% endblock %}
+{% block page_title %}🏷️ Marques{% endblock %}
+{% block content %}
+<div class="card-premium">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h5 class="mb-0">{{ marques|length }} marque(s)</h5>
+    <a href="{{ url_for('marque_new') }}" class="btn btn-accent"><i class="bi bi-plus-lg"></i> Nouvelle marque</a>
+  </div>
+  <div class="row g-3">
+    {% for m in marques %}
+    <div class="col-md-4 col-lg-3">
+      <div class="card-premium text-center" style="padding:16px">
+        <div style="font-size:24px;font-weight:800;color:#0a2540">{{ m.nom }}</div>
+        <div class="text-muted small mb-2">{{ m.pays_origine or '—' }}</div>
+        <div class="d-flex gap-1 justify-content-center mb-2">
+          <span class="badge-statut badge-disponible">{{ m.nb_modeles }} modèles</span>
+          <span class="badge-statut badge-en_cours">{{ m.nb_vehicules }} véhicules</span>
+        </div>
+        <div class="d-flex gap-1 justify-content-center">
+          <a href="{{ url_for('marque_edit', mid=m.id) }}" class="btn btn-sm btn-light"><i class="bi bi-pencil"></i></a>
+          {% if current_user.is_admin() %}
+          <form method="POST" action="{{ url_for('marque_delete', mid=m.id) }}" onsubmit="return confirm('Supprimer ?')">
+            <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <div class="col-12"><p class="text-muted">Aucune marque.</p></div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

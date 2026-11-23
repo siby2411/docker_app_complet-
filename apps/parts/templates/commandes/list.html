@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Commandes{% endblock %}
+{% block page_title %}📋 Commandes fournisseurs{% endblock %}
+{% block content %}
+
+<div class="row g-3 mb-4">
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-clipboard-check"></i></div><div><div class="kpi-val">{{ kpi.total }}</div><div class="kpi-lbl">Total</div></div></div></div>
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-info-grad"><i class="bi bi-hourglass"></i></div><div><div class="kpi-val">{{ kpi.en_attente }}</div><div class="kpi-lbl">En attente</div></div></div></div>
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-gold-grad"><i class="bi bi-truck"></i></div><div><div class="kpi-val">{{ kpi.confirmees }}</div><div class="kpi-lbl">Confirmées</div></div></div></div>
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-hourglass-split"></i></div><div><div class="kpi-val">{{ kpi.partielles }}</div><div class="kpi-lbl">Partielles</div></div></div></div>
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-check-circle"></i></div><div><div class="kpi-val">{{ kpi.recues }}</div><div class="kpi-lbl">Reçues</div></div></div></div>
+  <div class="col-md-2"><div class="kpi-card"><div class="icon bg-danger-grad"><i class="bi bi-cash-stack"></i></div><div><div class="kpi-val">{{ kpi.montant_total|money_short }}</div><div class="kpi-lbl">En cours</div></div></div></div>
+</div>
+
+<div class="card-premium">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h5 class="mb-0">Commandes</h5>
+    <a href="{{ url_for('commande_new') }}" class="btn btn-accent"><i class="bi bi-plus-lg"></i> Nouvelle</a>
+  </div>
+
+  <form method="GET" class="row g-2 mb-3">
+    <div class="col-md-3"><select name="statut" class="form-select" onchange="this.form.submit()">
+      <option value="">Tous statuts</option>
+      {% for s in ['en_attente','confirmee','partielle','recue','annulee'] %}
+      <option value="{{ s }}" {% if statut==s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select></div>
+    <div class="col-md-3"><select name="fournisseur_id" class="form-select" onchange="this.form.submit()">
+      <option value="">Tous fournisseurs</option>
+      {% for f in fournisseurs %}<option value="{{ f.id }}" {% if fournisseur_id==f.id %}selected{% endif %}>{{ f.nom }}</option>{% endfor %}
+    </select></div>
+  </form>
+
+  <div class="table-responsive">
+    <table class="table table-omega">
+      <thead><tr><th>N°</th><th>Fournisseur</th><th>Date</th><th>Lignes</th><th class="text-end">Montant</th><th>Statut</th><th></th></tr></thead>
+      <tbody>
+        {% for c in commandes %}
+        <tr>
+          <td><a href="{{ url_for('commande_detail', cid=c.id) }}" style="text-decoration:none"><code style="font-size:11px">{{ c.numero }}</code></a></td>
+          <td><strong>{{ c.fournisseur_nom }}</strong></td>
+          <td><small>{{ c.date_commande|dte }}</small></td>
+          <td class="text-center">{{ c.nb_lignes }}</td>
+          <td class="text-end fw-bold">{{ c.montant_total|money }}</td>
+          <td><span class="badge-statut badge-{{ c.statut }}">{{ c.statut }}</span></td>
+          <td><a href="{{ url_for('commande_detail', cid=c.id) }}" class="btn btn-sm btn-light"><i class="bi bi-eye"></i></a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="text-center text-muted py-4">Aucune commande</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

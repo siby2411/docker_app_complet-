@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Clients{% endblock %}
+{% block page_title %}👥 Clients ({{ total }}){% endblock %}
+{% block content %}
+<div class="card-premium">
+  <form method="GET" class="row g-2 mb-3">
+    <div class="col-md-3"><input type="search" name="q" class="form-control" placeholder="Nom, tél, email, code…" value="{{ q }}"></div>
+    <div class="col-md-2"><select name="type" class="form-select">
+      <option value="">Type</option>
+      <option value="particulier" {% if type_c=='particulier' %}selected{% endif %}>Particulier</option>
+      <option value="entreprise" {% if type_c=='entreprise' %}selected{% endif %}>Entreprise</option>
+    </select></div>
+    <div class="col-md-2"><select name="ville" class="form-select">
+      <option value="">Ville</option>
+      {% for v in villes %}<option value="{{ v }}" {% if ville==v %}selected{% endif %}>{{ v }}</option>{% endfor %}
+    </select></div>
+    <div class="col-md-2"><select name="tri" class="form-select">
+      <option value="recent" {% if tri=='recent' %}selected{% endif %}>Récents</option>
+      <option value="nom" {% if tri=='nom' %}selected{% endif %}>Nom A-Z</option>
+      <option value="score" {% if tri=='score' %}selected{% endif %}>Meilleur score</option>
+      <option value="depense" {% if tri=='depense' %}selected{% endif %}>Plus dépensé</option>
+      <option value="achats" {% if tri=='achats' %}selected{% endif %}>Plus d'achats</option>
+    </select></div>
+    <div class="col-md-1"><button class="btn btn-primary-omega w-100"><i class="bi bi-funnel"></i></button></div>
+    <div class="col-md-2 text-end"><a href="{{ url_for('client_new') }}" class="btn btn-accent"><i class="bi bi-plus-lg"></i> Nouveau</a></div>
+  </form>
+
+  <div class="table-responsive">
+    <table class="table table-omega">
+      <thead><tr><th>Code</th><th>Nom</th><th>Téléphone</th><th>Ville</th><th>Score</th><th>Achats</th><th>Locations</th><th class="text-end">CA</th><th></th></tr></thead>
+      <tbody>
+        {% for c in clients %}
+        <tr>
+          <td><a href="{{ url_for('client_detail', cid=c.id) }}" class="fw-semibold text-decoration-none">{{ c.code }}</a></td>
+          <td>{{ c.prenom or '' }} {{ c.nom }}</td>
+          <td>{{ c.telephone }}</td>
+          <td>{{ c.ville or '—' }}</td>
+          <td>
+            <div class="d-flex align-items-center gap-2">
+              <div style="width:40px;height:6px;background:#e2e8f0;border-radius:4px;overflow:hidden">
+                <div style="width:{{ c.score }}%;height:100%;background:{% if c.score>=80 %}#06d6a0{% elif c.score>=60 %}#ffd166{% else %}#ef476f{% endif %}"></div>
+              </div>
+              <small class="fw-bold">{{ c.score }}</small>
+            </div>
+          </td>
+          <td><span class="badge-statut badge-disponible">{{ c.nb_achats }}</span></td>
+          <td><span class="badge-statut badge-en_cours">{{ c.nb_locations }}</span></td>
+          <td class="text-end fw-bold">{{ c.total_depense|money }}</td>
+          <td><a href="{{ url_for('client_detail', cid=c.id) }}" class="btn btn-sm btn-light"><i class="bi bi-eye"></i></a></td>
+        </tr>
+        {% else %}<tr><td colspan="9" class="text-center text-muted py-4">Aucun client</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if pages > 1 %}
+  <nav class="mt-3"><ul class="pagination justify-content-center mb-0">
+    {% if page > 1 %}<li class="page-item"><a class="page-link" href="?page={{ page-1 }}&q={{ q }}&tri={{ tri }}">«</a></li>{% endif %}
+    {% for p in range(1, pages+1) %}
+      {% if p == page or (p >= page-2 and p <= page+2) or p == 1 or p == pages %}
+      <li class="page-item {% if p==page %}active{% endif %}"><a class="page-link" href="?page={{ p }}&q={{ q }}&tri={{ tri }}">{{ p }}</a></li>
+      {% endif %}
+    {% endfor %}
+    {% if page < pages %}<li class="page-item"><a class="page-link" href="?page={{ page+1 }}&q={{ q }}&tri={{ tri }}">»</a></li>{% endif %}
+  </ul></nav>
+  {% endif %}
+</div>
+{% endblock %}

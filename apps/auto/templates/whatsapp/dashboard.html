@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}WhatsApp{% endblock %}
+{% block page_title %}📱 WhatsApp — Journal d'envois{% endblock %}
+{% block content %}
+<div class="row g-3 mb-3">
+  <div class="col-md-3"><div class="kpi-card"><div class="icon" style="background:#25D366"><i class="bi bi-whatsapp"></i></div><div><div class="kpi-val">{{ kpi.total }}</div><div class="kpi-lbl">Messages total</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-calendar-check"></i></div><div><div class="kpi-val">{{ kpi.aujourdhui }}</div><div class="kpi-lbl">Aujourd'hui</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-image"></i></div><div><div class="kpi-val">{{ kpi.catalogue }}</div><div class="kpi-lbl">Catalogues</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-gold-grad"><i class="bi bi-arrow-repeat"></i></div><div><div class="kpi-val">{{ kpi.relances }}</div><div class="kpi-lbl">Relances</div></div></div></div>
+</div>
+
+<div class="card-premium">
+  <form method="GET" class="row g-2 mb-3">
+    <div class="col-md-3"><select name="type" class="form-select" onchange="this.form.submit()">
+      <option value="">Tous types</option>
+      {% for t in ['manuel','catalogue','relance','confirmation','reservation_mobile','alerte_papier','rappel_location'] %}<option value="{{ t }}" {% if type_msg==t %}selected{% endif %}>{{ t }}</option>{% endfor %}
+    </select></div>
+    <div class="col-md-6 text-end">
+      <a href="{{ url_for('whatsapp_envoyer') }}" class="btn btn-accent"><i class="bi bi-send"></i> Nouveau message</a>
+    </div>
+  </form>
+
+  <div class="table-responsive">
+    <table class="table table-omega">
+      <thead><tr><th>Date</th><th>Destinataire</th><th>Type</th><th>Véhicule</th><th>Client</th><th>Message</th><th>Statut</th></tr></thead>
+      <tbody>
+        {% for m in messages %}
+        <tr>
+          <td>{{ m.date_envoi[:16]|replace('T', ' ') }}</td>
+          <td>{{ m.destinataire }}</td>
+          <td><span class="badge-statut badge-en_cours">{{ m.type }}</span></td>
+          <td>{% if m.veh_code %}{{ m.veh_code }}{% else %}—{% endif %}</td>
+          <td>{% if m.client_nom %}{{ m.client_prenom or '' }} {{ m.client_nom }}{% else %}—{% endif %}</td>
+          <td><small style="white-space:pre-wrap;display:block;max-width:300px;overflow:hidden;text-overflow:ellipsis;max-height:60px">{{ m.message[:120] }}{% if m.message|length > 120 %}…{% endif %}</small></td>
+          <td><span class="badge-statut badge-{{ 'disponible' if m.statut=='envoye' else 'annulee' }}">{{ m.statut }}</span></td>
+        </tr>
+        {% else %}<tr><td colspan="7" class="text-center text-muted py-4">Aucun message</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

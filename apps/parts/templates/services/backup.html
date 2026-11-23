@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Backup{% endblock %}
+{% block page_title %}Backup & Restauration{% endblock %}
+{% block content %}
+
+<div class="card-premium">
+  <h5>Sauvegarde</h5>
+  <p class="text-muted">Creez un export complet de la base de donnees OMEGA PARTS.</p>
+  <form method="POST" action="{{ url_for('backup_export') }}">
+    <button class="btn btn-accent btn-lg"><i class="bi bi-download"></i> Creer un export</button>
+  </form>
+</div>
+
+<div class="card-premium">
+  <h5>Historique</h5>
+  <div class="table-responsive">
+    <table class="table table-omega">
+      <thead><tr><th>Date</th><th>Type</th><th>Fichier</th><th class="text-end">Taille</th><th>Par</th></tr></thead>
+      <tbody>
+        {% for b in historique %}
+        <tr>
+          <td><small>{{ b.created_at|dtm }}</small></td>
+          <td><span class="badge-statut badge-{{ 'disponible' if b.type == 'export' else 'en_cours' }}">{{ b.type }}</span></td>
+          <td><code style="font-size:11px">{{ b.fichier }}</code></td>
+          <td class="text-end">{{ b.taille_mb }} MB</td>
+          <td><small>{{ b.user_nom or '-' }}</small></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="text-center text-muted py-4">Aucun backup</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

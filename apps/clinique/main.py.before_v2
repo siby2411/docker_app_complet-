@@ -1,0 +1,851 @@
+"""
+Plateforme de gestion Clinique Omega
+Design médical haut de gamme — Développé par Omega Informatique
+"""
+from flask import Flask, render_template_string, request, redirect, url_for, flash, jsonify
+from werkzeug.middleware.proxy_fix import ProxyFix
+import sqlite3
+import os
+from datetime import datetime, timedelta
+
+# ==================== APP ====================
+app = Flask(__name__)
+app.secret_key = 'omega_clinique_2026_secret_key'
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+DB_PATH = "/app/data/clinique.db"
+
+# ==================== AUTH ====================
+try:
+    from auth import init_auth, log_action, role_required, admin_required, staff_required, medecin_required, caisse_required
+    init_auth(app)
+    AUTH_OK = True
+    print("[AUTH] ✅ Module auth chargé")
+except Exception as e:
+    print(f"[AUTH] ⚠️ {e}")
+    AUTH_OK = False
+    def role_required(*r):
+        def deco(f): return f
+        return deco
+    def admin_required(f): return f
+    def staff_required(f): return f
+    def medecin_required(f): return f
+    def caisse_required(f): return f
+    def log_action(*a, **k): pass
+
+try:
+    from flask_login import current_user, login_required
+except ImportError:
+    current_user = None
+    def login_required(f): return f
+
+# ==================== DB ====================
+def get_db():
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+# ==================== DESIGN MÉDICAL HAUT DE GAMME ====================
+HTML_BASE = """
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Clinique Omega — {{ page_title or 'Gestion Médicale' }}</title>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',system-ui,sans-serif}
+body{background:#f0f7f9;color:#0a4d68;min-height:100vh}
+/* ============ TOP BANNER OMEGA ============ */
+.top-banner{background:linear-gradient(90deg,#0a4d68 0%,#088395 60%,#05bfdb 100%);color:white;padding:8px 20px;font-size:0.8rem;display:flex;justify-content:space-between;align-items:center;letter-spacing:0.5px}
+.top-banner i{color:#05bfdb}
+.top-banner .brand-info{display:flex;align-items:center;gap:20px}
+.top-banner .brand-info span{opacity:0.9}
+.top-banner strong{color:#05bfdb;font-weight:700}
+/* ============ HEADER ============ */
+.header{background:white;box-shadow:0 4px 20px rgba(10,77,104,0.08);padding:15px 30px;display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #05bfdb;flex-wrap:wrap;gap:15px}
+.header .logo-section{display:flex;align-items:center;gap:15px}
+.logo-icon{width:55px;height:55px;background:linear-gradient(135deg,#0a4d68,#05bfdb);border-radius:14px;display:flex;justify-content:center;align-items:center;color:white;font-size:1.6rem;box-shadow:0 6px 20px rgba(10,77,104,0.25)}
+.header h1{font-size:1.5rem;color:#0a4d68;font-weight:700;line-height:1.1}
+.header h1 span{color:#05bfdb;font-weight:300}
+.header .subtitle{font-size:0.75rem;color:#64748b;margin-top:3px;letter-spacing:0.5px;text-transform:uppercase}
+.user-section{display:flex;align-items:center;gap:15px;flex-wrap:wrap}
+.user-badge{display:flex;align-items:center;gap:10px;padding:8px 15px;background:#f0f7f9;border-radius:30px;border:1px solid #cbe4ec}
+.user-badge .avatar{width:36px;height:36px;background:linear-gradient(135deg,#088395,#05bfdb);border-radius:50%;display:flex;justify-content:center;align-items:center;color:white;font-weight:700;font-size:0.9rem}
+.user-badge .info{display:flex;flex-direction:column;line-height:1.2}
+.user-badge .name{font-weight:600;font-size:0.85rem;color:#0a4d68}
+.user-badge .role{font-size:0.7rem;color:#05bfdb;text-transform:uppercase;font-weight:600;letter-spacing:0.5px}
+.btn-logout{background:#dc2626;color:white;padding:8px 15px;border-radius:8px;text-decoration:none;font-size:0.8rem;font-weight:600;transition:0.3s}
+.btn-logout:hover{background:#b91c1c;transform:translateY(-1px)}
+/* ============ NAV ============ */
+.nav{background:white;padding:0 25px;display:flex;gap:3px;border-bottom:1px solid #e2e8f0;flex-wrap:wrap;box-shadow:0 2px 6px rgba(0,0,0,0.03)}
+.nav a{padding:14px 18px;color:#475569;text-decoration:none;border-bottom:3px solid transparent;transition:0.3s;font-size:0.85rem;display:flex;align-items:center;gap:7px;font-weight:500}
+.nav a:hover{color:#0a4d68;background:#f0f7f9}
+.nav a.active{color:#05bfdb;border-bottom-color:#05bfdb;background:#f0f7f9;font-weight:600}
+/* ============ CONTAINER ============ */
+.container{max-width:1500px;margin:25px auto;padding:0 25px}
+/* ============ PAGE HEADER ============ */
+.page-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:25px;flex-wrap:wrap;gap:15px}
+.page-header h2{font-size:1.6rem;color:#0a4d68;font-weight:700;display:flex;align-items:center;gap:12px}
+.page-header h2 i{color:#05bfdb;font-size:1.4rem}
+.page-header .page-subtitle{color:#64748b;font-size:0.85rem;margin-top:4px}
+/* ============ STATS CARDS ============ */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px;margin-bottom:25px}
+.stat-card{background:white;border-radius:14px;padding:22px;position:relative;overflow:hidden;box-shadow:0 4px 15px rgba(10,77,104,0.06);transition:0.3s;border-left:4px solid #05bfdb}
+.stat-card:hover{transform:translateY(-3px);box-shadow:0 8px 25px rgba(10,77,104,0.12)}
+.stat-card .stat-icon{position:absolute;right:15px;top:15px;font-size:2.5rem;color:#05bfdb;opacity:0.15}
+.stat-card .stat-value{font-size:2rem;font-weight:800;color:#0a4d68;line-height:1}
+.stat-card .stat-label{color:#64748b;font-size:0.78rem;text-transform:uppercase;font-weight:600;letter-spacing:0.5px;margin-top:8px}
+.stat-card.rose{border-left-color:#e11d48}.stat-card.rose .stat-icon{color:#e11d48}
+.stat-card.green{border-left-color:#16a34a}.stat-card.green .stat-icon{color:#16a34a}
+.stat-card.amber{border-left-color:#f59e0b}.stat-card.amber .stat-icon{color:#f59e0b}
+.stat-card.purple{border-left-color:#7c3aed}.stat-card.purple .stat-icon{color:#7c3aed}
+/* ============ CARDS ============ */
+.card{background:white;border-radius:14px;padding:25px;box-shadow:0 4px 15px rgba(10,77,104,0.06);margin-bottom:20px}
+.card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;flex-wrap:wrap;gap:10px;padding-bottom:15px;border-bottom:2px solid #f0f7f9}
+.card-header h3{font-size:1.15rem;color:#0a4d68;font-weight:700;display:flex;align-items:center;gap:10px}
+.card-header h3 i{color:#05bfdb}
+/* ============ BUTTONS ============ */
+.btn{padding:10px 18px;border:none;border-radius:8px;cursor:pointer;font-weight:600;display:inline-flex;align-items:center;gap:8px;text-decoration:none;transition:0.3s;font-size:0.85rem}
+.btn-primary{background:linear-gradient(135deg,#0a4d68,#088395);color:white;box-shadow:0 4px 12px rgba(10,77,104,0.25)}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(10,77,104,0.35)}
+.btn-success{background:linear-gradient(135deg,#16a34a,#22c55e);color:white}
+.btn-success:hover{transform:translateY(-2px)}
+.btn-warning{background:linear-gradient(135deg,#f59e0b,#fbbf24);color:white}
+.btn-danger{background:linear-gradient(135deg,#dc2626,#ef4444);color:white}
+.btn-info{background:linear-gradient(135deg,#0891b2,#06b6d4);color:white}
+.btn-sm{padding:6px 12px;font-size:0.75rem}
+/* ============ TABLES ============ */
+.table-wrap{overflow-x:auto;border-radius:10px}
+table{width:100%;border-collapse:collapse;font-size:0.88rem}
+th,td{padding:13px 15px;text-align:left;border-bottom:1px solid #f0f7f9}
+th{background:#f0f7f9;color:#0a4d68;font-size:0.72rem;text-transform:uppercase;font-weight:700;letter-spacing:0.5px}
+tbody tr{transition:0.2s}
+tbody tr:hover{background:#f8fcfd}
+/* ============ BADGES ============ */
+.badge{padding:4px 11px;border-radius:20px;font-size:0.7rem;font-weight:700;display:inline-flex;align-items:center;gap:5px}
+.badge-success{background:#dcfce7;color:#166534}
+.badge-warning{background:#fef3c7;color:#92400e}
+.badge-danger{background:#fee2e2;color:#991b1b}
+.badge-info{background:#cffafe;color:#155e75}
+.badge-primary{background:#e0f2fe;color:#075985}
+.badge-role-admin{background:linear-gradient(135deg,#7c3aed,#a855f7);color:white}
+.badge-role-medecin{background:linear-gradient(135deg,#0891b2,#06b6d4);color:white}
+.badge-role-infirmier{background:linear-gradient(135deg,#16a34a,#22c55e);color:white}
+.badge-role-caisse{background:linear-gradient(135deg,#f59e0b,#fbbf24);color:white}
+.badge-role-patient{background:linear-gradient(135deg,#64748b,#94a3b8);color:white}
+/* ============ FLASH ============ */
+.flash{padding:14px 18px;border-radius:10px;margin-bottom:15px;display:flex;align-items:center;gap:10px;font-size:0.9rem;font-weight:500}
+.flash-success{background:#dcfce7;color:#166534;border-left:4px solid #16a34a}
+.flash-danger{background:#fee2e2;color:#991b1b;border-left:4px solid #dc2626}
+.flash-warning{background:#fef3c7;color:#92400e;border-left:4px solid #f59e0b}
+/* ============ FORMS ============ */
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.form-group{margin-bottom:15px}
+.form-group label{display:block;font-weight:600;color:#0a4d68;margin-bottom:6px;font-size:0.85rem}
+.form-group input,.form-group select,.form-group textarea{width:100%;padding:11px 14px;border:2px solid #e2e8f0;border-radius:8px;font-size:0.9rem;background:#f8fafc;transition:0.3s;font-family:inherit}
+.form-group input:focus,.form-group select:focus,.form-group textarea:focus{outline:none;border-color:#05bfdb;background:white;box-shadow:0 0 0 4px rgba(5,191,219,0.08)}
+.form-full{grid-column:1/-1}
+/* ============ FOOTER ============ */
+.footer{background:linear-gradient(135deg,#0a4d68,#088395);color:white;padding:25px;margin-top:50px;text-align:center;font-size:0.85rem}
+.footer strong{color:#05bfdb}
+.footer .footer-sub{opacity:0.75;font-size:0.75rem;margin-top:6px}
+/* ============ EMPTY STATE ============ */
+.empty{text-align:center;padding:50px 20px;color:#94a3b8}
+.empty i{font-size:3.5rem;color:#cbe4ec;margin-bottom:15px}
+/* ============ RESPONSIVE ============ */
+@media(max-width:768px){
+  .form-grid{grid-template-columns:1fr}
+  .header{flex-direction:column;align-items:flex-start}
+  .stats{grid-template-columns:1fr 1fr}
+  .container{padding:0 15px}
+  .top-banner{flex-direction:column;gap:5px;text-align:center}
+}
+</style>
+</head>
+<body>
+
+<!-- ============ TOP BANNER OMEGA INFORMATIQUE ============ -->
+<div class="top-banner">
+  <div class="brand-info">
+    <span><i class="fas fa-laptop-code"></i> <strong>OMEGA INFORMATIQUE</strong> — Solutions Digitales Médicales</span>
+  </div>
+  <div class="brand-info">
+    <span><i class="fas fa-phone"></i> +221 33 800 00 00</span>
+    <span><i class="fas fa-envelope"></i> contact@omega-informatique.sn</span>
+    <span><i class="fas fa-location-dot"></i> Dakar, Sénégal</span>
+  </div>
+</div>
+
+<!-- ============ HEADER ============ -->
+<header class="header">
+  <div class="logo-section">
+    <div class="logo-icon"><i class="fas fa-heart-pulse"></i></div>
+    <div>
+      <h1>CLINIQUE <span>OMEGA</span></h1>
+      <div class="subtitle"><i class="fas fa-shield-halved"></i> Gestion Médicale Conforme OMS</div>
+    </div>
+  </div>
+  <div class="user-section">
+    {% if current_user and current_user.is_authenticated %}
+    <div class="user-badge">
+      <div class="avatar">{{ current_user.prenom[0] if current_user.prenom else 'U' }}{{ current_user.nom[0] if current_user.nom else '' }}</div>
+      <div class="info">
+        <span class="name">{{ current_user.prenom }} {{ current_user.nom }}</span>
+        <span class="role">{{ current_user.role }}</span>
+      </div>
+    </div>
+    <a href="/logout" class="btn-logout"><i class="fas fa-right-from-bracket"></i> Déconnexion</a>
+    {% endif %}
+  </div>
+</header>
+
+<!-- ============ NAVIGATION ============ -->
+<nav class="nav">
+  <a href="/" class="{{ 'active' if active=='dashboard' else '' }}"><i class="fas fa-chart-pie"></i> Tableau de bord</a>
+  {% if current_user and current_user.is_authenticated %}
+    {% if current_user.role in ['admin','medecin','infirmier'] %}
+    <a href="/patients" class="{{ 'active' if active=='patients' else '' }}"><i class="fas fa-hospital-user"></i> Patients</a>
+    {% endif %}
+    {% if current_user.role in ['admin','medecin'] %}
+    <a href="/consultations" class="{{ 'active' if active=='consultations' else '' }}"><i class="fas fa-stethoscope"></i> Consultations</a>
+    {% endif %}
+    {% if current_user.role in ['admin','medecin','infirmier'] %}
+    <a href="/medecins" class="{{ 'active' if active=='medecins' else '' }}"><i class="fas fa-user-doctor"></i> Médecins</a>
+    {% endif %}
+    {% if current_user.role in ['admin'] %}
+    <a href="/personnel" class="{{ 'active' if active=='personnel' else '' }}"><i class="fas fa-users"></i> Personnel</a>
+    <a href="/departements" class="{{ 'active' if active=='departements' else '' }}"><i class="fas fa-building"></i> Départements</a>
+    <a href="/salles" class="{{ 'active' if active=='salles' else '' }}"><i class="fas fa-door-open"></i> Salles</a>
+    {% endif %}
+    {% if current_user.role in ['admin','caisse'] %}
+    <a href="/facturation" class="{{ 'active' if active=='facturation' else '' }}"><i class="fas fa-file-invoice-dollar"></i> Facturation</a>
+    {% endif %}
+    {% if current_user.role in ['admin','medecin','infirmier'] %}
+    <a href="/hospitalisations" class="{{ 'active' if active=='hospitalisations' else '' }}"><i class="fas fa-bed-pulse"></i> Hospitalisations</a>
+    {% endif %}
+  {% endif %}
+</nav>
+
+<!-- ============ CONTAINER ============ -->
+<div class="container">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}{% for cat, msg in messages %}
+      <div class="flash flash-{{ cat }}"><i class="fas fa-circle-info"></i> {{ msg }}</div>
+    {% endfor %}{% endif %}
+  {% endwith %}
+
+  {% block content %}{% endblock %}
+</div>
+
+<!-- ============ FOOTER ============ -->
+<footer class="footer">
+  <div>&copy; 2026 <strong>CLINIQUE OMEGA</strong> — Tous droits réservés</div>
+  <div class="footer-sub">
+    <i class="fas fa-code"></i> Développé par <strong>OMEGA INFORMATIQUE</strong> — Solutions digitales médicales · Dakar, Sénégal
+  </div>
+</footer>
+
+</body>
+</html>
+"""
+
+
+def render_page(content, active='dashboard', page_title='Clinique Omega'):
+    """Rendu de page avec le layout médical"""
+    page = HTML_BASE.replace("{% block content %}{% endblock %}", content)
+    return render_template_string(page, active=active, page_title=page_title, current_user=current_user)
+
+
+# ==================== DASHBOARD ====================
+@app.route('/')
+def index():
+    if not (current_user and current_user.is_authenticated):
+        return redirect('/login')
+
+    conn = get_db()
+    c = conn.cursor()
+
+    # Stats générales
+    c.execute("SELECT COUNT(*) FROM patients WHERE actif=1")
+    total_patients = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM medecins WHERE actif=1")
+    total_medecins = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM consultations WHERE date(date_consultation)=date('now')")
+    consultations_jour = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM hospitalisations WHERE statut='En cours'")
+    hospitalisations = c.fetchone()[0]
+
+    c.execute("SELECT COALESCE(SUM(montant_total),0) FROM factures WHERE strftime('%Y-%m', date_emission)=strftime('%Y-%m','now')")
+    ca_mois = c.fetchone()[0]
+
+    c.execute("SELECT COALESCE(SUM(montant_total-montant_paye),0) FROM factures WHERE statut!='Payé'")
+    impayes = c.fetchone()[0]
+
+    # Dernières consultations
+    c.execute("""SELECT c.*, p.nom as p_nom, p.prenom as p_prenom, p.numero_dossier,
+                 m.nom as m_nom, m.prenom as m_prenom
+                 FROM consultations c
+                 JOIN patients p ON c.patient_id = p.id
+                 JOIN medecins m ON c.medecin_id = m.id
+                 ORDER BY c.date_consultation DESC LIMIT 8""")
+    dernieres_consult = c.fetchall()
+
+    # Rendez-vous à venir
+    c.execute("""SELECT r.*, p.nom as p_nom, p.prenom as p_prenom, m.nom as m_nom, m.prenom as m_prenom
+                 FROM rendez_vous r
+                 JOIN patients p ON r.patient_id = p.id
+                 JOIN medecins m ON r.medecin_id = m.id
+                 WHERE r.date_rdv >= date('now')
+                 ORDER BY r.date_rdv, r.heure_rdv LIMIT 5""")
+    prochains_rdv = c.fetchall()
+
+    conn.close()
+
+    role = current_user.role
+    role_badge_class = f"badge-role-{role}"
+
+    content = f"""
+    <div class="page-header">
+      <div>
+        <h2><i class="fas fa-chart-pie"></i> Tableau de bord</h2>
+        <div class="page-subtitle">Vue d'ensemble de l'activité clinique — {datetime.now().strftime('%A %d %B %Y')}</div>
+      </div>
+      <div>
+        <span class="badge {role_badge_class}" style="padding:8px 16px;font-size:0.8rem">
+          <i class="fas fa-user-shield"></i> Connecté : {current_user.prenom} {current_user.nom} ({role})
+        </span>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat-card">
+        <i class="fas fa-hospital-user stat-icon"></i>
+        <div class="stat-value">{total_patients}</div>
+        <div class="stat-label">Patients actifs</div>
+      </div>
+      <div class="stat-card green">
+        <i class="fas fa-user-doctor stat-icon"></i>
+        <div class="stat-value">{total_medecins}</div>
+        <div class="stat-label">Médecins</div>
+      </div>
+      <div class="stat-card purple">
+        <i class="fas fa-stethoscope stat-icon"></i>
+        <div class="stat-value">{consultations_jour}</div>
+        <div class="stat-label">Consultations aujourd'hui</div>
+      </div>
+      <div class="stat-card amber">
+        <i class="fas fa-bed-pulse stat-icon"></i>
+        <div class="stat-value">{hospitalisations}</div>
+        <div class="stat-label">Hospitalisations en cours</div>
+      </div>
+      <div class="stat-card green">
+        <i class="fas fa-money-bill-wave stat-icon"></i>
+        <div class="stat-value">{ca_mois:,.0f}</div>
+        <div class="stat-label">CA ce mois (FCFA)</div>
+      </div>
+      <div class="stat-card rose">
+        <i class="fas fa-triangle-exclamation stat-icon"></i>
+        <div class="stat-value">{impayes:,.0f}</div>
+        <div class="stat-label">Impayés (FCFA)</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <h3><i class="fas fa-clock-rotate-left"></i> Dernières consultations</h3>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>N°</th><th>Patient</th><th>Médecin</th><th>Motif</th><th>Diagnostic</th><th>Date</th><th>Statut</th></tr></thead>
+          <tbody>
+    """
+    for cons in dernieres_consult:
+        badge = 'badge-success' if cons['statut']=='Terminé' else ('badge-warning' if cons['statut']=='En cours' else 'badge-info')
+        content += f"""
+        <tr>
+          <td><strong>{cons['numero']}</strong></td>
+          <td>{cons['p_nom']} {cons['p_prenom']}<br><small style="color:#94a3b8">{cons['numero_dossier']}</small></td>
+          <td>Dr {cons['m_nom']} {cons['m_prenom']}</td>
+          <td>{cons['motif'][:40] if cons['motif'] else '-'}</td>
+          <td>{cons['diagnostic_principal'][:35] if cons['diagnostic_principal'] else '-'}</td>
+          <td>{cons['date_consultation'][:10]}</td>
+          <td><span class="badge {badge}">{cons['statut']}</span></td>
+        </tr>
+        """
+    if not dernieres_consult:
+        content += '<tr><td colspan="7" class="empty"><i class="fas fa-inbox"></i><br>Aucune consultation</td></tr>'
+    content += """
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <h3><i class="fas fa-calendar-check"></i> Prochains rendez-vous</h3>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Date</th><th>Heure</th><th>Patient</th><th>Médecin</th><th>Motif</th><th>Statut</th></tr></thead>
+          <tbody>
+    """
+    for rdv in prochains_rdv:
+        content += f"""
+        <tr>
+          <td><strong>{rdv['date_rdv']}</strong></td>
+          <td><i class="fas fa-clock" style="color:#05bfdb"></i> {rdv['heure_rdv']}</td>
+          <td>{rdv['p_nom']} {rdv['p_prenom']}</td>
+          <td>Dr {rdv['m_nom']} {rdv['m_prenom']}</td>
+          <td>{rdv['motif'] or '-'}</td>
+          <td><span class="badge badge-info">{rdv['statut']}</span></td>
+        </tr>
+        """
+    if not prochains_rdv:
+        content += '<tr><td colspan="6" class="empty"><i class="fas fa-calendar"></i><br>Aucun rendez-vous à venir</td></tr>'
+    content += """
+          </tbody>
+        </table>
+      </div>
+    </div>
+    """
+    return render_page(content, active='dashboard', page_title='Tableau de bord')
+
+
+# ==================== PATIENTS ====================
+@app.route('/patients')
+@role_required('admin', 'medecin', 'infirmier')
+def patients():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT * FROM patients WHERE actif=1 ORDER BY nom, prenom")
+    rows = c.fetchall()
+    conn.close()
+
+    content = """
+    <div class="page-header">
+      <div>
+        <h2><i class="fas fa-hospital-user"></i> Patients</h2>
+        <div class="page-subtitle">Gestion des dossiers patients</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <h3><i class="fas fa-list"></i> Liste des patients</h3>
+        <span class="badge badge-primary">""" + str(len(rows)) + """ patients</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>N° Dossier</th><th>Carte</th><th>Nom & Prénom</th><th>Sexe</th><th>Âge</th><th>Téléphone</th><th>Ville</th><th>Groupe</th><th>Assurance</th></tr></thead>
+          <tbody>
+    """
+    for p in rows:
+        # Calcul âge
+        try:
+            naiss = datetime.fromisoformat(p['date_naissance'])
+            age = (datetime.now() - naiss).days // 365
+        except:
+            age = '?'
+
+        sexe_icon = '<i class="fas fa-mars" style="color:#2563eb"></i>' if p['sexe']=='M' else '<i class="fas fa-venus" style="color:#db2777"></i>'
+        content += f"""
+        <tr>
+          <td><strong>{p['numero_dossier']}</strong></td>
+          <td><code style="background:#f0f7f9;padding:3px 8px;border-radius:5px;font-size:0.8rem">{p['carte_medicale']}</code></td>
+          <td>{p['nom']} {p['prenom']}</td>
+          <td>{sexe_icon} {p['sexe']}</td>
+          <td>{age} ans</td>
+          <td>{p['telephone']}</td>
+          <td>{p['ville'] or '-'}</td>
+          <td><span class="badge badge-info">{p['groupe_sanguin'] or '?'}</span></td>
+          <td>{p['assurance'] or 'Aucune'}</td>
+        </tr>
+        """
+    content += """
+          </tbody>
+        </table>
+      </div>
+    </div>
+    """
+    return render_page(content, active='patients', page_title='Patients')
+
+
+# ==================== CONSULTATIONS ====================
+@app.route('/consultations')
+@role_required('admin', 'medecin')
+def consultations():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT c.*, p.nom as p_nom, p.prenom as p_prenom, p.numero_dossier,
+                 m.nom as m_nom, m.prenom as m_prenom
+                 FROM consultations c
+                 JOIN patients p ON c.patient_id = p.id
+                 JOIN medecins m ON c.medecin_id = m.id
+                 ORDER BY c.date_consultation DESC LIMIT 100""")
+    rows = c.fetchall()
+    conn.close()
+
+    content = """
+    <div class="page-header">
+      <div>
+        <h2><i class="fas fa-stethoscope"></i> Consultations</h2>
+        <div class="page-subtitle">Historique des actes médicaux</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <h3><i class="fas fa-list"></i> Toutes les consultations</h3>
+        <span class="badge badge-primary">""" + str(len(rows)) + """ consultations</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>N°</th><th>Patient</th><th>Médecin</th><th>Motif</th><th>Diagnostic</th><th>CIM-10</th><th>Coût</th><th>Date</th><th>Statut</th></tr></thead>
+          <tbody>
+    """
+    for cs in rows:
+        badge = 'badge-success' if cs['statut']=='Terminé' else 'badge-warning'
+        content += f"""
+        <tr>
+          <td><strong>{cs['numero']}</strong></td>
+          <td>{cs['p_nom']} {cs['p_prenom']}<br><small style="color:#94a3b8">{cs['numero_dossier']}</small></td>
+          <td>Dr {cs['m_nom']} {cs['m_prenom']}</td>
+          <td>{cs['motif'][:35] if cs['motif'] else '-'}</td>
+          <td>{cs['diagnostic_principal'][:30] if cs['diagnostic_principal'] else '-'}</td>
+          <td><code>{cs['code_cim10'] or '-'}</code></td>
+          <td><strong>{cs['cout']:,.0f}</strong> FCFA</td>
+          <td>{cs['date_consultation'][:10]}</td>
+          <td><span class="badge {badge}">{cs['statut']}</span></td>
+        </tr>
+        """
+    content += """
+          </tbody>
+        </table>
+      </div>
+    </div>
+    """
+    return render_page(content, active='consultations', page_title='Consultations')
+
+
+# ==================== MEDECINS ====================
+@app.route('/medecins')
+@role_required('admin', 'medecin', 'infirmier')
+def medecins():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT m.*, d.nom as dept_nom FROM medecins m
+                 LEFT JOIN departements d ON m.departement_id = d.id
+                 WHERE m.actif=1 ORDER BY m.nom""")
+    rows = c.fetchall()
+    conn.close()
+
+    content = """
+    <div class="page-header">
+      <div>
+        <h2><i class="fas fa-user-doctor"></i> Corps Médical</h2>
+        <div class="page-subtitle">Médecins et spécialistes de la clinique</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <h3><i class="fas fa-list"></i> Médecins</h3>
+        <span class="badge badge-success">""" + str(len(rows)) + """ praticiens</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Code</th><th>Nom & Prénom</th><th>Spécialité</th><th>N° Ordre</th><th>Département</th><th>Expérience</th><th>Tarif</th><th>Téléphone</th><th>Langues</th></tr></thead>
+          <tbody>
+    """
+    for m in rows:
+        content += f"""
+        <tr>
+          <td><strong>{m['code']}</strong></td>
+          <td><i class="fas fa-user-doctor" style="color:#05bfdb"></i> Dr {m['nom']} {m['prenom']}</td>
+          <td><span class="badge badge-info">{m['specialite']}</span></td>
+          <td><code style="font-size:0.75rem">{m['num_ordre'] or '-'}</code></td>
+          <td>{m['dept_nom'] or '-'}</td>
+          <td>{m['annees_experience']} ans</td>
+          <td><strong>{m['tarif_consultation']:,.0f}</strong> FCFA</td>
+          <td>{m['telephone']}</td>
+          <td><small>{m['langues'] or '-'}</small></td>
+        </tr>
+        """
+    content += """
+          </tbody>
+        </table>
+      </div>
+    </div>
+    """
+    return render_page(content, active='medecins', page_title='Médecins')
+
+
+# ==================== PERSONNEL ====================
+@app.route('/personnel')
+@admin_required
+def personnel():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT p.*, d.nom as dept_nom FROM personnel p
+                 LEFT JOIN departements d ON p.departement_id = d.id
+                 WHERE p.actif=1 ORDER BY p.nom""")
+    rows = c.fetchall()
+    conn.close()
+
+    content = """
+    <div class="page-header">
+      <div>
+        <h2><i class="fas fa-users"></i> Personnel</h2>
+        <div class="page-subtitle">Infirmiers, aides-soignants et personnel administratif</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <h3><i class="fas fa-list"></i> Personnel soignant</h3>
+        <span class="badge badge-primary">""" + str(len(rows)) + """ agents</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Code</th><th>Nom & Prénom</th><th>Fonction</th><th>Département</th><th>Téléphone</th><th>Email</th><th>Embauche</th></tr></thead>
+          <tbody>
+    """
+    for p in rows:
+        content += f"""
+        <tr>
+          <td><strong>{p['code']}</strong></td>
+          <td>{p['nom']} {p['prenom']}</td>
+          <td><span class="badge badge-warning">{p['fonction']}</span></td>
+          <td>{p['dept_nom'] or '-'}</td>
+          <td>{p['telephone']}</td>
+          <td>{p['email'] or '-'}</td>
+          <td>{p['date_embauche'] or '-'}</td>
+        </tr>
+        """
+    content += """
+          </tbody>
+        </table>
+      </div>
+    </div>
+    """
+    return render_page(content, active='personnel', page_title='Personnel')
+
+
+# ==================== DEPARTEMENTS ====================
+@app.route('/departements')
+@admin_required
+def departements():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT * FROM departements WHERE actif=1 ORDER BY nom")
+    rows = c.fetchall()
+    conn.close()
+
+    content = """
+    <div class="page-header">
+      <div>
+        <h2><i class="fas fa-building"></i> Départements</h2>
+        <div class="page-subtitle">Organisation médicale par spécialité</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Code</th><th>Département</th><th>Description</th><th>Téléphone</th><th>Email</th></tr></thead>
+          <tbody>
+    """
+    for d in rows:
+        content += f"""
+        <tr>
+          <td><strong>{d['code']}</strong></td>
+          <td><i class="fas fa-hospital" style="color:#05bfdb"></i> {d['nom']}</td>
+          <td>{d['description'] or '-'}</td>
+          <td>{d['telephone'] or '-'}</td>
+          <td>{d['email'] or '-'}</td>
+        </tr>
+        """
+    content += "</tbody></table></div></div>"
+    return render_page(content, active='departements', page_title='Départements')
+
+
+# ==================== SALLES ====================
+@app.route('/salles')
+@admin_required
+def salles():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT s.*, si.nom as site_nom, d.nom as dept_nom FROM salles s
+                 LEFT JOIN sites si ON s.site_id = si.id
+                 LEFT JOIN departements d ON s.departement_id = d.id
+                 WHERE s.actif=1 ORDER BY si.nom, s.batiment, s.etage, s.code""")
+    rows = c.fetchall()
+    conn.close()
+
+    content = """
+    <div class="page-header">
+      <div>
+        <h2><i class="fas fa-door-open"></i> Salles & Localisation</h2>
+        <div class="page-subtitle">Bâtiments, étages et affectation des salles</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Code</th><th>Salle</th><th>Site</th><th>Bâtiment</th><th>Étage</th><th>Type</th><th>Département</th><th>Capacité</th></tr></thead>
+          <tbody>
+    """
+    for s in rows:
+        content += f"""
+        <tr>
+          <td><strong>{s['code']}</strong></td>
+          <td><i class="fas fa-door-closed" style="color:#05bfdb"></i> {s['nom']}</td>
+          <td>{s['site_nom'] or '-'}</td>
+          <td><span class="badge badge-info"><i class="fas fa-building"></i> {s['batiment']}</span></td>
+          <td>Étage {s['etage']}</td>
+          <td>{s['type']}</td>
+          <td>{s['dept_nom'] or '-'}</td>
+          <td>{s['capacite']}</td>
+        </tr>
+        """
+    content += "</tbody></table></div></div>"
+    return render_page(content, active='salles', page_title='Salles')
+
+
+# ==================== FACTURATION ====================
+@app.route('/facturation')
+@role_required('admin', 'caisse')
+def facturation():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT f.*, p.nom as p_nom, p.prenom as p_prenom, p.numero_dossier
+                 FROM factures f JOIN patients p ON f.patient_id = p.id
+                 ORDER BY f.date_emission DESC LIMIT 100""")
+    rows = c.fetchall()
+
+    c.execute("SELECT COALESCE(SUM(montant_total),0), COALESCE(SUM(montant_paye),0) FROM factures")
+    totaux = c.fetchone()
+    conn.close()
+
+    total_emis, total_paye = totaux[0], totaux[1]
+    total_impaye = total_emis - total_paye
+
+    content = f"""
+    <div class="page-header">
+      <div>
+        <h2><i class="fas fa-file-invoice-dollar"></i> Facturation</h2>
+        <div class="page-subtitle">Gestion financière et encaissements</div>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat-card">
+        <i class="fas fa-file-invoice stat-icon"></i>
+        <div class="stat-value">{total_emis:,.0f}</div>
+        <div class="stat-label">Total émis (FCFA)</div>
+      </div>
+      <div class="stat-card green">
+        <i class="fas fa-check-circle stat-icon"></i>
+        <div class="stat-value">{total_paye:,.0f}</div>
+        <div class="stat-label">Encaissé (FCFA)</div>
+      </div>
+      <div class="stat-card rose">
+        <i class="fas fa-exclamation-triangle stat-icon"></i>
+        <div class="stat-value">{total_impaye:,.0f}</div>
+        <div class="stat-label">Impayés (FCFA)</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <h3><i class="fas fa-list"></i> Dernières factures</h3>
+        <span class="badge badge-primary">{len(rows)} factures</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>N° Facture</th><th>Patient</th><th>Date</th><th>Montant</th><th>Payé</th><th>Reste</th><th>Mode</th><th>Statut</th></tr></thead>
+          <tbody>
+    """
+    for f in rows:
+        reste = f['montant_total'] - f['montant_paye']
+        if f['statut']=='Payé':
+            badge = 'badge-success'
+        elif f['statut']=='Partiel':
+            badge = 'badge-warning'
+        else:
+            badge = 'badge-danger'
+        content += f"""
+        <tr>
+          <td><strong>{f['numero']}</strong></td>
+          <td>{f['p_nom']} {f['p_prenom']}<br><small style="color:#94a3b8">{f['numero_dossier']}</small></td>
+          <td>{f['date_emission'][:10]}</td>
+          <td><strong>{f['montant_total']:,.0f}</strong> FCFA</td>
+          <td style="color:#16a34a"><strong>{f['montant_paye']:,.0f}</strong></td>
+          <td style="color:#dc2626"><strong>{reste:,.0f}</strong></td>
+          <td>{f['mode_paiement'] or '-'}</td>
+          <td><span class="badge {badge}">{f['statut']}</span></td>
+        </tr>
+        """
+    content += "</tbody></table></div></div>"
+    return render_page(content, active='facturation', page_title='Facturation')
+
+
+# ==================== HOSPITALISATIONS ====================
+@app.route('/hospitalisations')
+@role_required('admin', 'medecin', 'infirmier')
+def hospitalisations():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT h.*, p.nom as p_nom, p.prenom as p_prenom, p.numero_dossier,
+                 s.nom as salle_nom, s.batiment, s.etage
+                 FROM hospitalisations h
+                 JOIN patients p ON h.patient_id = p.id
+                 JOIN salles s ON h.salle_id = s.id
+                 ORDER BY h.date_entree DESC LIMIT 100""")
+    rows = c.fetchall()
+    conn.close()
+
+    content = """
+    <div class="page-header">
+      <div>
+        <h2><i class="fas fa-bed-pulse"></i> Hospitalisations</h2>
+        <div class="page-subtitle">Gestion des séjours et occupation des lits</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>N°</th><th>Patient</th><th>Chambre</th><th>Localisation</th><th>Lit</th><th>Entrée</th><th>Sortie</th><th>Motif</th><th>Coût/jour</th><th>Statut</th></tr></thead>
+          <tbody>
+    """
+    for h in rows:
+        badge = 'badge-warning' if h['statut']=='En cours' else 'badge-success'
+        content += f"""
+        <tr>
+          <td><strong>{h['numero']}</strong></td>
+          <td>{h['p_nom']} {h['p_prenom']}<br><small style="color:#94a3b8">{h['numero_dossier']}</small></td>
+          <td>{h['salle_nom']}</td>
+          <td><small><i class="fas fa-building"></i> {h['batiment']} — Étage {h['etage']}</small></td>
+          <td><span class="badge badge-info">{h['lit_numero'] or '-'}</span></td>
+          <td>{h['date_entree'][:10]}</td>
+          <td>{h['date_sortie'][:10] if h['date_sortie'] else '<span style="color:#f59e0b">En cours</span>'}</td>
+          <td>{h['motif'][:35]}</td>
+          <td><strong>{h['cout_journalier']:,.0f}</strong> FCFA</td>
+          <td><span class="badge {badge}">{h['statut']}</span></td>
+        </tr>
+        """
+    content += "</tbody></table></div></div>"
+    return render_page(content, active='hospitalisations', page_title='Hospitalisations')
+
+
+# ==================== HEALTHCHECK ====================
+@app.route('/health')
+def health():
+    return jsonify(status='ok', service='clinique-omega', timestamp=datetime.now().isoformat())
+
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8000, debug=False)

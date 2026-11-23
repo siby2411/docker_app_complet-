@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Recherche{% endblock %}
+{% block page_title %}🔎 Recherche globale{% endblock %}
+{% block content %}
+<div class="card-premium">
+  <form method="GET" class="mb-4">
+    <div class="input-group input-group-lg">
+      <input type="search" name="q" class="form-control" placeholder="Rechercher véhicule, client, vente, location…" value="{{ q }}" autofocus>
+      <button class="btn btn-accent"><i class="bi bi-search"></i> Rechercher</button>
+    </div>
+  </form>
+
+  {% if q %}
+  <h6 class="text-muted mb-3">Résultats pour « <strong>{{ q }}</strong> »</h6>
+
+  {% if resultats.vehicules %}
+  <h6><i class="bi bi-car-front"></i> Véhicules ({{ resultats.vehicules|length }})</h6>
+  <div class="row g-2 mb-4">
+    {% for v in resultats.vehicules %}
+    <div class="col-md-4">
+      <a href="{{ url_for('vehicule_detail', vid=v.id) }}" class="text-decoration-none text-dark d-block p-3 border rounded">
+        <strong>{{ v.code }}</strong> — {{ v.designation }}<br>
+        <small class="text-muted">{{ v.immatriculation }}</small>
+      </a>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if resultats.clients %}
+  <h6><i class="bi bi-people"></i> Clients ({{ resultats.clients|length }})</h6>
+  <div class="row g-2 mb-4">
+    {% for c in resultats.clients %}
+    <div class="col-md-4">
+      <a href="{{ url_for('client_detail', cid=c.id) }}" class="text-decoration-none text-dark d-block p-3 border rounded">
+        <strong>{{ c.designation }}</strong><br>
+        <small class="text-muted">{{ c.telephone }} · {{ c.code }}</small>
+      </a>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if resultats.ventes %}
+  <h6><i class="bi bi-receipt"></i> Ventes ({{ resultats.ventes|length }})</h6>
+  <ul class="list-group mb-4">
+    {% for v in resultats.ventes %}
+    <li class="list-group-item d-flex justify-content-between">
+      <a href="{{ url_for('vente_detail', vente_id=v.id) }}">{{ v.numero }}</a>
+      <span>{{ v.montant_ttc|money }} — {{ v.date_vente|dte }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if resultats.locations %}
+  <h6><i class="bi bi-key"></i> Locations ({{ resultats.locations|length }})</h6>
+  <ul class="list-group">
+    {% for l in resultats.locations %}
+    <li class="list-group-item d-flex justify-content-between">
+      <a href="{{ url_for('location_detail', loc_id=l.id) }}">{{ l.numero }}</a>
+      <span>{{ l.date_debut|dte }} → {{ l.date_fin_prevue|dte }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if not (resultats.vehicules or resultats.clients or resultats.ventes or resultats.locations) %}
+  <p class="text-center text-muted py-4">Aucun résultat.</p>
+  {% endif %}
+  {% else %}
+  <p class="text-muted">Saisissez au moins 2 caractères.</p>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,636 @@
+"""
+💊 Pharmacie Pro — Initialisation base de données
+Officines, médicaments, lots, ordonnances, commandes
+"""
+import sqlite3
+import os
+from datetime import datetime, timedelta
+import random
+
+DB_PATH = '/app/data/pharmacie.db'
+
+
+def get_conn():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # ─── Utilisateurs ───
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT DEFAULT 'caissier',
+            nom_complet TEXT,
+            telephone TEXT,
+            actif INTEGER DEFAULT 1,
+            created_at TEXT
+        )
+    """)
+
+    # ─── Officines (multi-sites) ───
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS officines (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT UNIQUE NOT NULL,
+            nom TEXT NOT NULL,
+            region TEXT,
+            adresse TEXT,
+            telephone TEXT,
+            responsable TEXT,
+            num_licence TEXT,
+            actif INTEGER DEFAULT 1,
+            created_at TEXT
+        )
+    """)
+
+    # ─── Médicaments (catalogue) ───
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS medicaments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT UNIQUE,
+            nom_commercial TEXT NOT NULL,
+            dci TEXT NOT NULL,                -- Dénomination Commune Internationale
+            forme TEXT,                       -- comprimé, sirop, injectable...
+            dosage TEXT,
+            presentation TEXT,
+            laboratoire TEXT,
+            categorie TEXT,                   -- antibiotique, antalgique, etc.
+            prix_achat REAL DEFAULT 0,
+            prix_vente REAL DEFAULT 0,
+            prix_reglemente INTEGER DEFAULT 0, -- 1 si prix PNLP
+            ordonnance_requise INTEGER DEFAULT 0,
+            tableau TEXT,                     -- A, B, C, stupéfiant
+            code_barre TEXT,
+            created_at TEXT
+        )
+    """)
+
+    # ─── Lots (stock par lot avec DLC) ───
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS lots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            medicament_id INTEGER NOT NULL,
+            officine_id INTEGER NOT NULL,
+            numero_lot TEXT NOT NULL,
+            quantite INTEGER DEFAULT 0,
+            date_peremption TEXT,
+            date_reception TEXT,
+            prix_achat_unitaire REAL DEFAULT 0,
+            fournisseur_id INTEGER,
+            emplacement TEXT,
+            statut TEXT DEFAULT 'disponible',  -- disponible, quarantaine, perime, retourne
+            created_at TEXT,
+            FOREIGN KEY(medicament_id) REFERENCES medicaments(id),
+            FOREIGN KEY(officine_id) REFERENCES officines(id)
+        )
+    """)
+
+    # ─── Fournisseurs / Grossistes ───
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS fournisseurs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nom TEXT NOT NULL,
+            type TEXT,                        -- grossiste, laboratoire, importateur
+            contact TEXT,
+            telephone TEXT,
+            email TEXT,
+            adresse TEXT,
+            num_agrement TEXT,
+            created_at TEXT
+        )
+    """)
+
+    # ─── Ordonnances ───
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ordonnances (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            numero TEXT UNIQUE,
+            patient_nom TEXT,
+            patient_age INTEGER,
+            patient_telephone TEXT,
+            medecin_nom TEXT,
+            medecin_num_ordre TEXT,
+            etablissement TEXT,
+            date_prescription TEXT,
+            statut TEXT DEFAULT 'en_attente',  -- en_attente, delivree, partielle, annulee
+            notes TEXT,
+            created_at TEXT
+        )
+    """)
+
+    # ─── Lignes d'ordonnance ───
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ordonnance_lignes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ordonnance_id INTEGER NOT NULL,
+            medicament_id INTEGER,
+            medicament_libelle TEXT,
+            posologie TEXT,
+            duree_jours INTEGER,
+            quantite_prescrite INTEGER DEFAULT 1,
+            quantite_delivree INTEGER DEFAULT 0,
+            FOREIGN KEY(ordonnance_id) REFERENCES ordonnances(id),
+            FOREIGN KEY(medicament_id) REFERENCES medicaments(id)
+        )
+    """)
+
+    # ─── Ventes (POS) ───
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ventes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            numero TEXT UNIQUE,
+            officine_id INTEGER,
+            ordonnance_id INTEGER,
+            caissier_id INTEGER,
+            montant_total REAL DEFAULT 0,
+            part_assurance REAL DEFAULT 0,
+            part_patient REAL DEFAULT 0,
+            mode_paiement TEXT,               -- espèces, mobile_money, carte
+            statut TEXT DEFAULT 'payee',
+            date_vente TEXT,
+            created_at TEXT,
+            FOREIGN KEY(officine_id) REFERENCES officines(id),
+            FOREIGN KEY(ordonnance_id) REFERENCES ordonnances(id)
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS vente_lignes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vente_id INTEGER NOT NULL,
+            medicament_id INTEGER,
+            lot_id INTEGER,
+            quantite INTEGER,
+            prix_unitaire REAL,
+            montant REAL,
+            FOREIGN KEY(vente_id) REFERENCES ventes(id),
+            FOREIGN KEY(medicament_id) REFERENCES medicaments(id),
+            FOREIGN KEY(lot_id) REFERENCES lots(id)
+        )
+    """)
+
+    # ─── Commandes grossistes ───
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS commandes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            numero TEXT UNIQUE,
+            fournisseur_id INTEGER,
+            officine_id INTEGER,
+            statut TEXT DEFAULT 'brouillon',   -- brouillon, envoyee, confirmee, recue, annulee
+            montant_total REAL DEFAULT 0,
+            date_commande TEXT,
+            date_livraison_prevue TEXT,
+            created_at TEXT,
+            FOREIGN KEY(fournisseur_id) REFERENCES fournisseurs(id),
+            FOREIGN KEY(officine_id) REFERENCES officines(id)
+        )
+    """)
+
+    # ─── Alertes (ruptures, péremptions) ───
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS alertes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT NOT NULL,               -- rupture, peremption, contrefacon
+            medicament_id INTEGER,
+            lot_id INTEGER,
+            message TEXT,
+            gravite TEXT DEFAULT 'info',      -- info, warning, critique
+            traitee INTEGER DEFAULT 0,
+            date_alerte TEXT,
+            created_at TEXT
+        )
+    """)
+
+    # ─── QR anti-contrefaçon ───
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS verifications_qr (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lot_id INTEGER,
+            qr_code TEXT,
+            valide INTEGER DEFAULT 1,
+            latitude REAL,
+            longitude REAL,
+            ip TEXT,
+            date_verification TEXT,
+            created_at TEXT,
+            FOREIGN KEY(lot_id) REFERENCES lots(id)
+        )
+    """)
+
+    # ─── Journal audit ───
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            action TEXT,
+            entity TEXT,
+            entity_id INTEGER,
+            details TEXT,
+            ip TEXT,
+            created_at TEXT
+        )
+    """)
+
+    # ─── Sessions caissiers (ouverture/fermeture caisse) ───
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS caissiers_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            caissier_id INTEGER NOT NULL,
+            officine_id INTEGER NOT NULL,
+            date_ouverture TEXT NOT NULL,
+            date_fermeture TEXT,
+            fonds_initial REAL DEFAULT 0,
+            total_especes REAL DEFAULT 0,
+            total_mobile_money REAL DEFAULT 0,
+            total_carte REAL DEFAULT 0,
+            total_assurance REAL DEFAULT 0,
+            total_ventes REAL DEFAULT 0,
+            nb_ventes INTEGER DEFAULT 0,
+            montant_compte REAL DEFAULT 0,
+            ecart REAL DEFAULT 0,
+            statut TEXT DEFAULT 'ouverte',
+            notes_ouverture TEXT,
+            notes_fermeture TEXT,
+            created_at TEXT,
+            FOREIGN KEY(caissier_id) REFERENCES users(id),
+            FOREIGN KEY(officine_id) REFERENCES officines(id)
+        )
+    """)
+
+    # ─── Paiements caissiers (versement au gérant) ───
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS caissiers_paiements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            caissier_id INTEGER NOT NULL,
+            montant REAL NOT NULL,
+            mode TEXT DEFAULT 'especes',
+            reference TEXT,
+            statut TEXT DEFAULT 'valide',
+            recu_par INTEGER,
+            date_paiement TEXT,
+            created_at TEXT,
+            FOREIGN KEY(session_id) REFERENCES caissiers_sessions(id),
+            FOREIGN KEY(caissier_id) REFERENCES users(id)
+        )
+    """)
+
+    # ─── Codes produits (auto-générés par trigger) ───
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS codes_produits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            medicament_id INTEGER NOT NULL,
+            code_interne TEXT UNIQUE,
+            code_barre_ean13 TEXT,
+            qr_payload TEXT,
+            type TEXT DEFAULT 'medicament',
+            actif INTEGER DEFAULT 1,
+            date_generation TEXT,
+            created_at TEXT,
+            FOREIGN KEY(medicament_id) REFERENCES medicaments(id)
+        )
+    """)
+
+    # ─── États financiers (rapports générés) ───
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS etats_financiers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT NOT NULL,
+            periode_debut TEXT,
+            periode_fin TEXT,
+            total_produits REAL DEFAULT 0,
+            total_charges REAL DEFAULT 0,
+            resultat_net REAL DEFAULT 0,
+            tresorerie REAL DEFAULT 0,
+            details TEXT,
+            created_at TEXT
+        )
+    """)
+
+    # ═══════════════════════════════════════════════════════
+    # 🎫 TRIGGERS — Génération automatique codes produits
+    # ═══════════════════════════════════════════════════════
+
+    # Trigger : insertion d'un médicament → génère code_interne + EAN13
+    cur.execute("DROP TRIGGER IF EXISTS trg_medicament_code_auto")
+    cur.execute("""
+        CREATE TRIGGER trg_medicament_code_auto
+        AFTER INSERT ON medicaments
+        FOR EACH ROW
+        BEGIN
+            INSERT INTO codes_produits
+                (medicament_id, code_interne, code_barre_ean13, qr_payload,
+                 type, actif, date_generation, created_at)
+            VALUES (
+                NEW.id,
+                'PH-' || substr('0000000' || NEW.id, -7),
+                '34015' || substr('00000000' || NEW.id, -8),
+                'PHARMA|' || NEW.id || '|' || NEW.nom_commercial,
+                'medicament', 1,
+                datetime('now'), datetime('now')
+            );
+        END
+    """)
+
+    # Trigger : insertion d'un lot → génère QR anti-contrefaçon
+    cur.execute("DROP TRIGGER IF EXISTS trg_lot_qr_auto")
+    cur.execute("""
+        CREATE TRIGGER trg_lot_qr_auto
+        AFTER INSERT ON lots
+        FOR EACH ROW
+        BEGIN
+            INSERT INTO codes_produits
+                (medicament_id, code_interne, qr_payload, type, actif, date_generation, created_at)
+            SELECT
+                NEW.medicament_id,
+                'LOT-' || NEW.id,
+                'LOT|' || NEW.numero_lot || '|' || NEW.medicament_id || '|' || NEW.date_peremption,
+                'lot', 1, datetime('now'), datetime('now')
+            WHERE NOT EXISTS (
+                SELECT 1 FROM codes_produits WHERE code_interne = 'LOT-' || NEW.id
+            );
+        END
+    """)
+
+    # Trigger : mise à jour session caissier après chaque vente
+    cur.execute("DROP TRIGGER IF EXISTS trg_vente_maj_session")
+    cur.execute("""
+        CREATE TRIGGER trg_vente_maj_session
+        AFTER INSERT ON ventes
+        FOR EACH ROW
+        BEGIN
+            UPDATE caissiers_sessions
+            SET
+                total_ventes = total_ventes + NEW.montant_total,
+                nb_ventes = nb_ventes + 1,
+                total_especes = CASE WHEN NEW.mode_paiement='especes' THEN total_especes + NEW.montant_total ELSE total_especes END,
+                total_mobile_money = CASE WHEN NEW.mode_paiement='mobile_money' THEN total_mobile_money + NEW.montant_total ELSE total_mobile_money END,
+                total_carte = CASE WHEN NEW.mode_paiement='carte' THEN total_carte + NEW.montant_total ELSE total_carte END,
+                total_assurance = total_assurance + COALESCE(NEW.part_assurance, 0)
+            WHERE id = (
+                SELECT id FROM caissiers_sessions
+                WHERE caissier_id = NEW.caissier_id
+                  AND officine_id = NEW.officine_id
+                  AND statut = 'ouverte'
+                ORDER BY id DESC LIMIT 1
+            );
+        END
+    """)
+
+    # ─── Index ───
+    for idx_sql in [
+        "CREATE INDEX IF NOT EXISTS idx_lots_med ON lots(medicament_id)",
+        "CREATE INDEX IF NOT EXISTS idx_lots_dlc ON lots(date_peremption)",
+        "CREATE INDEX IF NOT EXISTS idx_ventes_date ON ventes(date_vente)",
+        "CREATE INDEX IF NOT EXISTS idx_ord_statut ON ordonnances(statut)",
+    ]:
+        try:
+            cur.execute(idx_sql)
+        except Exception:
+            pass
+
+    conn.commit()
+    conn.close()
+    print("[INIT] ✅ Base Pharmacie Pro prête")
+
+
+def seed_demo():
+    """Génère des données démo si base vide."""
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Utilisateur admin
+    from werkzeug.security import generate_password_hash
+    cur.execute("SELECT COUNT(*) FROM users")
+    if cur.fetchone()[0] == 0:
+        for u in [
+            ('admin', 'admin123', 'admin', 'Administrateur'),
+            ('pharmacien', 'pharma123', 'pharmacien', 'Dr. Aïssatou Diallo'),
+            ('caissier', 'caisse123', 'caissier', 'Moussa Ndiaye'),
+        ]:
+            cur.execute("""
+                INSERT INTO users (username, password_hash, role, nom_complet, actif, created_at)
+                VALUES (?,?,?,?,1,?)
+            """, (u[0], generate_password_hash(u[1]), u[2], u[3], datetime.now().isoformat()))
+        print("[SEED] ✅ 3 utilisateurs créés")
+
+    # Officines
+    cur.execute("SELECT COUNT(*) FROM officines")
+    if cur.fetchone()[0] == 0:
+        officines = [
+            ('PHARM-DKR-01', 'Pharmacie de la Médina', 'Dakar', 'Av. Blaise Diagne', '+221 33 821 00 01', 'Dr. Fall', 'LIC-DKR-2024-001'),
+            ('PHARM-DKR-02', 'Pharmacie du Plateau', 'Dakar', 'Rue Carnot', '+221 33 823 00 02', 'Dr. Sarr', 'LIC-DKR-2024-002'),
+            ('PHARM-THS-01', 'Pharmacie de Thiès', 'Thiès', 'Av. Léopold Sédar Senghor', '+221 33 951 00 03', 'Dr. Diop', 'LIC-THS-2024-003'),
+        ]
+        for o in officines:
+            cur.execute("""
+                INSERT INTO officines (code, nom, region, adresse, telephone, responsable, num_licence, actif, created_at)
+                VALUES (?,?,?,?,?,?,?,1,?)
+            """, (*o, datetime.now().isoformat()))
+        print(f"[SEED] ✅ {len(officines)} officines créées")
+
+    # Fournisseurs
+    cur.execute("SELECT COUNT(*) FROM fournisseurs")
+    if cur.fetchone()[0] == 0:
+        fournisseurs = [
+            ('SONAPHARM', 'grossiste', 'Direction Commerciale', '+221 33 869 00 00', 'contact@sonapharm.sn', 'Dakar', 'AGR-SN-2024-001'),
+            ('COPHARMED', 'grossiste', 'Service Ventes', '+221 33 869 11 11', 'vente@copharmed.sn', 'Dakar', 'AGR-SN-2024-002'),
+            ('LABOREX Sénégal', 'importateur', 'Commercial', '+221 33 839 22 22', 'info@laborex.sn', 'Dakar', 'AGR-SN-2024-003'),
+        ]
+        for f in fournisseurs:
+            cur.execute("""
+                INSERT INTO fournisseurs (nom, type, contact, telephone, email, adresse, num_agrement, created_at)
+                VALUES (?,?,?,?,?,?,?,?)
+            """, (*f, datetime.now().isoformat()))
+        print(f"[SEED] ✅ {len(fournisseurs)} fournisseurs créés")
+
+    # Médicaments
+    cur.execute("SELECT COUNT(*) FROM medicaments")
+    if cur.fetchone()[0] == 0:
+        meds = [
+            ('MED-0001', 'Doliprane 500mg', 'Paracétamol', 'Comprimé', '500mg', 'Boîte 20', 'Sanofi', 'antalgique', 800, 1200, 1, 0, 'C'),
+            ('MED-0002', 'Amoxil 500mg', 'Amoxicilline', 'Gélule', '500mg', 'Boîte 12', 'GSK', 'antibiotique', 2500, 4000, 0, 1, 'A'),
+            ('MED-0003', 'Flagyl 250mg', 'Métronidazole', 'Comprimé', '250mg', 'Boîte 20', 'Sanofi', 'antibiotique', 1800, 2800, 0, 1, 'A'),
+            ('MED-0004', 'Coartem 20/120', 'Artéméther/Luméfantrine', 'Comprimé', '20/120mg', 'Boîte 6', 'Novartis', 'antipaludique', 1500, 2400, 1, 1, 'A'),
+            ('MED-0005', 'Ventoline', 'Salbutamol', 'Aérosol', '100mcg', 'Flacon 200 doses', 'GSK', 'bronchodilatateur', 3500, 5000, 0, 1, 'A'),
+            ('MED-0006', 'Insuline Lantus', 'Insuline glargine', 'Injectable', '100 UI/ml', 'Stylo 3ml', 'Sanofi', 'antidiabétique', 8500, 12000, 1, 1, 'A'),
+            ('MED-0007', 'Ibuprofène 400mg', 'Ibuprofène', 'Comprimé', '400mg', 'Boîte 20', 'Pfizer', 'anti-inflammatoire', 1000, 1500, 1, 0, 'C'),
+            ('MED-0008', 'Augmentin 1g', 'Amoxicilline/Ac. clavulanique', 'Comprimé', '1g', 'Boîte 8', 'GSK', 'antibiotique', 4500, 6500, 0, 1, 'A'),
+            ('MED-0009', 'Smecta', 'Diosmectite', 'Sachet', '3g', 'Boîte 30', 'Ipsen', 'antidiarrhéique', 2200, 3200, 0, 0, 'C'),
+            ('MED-0010', 'Vitamine C UPSA', 'Acide ascorbique', 'Comprimé effervescent', '1g', 'Tube 20', 'UPSA', 'vitamine', 1500, 2200, 0, 0, 'C'),
+            ('MED-0011', 'Metformine 850mg', 'Metformine', 'Comprimé', '850mg', 'Boîte 30', 'Merck', 'antidiabétique', 1200, 1800, 1, 1, 'A'),
+            ('MED-0012', 'Oméprazole 20mg', 'Oméprazole', 'Gélule', '20mg', 'Boîte 14', 'AstraZeneca', 'antiulcéreux', 2000, 3000, 0, 1, 'A'),
+            ('MED-0013', 'Fer + Acide folique', 'Fer/Ac. folique', 'Comprimé', '200mg/0.4mg', 'Boîte 30', 'Pfizer', 'supplément', 1000, 1500, 1, 0, 'C'),
+            ('MED-0014', 'Amlodipine 5mg', 'Amlodipine', 'Comprimé', '5mg', 'Boîte 30', 'Pfizer', 'antihypertenseur', 1500, 2200, 0, 1, 'A'),
+            ('MED-0015', 'Ceftriaxone 1g', 'Ceftriaxone', 'Injectable', '1g', 'Flacon', 'Roche', 'antibiotique', 3200, 4800, 0, 1, 'A'),
+        ]
+        for m in meds:
+            cur.execute("""
+                INSERT INTO medicaments
+                (code, nom_commercial, dci, forme, dosage, presentation, laboratoire,
+                 categorie, prix_achat, prix_vente, prix_reglemente, ordonnance_requise,
+                 tableau, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (*m, datetime.now().isoformat()))
+        print(f"[SEED] ✅ {len(meds)} médicaments créés")
+
+    # Lots
+    cur.execute("SELECT COUNT(*) FROM lots")
+    if cur.fetchone()[0] == 0:
+        cur.execute("SELECT id FROM medicaments")
+        med_ids = [r[0] for r in cur.fetchall()]
+        cur.execute("SELECT id FROM officines")
+        off_ids = [r[0] for r in cur.fetchall()]
+        cur.execute("SELECT id FROM fournisseurs")
+        four_ids = [r[0] for r in cur.fetchall()]
+
+        n_lots = 0
+        for mid in med_ids:
+            for oid in off_ids:
+                # 1-2 lots par médicament par officine
+                for _ in range(random.randint(1, 2)):
+                    qte = random.randint(10, 200)
+                    dlc = datetime.now() + timedelta(days=random.randint(30, 730))
+                    lot_num = f"L{datetime.now().strftime('%y%m')}{random.randint(1000,9999)}"
+                    cur.execute("""
+                        INSERT INTO lots
+                        (medicament_id, officine_id, numero_lot, quantite, date_peremption,
+                         date_reception, prix_achat_unitaire, fournisseur_id,
+                         emplacement, statut, created_at)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    """, (mid, oid, lot_num, qte,
+                          dlc.strftime('%Y-%m-%d'),
+                          datetime.now().strftime('%Y-%m-%d'),
+                          random.randint(500, 5000),
+                          random.choice(four_ids) if four_ids else None,
+                          f"R{random.randint(1,5)}-C{random.randint(1,10)}",
+                          'disponible',
+                          datetime.now().isoformat()))
+                    n_lots += 1
+        print(f"[SEED] ✅ {n_lots} lots créés")
+
+    # Ordonnances démo
+    cur.execute("SELECT COUNT(*) FROM ordonnances")
+    if cur.fetchone()[0] == 0:
+        medecins = [
+            ('Dr. Cheikh Diop', 'ORD-SN-12345', 'Hôpital Principal Dakar'),
+            ('Dr. Fatou Sow', 'ORD-SN-23456', 'Clinique Pasteur'),
+            ('Dr. Ousmane Ba', 'ORD-SN-34567', 'Hôpital Fann'),
+        ]
+        patients = [
+            ('Amadou Diallo', 45, '+221 77 111 11 11'),
+            ('Fatima Ndiaye', 32, '+221 77 222 22 22'),
+            ('Ibrahima Sall', 60, '+221 77 333 33 33'),
+            ('Awa Fall', 28, '+221 77 444 44 44'),
+            ('Moussa Diop', 55, '+221 77 555 55 55'),
+        ]
+        for i in range(20):
+            med = random.choice(medecins)
+            pat = random.choice(patients)
+            num = f"ORD-{datetime.now().strftime('%Y%m')}-{i+1:04d}"
+            statut = random.choice(['en_attente', 'delivree', 'delivree', 'partielle'])
+            cur.execute("""
+                INSERT INTO ordonnances
+                (numero, patient_nom, patient_age, patient_telephone, medecin_nom,
+                 medecin_num_ordre, etablissement, date_prescription, statut, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
+            """, (num, pat[0], pat[1], pat[2], med[0], med[1], med[2],
+                  (datetime.now() - timedelta(days=random.randint(0, 30))).strftime('%Y-%m-%d'),
+                  statut, datetime.now().isoformat()))
+            oid = cur.lastrowid
+            # 1-3 lignes par ordonnance
+            for _ in range(random.randint(1, 3)):
+                mid = random.choice(med_ids)
+                cur.execute("SELECT nom_commercial FROM medicaments WHERE id=?", (mid,))
+                lib = cur.fetchone()[0]
+                cur.execute("""
+                    INSERT INTO ordonnance_lignes
+                    (ordonnance_id, medicament_id, medicament_libelle, posologie,
+                     duree_jours, quantite_prescrite, quantite_delivree)
+                    VALUES (?,?,?,?,?,?,?)
+                """, (oid, mid, lib,
+                      random.choice(['1x3/jour', '1x2/jour', '1x1/jour', '2x2/jour']),
+                      random.randint(3, 14),
+                      random.randint(1, 2),
+                      1 if statut == 'delivree' else 0))
+        print("[SEED] ✅ 20 ordonnances créées")
+
+    # Alertes
+    cur.execute("SELECT COUNT(*) FROM alertes")
+    if cur.fetchone()[0] == 0:
+        cur.execute("""
+            SELECT l.id, l.numero_lot, m.nom_commercial
+            FROM lots l JOIN medicaments m ON m.id=l.medicament_id
+            WHERE l.quantite <= 20 LIMIT 5
+        """)
+        for row in cur.fetchall():
+            cur.execute("""
+                INSERT INTO alertes (type, lot_id, message, gravite, traitee, date_alerte, created_at)
+                VALUES (?,?,?,?,0,?,?)
+            """, ('rupture', row[0],
+                  f"Stock bas : {row[2]} (lot {row[1]})",
+                  'warning', datetime.now().isoformat(), datetime.now().isoformat()))
+
+        cur.execute("""
+            SELECT l.id, l.numero_lot, m.nom_commercial, l.date_peremption
+            FROM lots l JOIN medicaments m ON m.id=l.medicament_id
+            WHERE l.date_peremption <= date('now', '+90 days') LIMIT 5
+        """)
+        for row in cur.fetchall():
+            cur.execute("""
+                INSERT INTO alertes (type, lot_id, message, gravite, traitee, date_alerte, created_at)
+                VALUES (?,?,?,?,0,?,?)
+            """, ('peremption', row[0],
+                  f"DLC proche : {row[2]} (lot {row[1]}, {row[3]})",
+                  'warning', datetime.now().isoformat(), datetime.now().isoformat()))
+        print("[SEED] ✅ Alertes créées")
+
+    # ─── Codes produits (fallback si trigger absent) ───
+    cur.execute("SELECT COUNT(*) FROM codes_produits")
+    if cur.fetchone()[0] == 0:
+        cur.execute("SELECT id, nom_commercial FROM medicaments")
+        for row in cur.fetchall():
+            mid, nom = row
+            cur.execute("""
+                INSERT INTO codes_produits
+                (medicament_id, code_interne, code_barre_ean13, qr_payload, type, actif, date_generation, created_at)
+                VALUES (?,?,?,?,?,1,?,?)
+            """, (mid,
+                  f"PH-{mid:07d}",
+                  f"34015{mid:08d}",
+                  f"PHARMA|{mid}|{nom}",
+                  'medicament',
+                  datetime.now().isoformat(),
+                  datetime.now().isoformat()))
+        print("[SEED] ✅ Codes produits générés")
+
+    # ─── Session caissier démo ───
+    cur.execute("SELECT COUNT(*) FROM caissiers_sessions")
+    if cur.fetchone()[0] == 0:
+        cur.execute("SELECT id FROM users WHERE role IN ('caissier','pharmacien','admin') LIMIT 1")
+        u = cur.fetchone()
+        cur.execute("SELECT id FROM officines LIMIT 1")
+        o = cur.fetchone()
+        if u and o:
+            cur.execute("""
+                INSERT INTO caissiers_sessions
+                (caissier_id, officine_id, date_ouverture, fonds_initial, statut, created_at)
+                VALUES (?,?,?,?,'ouverte',?)
+            """, (u[0], o[0], datetime.now().isoformat(), 50000, datetime.now().isoformat()))
+            print("[SEED] ✅ Session caissier démo ouverte")
+
+    conn.commit()
+    conn.close()
+    print("[SEED] ✅ Données démo Pharmacie Pro générées")
+
+
+if __name__ == '__main__':
+    init_db()

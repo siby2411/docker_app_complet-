@@ -1,0 +1,3698 @@
+# -*- coding: utf-8 -*-
+"""
+🔧 OMEGA PARTS — Gestion Pièces Détachées Automobile
+Port 9030 · Marché CEDEAO · POS haute performance
+"""
+from flask import (Flask, render_template, request, redirect, url_for,
+                   session, flash, jsonify, send_from_directory, Response,
+                   abort, make_response, g)
+from flask_login import (LoginManager, UserMixin, login_user, logout_user,
+                         login_required, current_user)
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
+from functools import wraps
+from datetime import datetime, timedelta
+from io import BytesIO
+import sqlite3
+import os
+import json
+import uuid
+import random
+import qrcode
+
+# ═══════════════════════════════════════════════════════════
+# CONFIGURATION
+# ═══════════════════════════════════════════════════════════
+DB_PATH = '/app/data/parts.db'
+UPLOAD_DIR = '/app/uploads'
+PIECES_DIR = os.path.join(UPLOAD_DIR, 'parts')
+PHOTOS_DIR = os.path.join(UPLOAD_DIR, 'photos')
+DOCUMENTS_DIR = os.path.join(UPLOAD_DIR, 'documents')
+ALLOWED_IMG = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+ALLOWED_DOC = {'pdf', 'png', 'jpg', 'jpeg', 'webp'}
+
+for d in (PIECES_DIR, PHOTOS_DIR, DOCUMENTS_DIR):
+    os.makedirs(d, exist_ok=True)
+
+app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'omega-parts-cedeao-2026-secret-premium')
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 Mo
+app.config['UPLOAD_FOLDER'] = UPLOAD_DIR
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 3600
+
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+login_manager.login_message = "Veuillez vous connecter."
+
+# ═══════════════════════════════════════════════════════════
+# HELPERS DB
+# ═══════════════════════════════════════════════════════════
+def get_conn():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+def query(sql, params=(), one=False):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+    conn.close()
+    if one:
+        return rows[0] if rows else None
+    return rows
+
+def execute(sql, params=()):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    conn.commit()
+    last_id = cur.lastrowid
+    conn.close()
+    return last_id
+
+def execute_many(sql, params_list):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.executemany(sql, params_list)
+    conn.commit()
+    conn.close()
+
+def audit(action, entity=None, entity_id=None, details=None):
+    try:
+        execute("""
+            INSERT INTO audit_log (user_id, action, entity, entity_id, details, ip, created_at)
+            VALUES (?,?,?,?,?,?,?)
+        """, (
+            getattr(current_user, 'id', None) if current_user and current_user.is_authenticated else None,
+            action, entity, entity_id, details,
+            request.remote_addr if request else None,
+            datetime.now().isoformat()
+        ))
+    except Exception:
+        pass
+
+def allowed_file(filename, allowed):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed
+
+def save_upload(file, subdir, allowed=ALLOWED_IMG):
+    if not file or file.filename == '':
+        return None
+    if not allowed_file(file.filename, allowed):
+        return None
+    ext = file.filename.rsplit('.', 1)[1].lower()
+    fname = f"{uuid.uuid4().hex}.{ext}"
+    path = os.path.join(subdir, fname)
+    file.save(path)
+    return fname
+
+def fmt_money(v):
+    try:
+        v = float(v or 0)
+    except Exception:
+        return "0 FCFA"
+    return f"{int(v):,}".replace(',', ' ') + " FCFA"
+
+def fmt_money_short(v):
+    try:
+        v = float(v or 0)
+    except Exception:
+        return "0"
+    if v >= 1_000_000:
+        return f"{v/1_000_000:.1f}M"
+    elif v >= 1_000:
+        return f"{v/1_000:.0f}K"
+    return f"{int(v)}"
+
+def fmt_date(d):
+    if not d:
+        return "—"
+    try:
+        return datetime.fromisoformat(str(d)[:19]).strftime('%d/%m/%Y')
+    except Exception:
+        return str(d)[:10]
+
+def fmt_datetime(d):
+    if not d:
+        return "—"
+    try:
+        return datetime.fromisoformat(str(d)[:19]).strftime('%d/%m/%Y %H:%M')
+    except Exception:
+        return str(d)[:16]
+
+def get_param(cle, default=''):
+    try:
+        r = query("SELECT valeur FROM parametres WHERE cle=?", (cle,), one=True)
+        return r['valeur'] if r else default
+    except Exception:
+        return default
+
+app.jinja_env.filters['money'] = fmt_money
+app.jinja_env.filters['money_short'] = fmt_money_short
+app.jinja_env.filters['dte'] = fmt_date
+app.jinja_env.filters['dtm'] = fmt_datetime
+
+# ═══════════════════════════════════════════════════════════
+# USER MODEL
+# ═══════════════════════════════════════════════════════════
+class User(UserMixin):
+    def __init__(self, row):
+        self.id = row['id']
+        self.username = row['username']
+        self.role = row['role']
+        self.nom_complet = row['nom_complet'] or row['username']
+        self.email = row['email']
+        self.telephone = row['telephone']
+        self.point_vente = row['point_vente']
+
+    def is_admin(self):
+        return self.role == 'admin'
+
+    def is_gerant(self):
+        return self.role in ('admin', 'gerant')
+
+    def is_vendeur(self):
+        return self.role in ('admin', 'gerant', 'vendeur', 'caissier')
+
+    def can_sell(self):
+        return self.role in ('admin', 'gerant', 'vendeur', 'caissier')
+
+    def can_manage_stock(self):
+        return self.role in ('admin', 'gerant')
+
+@login_manager.user_loader
+def load_user(user_id):
+    row = query("SELECT * FROM users WHERE id=? AND actif=1", (user_id,), one=True)
+    return User(row) if row else None
+
+def admin_required(f):
+    @wraps(f)
+    def wrap(*a, **kw):
+        if not current_user.is_authenticated or not current_user.is_admin():
+            flash("Accès réservé administrateur.", "error")
+            return redirect(url_for('dashboard'))
+        return f(*a, **kw)
+    return wrap
+
+def gerant_required(f):
+    @wraps(f)
+    def wrap(*a, **kw):
+        if not current_user.is_authenticated or not current_user.is_gerant():
+            flash("Accès réservé gérant/admin.", "error")
+            return redirect(url_for('dashboard'))
+        return f(*a, **kw)
+    return wrap
+
+def vendeur_required(f):
+    @wraps(f)
+    def wrap(*a, **kw):
+        if not current_user.is_authenticated or not current_user.can_sell():
+            flash("Accès réservé vendeur.", "error")
+            return redirect(url_for('dashboard'))
+        return f(*a, **kw)
+    return wrap
+
+# ═══════════════════════════════════════════════════════════
+# CONTEXT PROCESSOR (avec cache pour performance)
+# ═══════════════════════════════════════════════════════════
+@app.context_processor
+def inject_globals():
+    import time as _time
+
+    if not hasattr(inject_globals, '_cache'):
+        inject_globals._cache = {'time': 0, 'stats': None, 'settings': None}
+
+    now_ts = _time.time()
+
+    # Cache des stats (5 secondes)
+    if now_ts - inject_globals._cache['time'] < 5 and inject_globals._cache['stats']:
+        stats = inject_globals._cache['stats']
+    else:
+        stats = {
+            'pieces_total': 0,
+            'pieces_actives': 0,
+            'stock_valeur': 0,
+            'stock_alertes': 0,
+            'ventes_mois': 0,
+            'ca_mois': 0,
+            'clients_total': 0,
+        }
+        try:
+            stats['pieces_total'] = query("SELECT COUNT(*) c FROM pieces", one=True)['c']
+            stats['pieces_actives'] = query("SELECT COUNT(*) c FROM pieces WHERE statut='disponible'", one=True)['c']
+            stats['stock_valeur'] = query("""
+                SELECT COALESCE(SUM(s.quantite * p.prix_achat), 0) c
+                FROM stock s
+                JOIN pieces p ON p.id = s.piece_id
+            """, one=True)['c']
+            stats['stock_alertes'] = query("""
+                SELECT COUNT(*) c FROM (
+                    SELECT p.id, COALESCE(SUM(s.quantite), 0) AS qte, p.stock_alerte
+                    FROM pieces p
+                    LEFT JOIN stock s ON s.piece_id = p.id
+                    GROUP BY p.id
+                    HAVING qte <= p.stock_alerte
+                )
+            """, one=True)['c']
+            stats['ventes_mois'] = query("""
+                SELECT COUNT(*) c FROM ventes
+                WHERE statut='complete'
+                  AND strftime('%Y-%m', date_vente) = strftime('%Y-%m','now')
+            """, one=True)['c']
+            stats['ca_mois'] = query("""
+                SELECT COALESCE(SUM(montant_ttc), 0) c FROM ventes
+                WHERE statut='complete'
+                  AND strftime('%Y-%m', date_vente) = strftime('%Y-%m','now')
+            """, one=True)['c']
+            stats['clients_total'] = query("SELECT COUNT(*) c FROM clients", one=True)['c']
+        except Exception as e:
+            print(f"[WARN] inject_globals stats: {e}")
+
+        inject_globals._cache['stats'] = stats
+        inject_globals._cache['time'] = now_ts
+
+    # Paramètres entreprise (cache long)
+    if not inject_globals._cache['settings']:
+        try:
+            rows = query("SELECT cle, valeur FROM parametres")
+            inject_globals._cache['settings'] = {r['cle']: r['valeur'] for r in rows}
+        except Exception:
+            inject_globals._cache['settings'] = {}
+
+    return {
+        'stats_sidebar': stats,
+        'settings': inject_globals._cache['settings'],
+        'now': datetime.now(),
+    }
+
+# ═══════════════════════════════════════════════════════════
+# ROUTES DE BASE
+# ═══════════════════════════════════════════════════════════
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204
+
+@app.route('/health')
+def health():
+    return jsonify(
+        status='ok',
+        app='omega-parts',
+        port=9030,
+        time=datetime.now().isoformat()
+    )
+
+# ═══════════════════════════════════════════════════════════
+# AUTH
+# ═══════════════════════════════════════════════════════════
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+
+        row = query("SELECT * FROM users WHERE username=? AND actif=1", (username,), one=True)
+
+        if row and check_password_hash(row['password_hash'], password):
+            login_user(User(row))
+            audit('login', 'user', row['id'])
+            flash(f"Bienvenue {row['nom_complet'] or username} 🔧", "success")
+            nxt = request.args.get('next')
+            return redirect(nxt or url_for('dashboard'))
+
+        flash("Identifiants invalides.", "error")
+
+    return render_template('login.html')
+
+@app.route('/logout')
+@login_required
+def logout():
+    audit('logout', 'user', current_user.id)
+    logout_user()
+    flash("Déconnexion réussie.", "success")
+    return redirect(url_for('login'))
+
+# ═══════════════════════════════════════════════════════════
+# DASHBOARD KPI
+# ═══════════════════════════════════════════════════════════
+@app.route('/')
+@login_required
+def dashboard():
+    kpi = {}
+
+    # ─── Stock ───
+    kpi['pieces_total'] = query("SELECT COUNT(*) c FROM pieces", one=True)['c']
+    kpi['pieces_dispo'] = query("SELECT COUNT(*) c FROM pieces WHERE statut='disponible'", one=True)['c']
+
+    kpi['stock_total_units'] = query("SELECT COALESCE(SUM(quantite), 0) c FROM stock", one=True)['c']
+
+    kpi['stock_valeur_achat'] = query("""
+        SELECT COALESCE(SUM(s.quantite * p.prix_achat), 0) c
+        FROM stock s JOIN pieces p ON p.id = s.piece_id
+    """, one=True)['c']
+
+    kpi['stock_valeur_vente'] = query("""
+        SELECT COALESCE(SUM(s.quantite * p.prix_vente_detail), 0) c
+        FROM stock s JOIN pieces p ON p.id = s.piece_id
+    """, one=True)['c']
+
+    kpi['marge_potentielle'] = kpi['stock_valeur_vente'] - kpi['stock_valeur_achat']
+
+    # ─── Alertes stock ───
+    kpi['stock_alertes'] = query("""
+        SELECT COUNT(*) c FROM (
+            SELECT p.id, COALESCE(SUM(s.quantite), 0) AS qte, p.stock_alerte
+            FROM pieces p
+            LEFT JOIN stock s ON s.piece_id = p.id
+            GROUP BY p.id
+            HAVING qte <= p.stock_alerte
+        )
+    """, one=True)['c']
+
+    kpi['stock_rupture'] = query("""
+        SELECT COUNT(*) c FROM (
+            SELECT p.id, COALESCE(SUM(s.quantite), 0) AS qte
+            FROM pieces p
+            LEFT JOIN stock s ON s.piece_id = p.id
+            GROUP BY p.id
+            HAVING qte = 0
+        )
+    """, one=True)['c']
+
+    # ─── Ventes ───
+    kpi['ventes_jour'] = query("""
+        SELECT COUNT(*) c FROM ventes
+        WHERE statut='complete' AND date(date_vente) = date('now')
+    """, one=True)['c']
+
+    kpi['ca_jour'] = query("""
+        SELECT COALESCE(SUM(montant_ttc), 0) c FROM ventes
+        WHERE statut='complete' AND date(date_vente) = date('now')
+    """, one=True)['c']
+
+    kpi['ventes_mois'] = query("""
+        SELECT COUNT(*) c FROM ventes
+        WHERE statut='complete' AND strftime('%Y-%m', date_vente) = strftime('%Y-%m','now')
+    """, one=True)['c']
+
+    kpi['ca_mois'] = query("""
+        SELECT COALESCE(SUM(montant_ttc), 0) c FROM ventes
+        WHERE statut='complete' AND strftime('%Y-%m', date_vente) = strftime('%Y-%m','now')
+    """, one=True)['c']
+
+    kpi['panier_moyen'] = round(kpi['ca_mois'] / kpi['ventes_mois'], 0) if kpi['ventes_mois'] else 0
+
+    # ─── Clients ───
+    kpi['clients_total'] = query("SELECT COUNT(*) c FROM clients", one=True)['c']
+    kpi['clients_actifs'] = query("SELECT COUNT(*) c FROM clients WHERE statut='actif'", one=True)['c']
+
+    # ─── Fournisseurs / Commandes ───
+    kpi['commandes_en_cours'] = query("""
+        SELECT COUNT(*) c FROM commandes_fournisseurs
+        WHERE statut IN ('en_attente','confirmee','partielle')
+    """, one=True)['c']
+
+    # ─── Top catégories (par CA du mois) ───
+    top_categories = query("""
+        SELECT c.nom AS categorie, c.icone,
+               COUNT(DISTINCT p.id) AS nb_pieces,
+               COALESCE(SUM(vl.quantite), 0) AS qte_vendue,
+               COALESCE(SUM(vl.montant), 0) AS ca
+        FROM categories c
+        JOIN pieces p ON p.categorie_id = c.id
+        LEFT JOIN ventes_lignes vl ON vl.piece_id = p.id
+        LEFT JOIN ventes v ON v.id = vl.vente_id
+            AND v.statut='complete'
+            AND strftime('%Y-%m', v.date_vente) = strftime('%Y-%m','now')
+        GROUP BY c.id
+        HAVING ca > 0
+        ORDER BY ca DESC LIMIT 6
+    """)
+
+    # ─── Top pièces vendues ───
+    top_pieces = query("""
+        SELECT p.id, p.sku, p.nom, p.code_oem,
+               COALESCE(SUM(vl.quantite), 0) AS qte_vendue,
+               COALESCE(SUM(vl.montant), 0) AS ca
+        FROM pieces p
+        JOIN ventes_lignes vl ON vl.piece_id = p.id
+        JOIN ventes v ON v.id = vl.vente_id
+        WHERE v.statut='complete'
+          AND date(v.date_vente) >= date('now','-30 days')
+        GROUP BY p.id
+        ORDER BY qte_vendue DESC LIMIT 10
+    """)
+
+    # ─── Alertes stock (liste) ───
+    alertes_stock = query("""
+        SELECT p.id, p.sku, p.nom, p.code_oem, p.stock_alerte, p.stock_min,
+               COALESCE(SUM(s.quantite), 0) AS stock_total,
+               c.nom AS categorie_nom, c.icone AS categorie_icone,
+               p.prix_achat
+        FROM pieces p
+        LEFT JOIN stock s ON s.piece_id = p.id
+        LEFT JOIN categories c ON c.id = p.categorie_id
+        GROUP BY p.id
+        HAVING stock_total <= p.stock_alerte
+        ORDER BY (stock_total * 1.0 / NULLIF(p.stock_alerte, 0)) ASC, stock_total ASC
+        LIMIT 15
+    """)
+
+    # ─── Ventes 7 derniers jours (graphique) ───
+    ventes_7j = query("""
+        SELECT date(date_vente) AS jour,
+               COUNT(*) AS nb,
+               COALESCE(SUM(montant_ttc), 0) AS ca
+        FROM ventes
+        WHERE statut='complete'
+          AND date(date_vente) >= date('now', '-6 days')
+        GROUP BY jour
+        ORDER BY jour
+    """)
+
+    # ─── Dernières ventes ───
+    dernieres_ventes = query("""
+        SELECT v.*, c.nom AS client_nom, c.prenom AS client_prenom,
+               u.nom_complet AS vendeur_nom,
+               pv.nom AS point_vente_nom
+        FROM ventes v
+        LEFT JOIN clients c ON c.id = v.client_id
+        LEFT JOIN users u ON u.id = v.user_id
+        LEFT JOIN points_vente pv ON pv.id = v.point_vente_id
+        ORDER BY v.id DESC LIMIT 8
+    """)
+
+    # ─── Ventes par point de vente (ce mois) ───
+    ventes_par_pv = query("""
+        SELECT pv.nom, pv.ville,
+               COUNT(v.id) AS nb,
+               COALESCE(SUM(v.montant_ttc), 0) AS ca
+        FROM points_vente pv
+        LEFT JOIN ventes v ON v.point_vente_id = pv.id
+            AND v.statut='complete'
+            AND strftime('%Y-%m', v.date_vente) = strftime('%Y-%m','now')
+        GROUP BY pv.id
+        ORDER BY ca DESC
+    """)
+
+    # ─── Ventes par mode de paiement ───
+    ventes_par_mode = query("""
+        SELECT mode_paiement,
+               COUNT(*) AS nb,
+               COALESCE(SUM(montant_ttc), 0) AS ca
+        FROM ventes
+        WHERE statut='complete'
+          AND strftime('%Y-%m', date_vente) = strftime('%Y-%m','now')
+        GROUP BY mode_paiement
+        ORDER BY ca DESC
+    """)
+
+    # ─── Évolution mensuelle (6 mois) ───
+    evolution_mois = query("""
+        SELECT strftime('%Y-%m', date_vente) AS mois,
+               COUNT(*) AS nb,
+               COALESCE(SUM(montant_ttc), 0) AS ca
+        FROM ventes
+        WHERE statut='complete'
+          AND date(date_vente) >= date('now', '-6 months')
+        GROUP BY mois
+        ORDER BY mois
+    """)
+
+    return render_template('dashboard.html',
+                           kpi=kpi,
+                           top_categories=top_categories,
+                           top_pieces=top_pieces,
+                           alertes_stock=alertes_stock,
+                           ventes_7j=ventes_7j,
+                           dernieres_ventes=dernieres_ventes,
+                           ventes_par_pv=ventes_par_pv,
+                           ventes_par_mode=ventes_par_mode,
+                           evolution_mois=evolution_mois)
+
+# ═══════════════════════════════════════════════════════════
+# UPLOADS
+# ═══════════════════════════════════════════════════════════
+@app.route('/uploads/<path:subpath>/<filename>')
+@login_required
+def uploaded_file(subpath, filename):
+    safe_sub = subpath if subpath in ('parts', 'photos', 'documents') else 'parts'
+    directory = os.path.join(UPLOAD_DIR, safe_sub)
+    return send_from_directory(directory, filename)
+
+# ═══════════════════════════════════════════════════════════
+# ERROR HANDLERS
+# ═══════════════════════════════════════════════════════════
+@app.errorhandler(404)
+def e404(e):
+    try:
+        return render_template('404.html'), 404
+    except Exception:
+        return "<h1>404 — Page non trouvée</h1>", 404
+
+@app.errorhandler(413)
+def e413(e):
+    flash("Fichier trop volumineux (max 50 Mo).", "error")
+    return redirect(request.referrer or url_for('dashboard'))
+
+@app.errorhandler(500)
+def e500(e):
+    try:
+        return render_template('500.html', error=str(e)), 500
+    except Exception:
+        return f"<h1>500 — Erreur interne</h1><pre>{e}</pre>", 500
+
+# ═══════════════════════════════════════════════════════════
+# POINT D'ENTRÉE
+# ═══════════════════════════════════════════════════════════
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8000, debug=False)
+
+
+
+# ═══════════════════════════════════════════════════════════
+# BLOC 2 — CATÉGORIES · PIÈCES · COMPATIBILITÉ · FOURNISSEURS
+# ═══════════════════════════════════════════════════════════
+
+# ─── HELPERS ───
+def gen_sku_piece():
+    """Génère un SKU unique"""
+    today = datetime.now().strftime('%Y%m')
+    row = query("SELECT sku FROM pieces WHERE sku LIKE ? ORDER BY id DESC LIMIT 1",
+                (f'PCS-{today}-%',), one=True)
+    if row and row['sku']:
+        try:
+            n = int(row['sku'].split('-')[-1]) + 1
+        except Exception:
+            n = 1
+    else:
+        n = 1
+    return f"PCS-{today}-{n:05d}"
+
+def get_stock_total(piece_id):
+    """Retourne le stock total d'une pièce tous PDV confondus"""
+    r = query("SELECT COALESCE(SUM(quantite), 0) c FROM stock WHERE piece_id=?",
+              (piece_id,), one=True)
+    return r['c'] if r else 0
+
+def get_categorie_arborescence():
+    """Retourne les catégories hiérarchisées"""
+    roots = query("SELECT * FROM categories WHERE parent_id IS NULL ORDER BY ordre, nom")
+    result = []
+    for r in roots:
+        r_dict = dict(r)
+        r_dict['enfants'] = query("SELECT * FROM categories WHERE parent_id=? ORDER BY ordre, nom",
+                                   (r['id'],))
+        result.append(r_dict)
+    return result
+
+# ═══════════════════════════════════════════════════════════
+# CATÉGORIES — CRUD
+# ═══════════════════════════════════════════════════════════
+@app.route('/categories')
+@login_required
+def categories_list():
+    arbo = get_categorie_arborescence()
+    total = query("SELECT COUNT(*) c FROM categories", one=True)['c']
+    return render_template('categories/list.html', arbo=arbo, total=total)
+
+@app.route('/categories/nouvelle', methods=['GET', 'POST'])
+@login_required
+@gerant_required
+def categorie_new():
+    if request.method == 'POST':
+        f = request.form
+        nom = f.get('nom', '').strip()
+        code = f.get('code', '').strip() or nom.upper().replace(' ', '_')[:20]
+        parent_id = int(f.get('parent_id') or 0) or None
+
+        cid = execute("""
+            INSERT INTO categories (parent_id, code, nom, description, icone, ordre, actif, created_at)
+            VALUES (?,?,?,?,?,?,1,?)
+        """, (parent_id, code, nom, f.get('description'),
+              f.get('icone') or '🔧', int(f.get('ordre') or 0),
+              datetime.now().isoformat()))
+        audit('create', 'categorie', cid)
+        flash(f"✅ Catégorie « {nom} » créée.", "success")
+        return redirect(url_for('categories_list'))
+
+    parents = query("SELECT * FROM categories WHERE parent_id IS NULL ORDER BY ordre, nom")
+    return render_template('categories/form.html', categorie=None, parents=parents)
+
+@app.route('/categories/<int:cid>')
+@login_required
+def categorie_detail(cid):
+    c = query("SELECT * FROM categories WHERE id=?", (cid,), one=True)
+    if not c:
+        abort(404)
+
+    # Sous-catégories
+    enfants = query("SELECT * FROM categories WHERE parent_id=? ORDER BY ordre, nom", (cid,))
+
+    # Pièces de cette catégorie
+    pieces = query("""
+        SELECT p.*,
+               (SELECT COALESCE(SUM(quantite), 0) FROM stock s WHERE s.piece_id=p.id) AS stock_total
+        FROM pieces p
+        WHERE p.categorie_id=?
+        ORDER BY p.nom
+    """, (cid,))
+
+    return render_template('categories/detail.html', c=c, enfants=enfants, pieces=pieces)
+
+@app.route('/categories/<int:cid>/editer', methods=['GET', 'POST'])
+@login_required
+@gerant_required
+def categorie_edit(cid):
+    c = query("SELECT * FROM categories WHERE id=?", (cid,), one=True)
+    if not c:
+        abort(404)
+
+    if request.method == 'POST':
+        f = request.form
+        execute("""
+            UPDATE categories SET parent_id=?, code=?, nom=?, description=?, icone=?, ordre=?, actif=?
+            WHERE id=?
+        """, (int(f.get('parent_id') or 0) or None, f.get('code'), f.get('nom'),
+              f.get('description'), f.get('icone'), int(f.get('ordre') or 0),
+              1 if f.get('actif') else 0, cid))
+        audit('update', 'categorie', cid)
+        flash("✅ Catégorie mise à jour.", "success")
+        return redirect(url_for('categories_list'))
+
+    parents = query("SELECT * FROM categories WHERE parent_id IS NULL AND id != ? ORDER BY ordre, nom", (cid,))
+    return render_template('categories/form.html', categorie=c, parents=parents)
+
+@app.route('/categories/<int:cid>/supprimer', methods=['POST'])
+@login_required
+@gerant_required
+def categorie_delete(cid):
+    # Vérifier qu'aucune pièce n'utilise cette catégorie
+    nb_pieces = query("SELECT COUNT(*) c FROM pieces WHERE categorie_id=?", (cid,), one=True)['c']
+    nb_enfants = query("SELECT COUNT(*) c FROM categories WHERE parent_id=?", (cid,), one=True)['c']
+
+    if nb_pieces > 0:
+        flash(f"❌ Impossible : {nb_pieces} pièce(s) utilisent cette catégorie.", "error")
+    elif nb_enfants > 0:
+        flash(f"❌ Impossible : {nb_enfants} sous-catégorie(s) rattachée(s).", "error")
+    else:
+        execute("DELETE FROM categories WHERE id=?", (cid,))
+        audit('delete', 'categorie', cid)
+        flash("🗑️ Catégorie supprimée.", "success")
+
+    return redirect(url_for('categories_list'))
+
+# ─── API catégories ───
+@app.route('/api/categories')
+@login_required
+def api_categories():
+    roots = query("SELECT id, nom, icone FROM categories WHERE parent_id IS NULL ORDER BY ordre, nom")
+    result = []
+    for r in roots:
+        enfants = query("SELECT id, nom FROM categories WHERE parent_id=? ORDER BY ordre, nom", (r['id'],))
+        result.append({
+            'id': r['id'],
+            'nom': r['nom'],
+            'icone': r['icone'],
+            'enfants': [dict(e) for e in enfants]
+        })
+    return jsonify(result)
+
+# ═══════════════════════════════════════════════════════════
+# PIÈCES DÉTACHÉES — CRUD COMPLET
+# ═══════════════════════════════════════════════════════════
+@app.route('/pieces')
+@login_required
+def pieces_list():
+    q = request.args.get('q', '').strip()
+    categorie_id = request.args.get('categorie_id', type=int)
+    marque = request.args.get('marque', '').strip()
+    qualite = request.args.get('qualite', '').strip()
+    statut = request.args.get('statut', '').strip()
+    alerte = request.args.get('alerte', '').strip()
+    page = max(1, request.args.get('page', 1, type=int))
+    per_page = 24
+
+    where = " WHERE 1=1"
+    params = []
+    if q:
+        where += " AND (p.nom LIKE ? OR p.sku LIKE ? OR p.code_oem LIKE ? OR p.code_barre LIKE ? OR p.marque_piece LIKE ?)"
+        params += [f'%{q}%'] * 5
+    if categorie_id:
+        where += " AND p.categorie_id=?"; params.append(categorie_id)
+    if marque:
+        where += " AND p.marque_piece=?"; params.append(marque)
+    if qualite:
+        where += " AND p.qualite=?"; params.append(qualite)
+    if statut:
+        where += " AND p.statut=?"; params.append(statut)
+
+    # Filtre "alerte stock"
+    if alerte == '1':
+        where += """ AND p.id IN (
+            SELECT p2.id FROM pieces p2
+            LEFT JOIN stock s ON s.piece_id = p2.id
+            GROUP BY p2.id
+            HAVING COALESCE(SUM(s.quantite), 0) <= p2.stock_alerte
+        )"""
+
+    total = query(f"SELECT COUNT(*) c FROM pieces p {where}", params, one=True)['c']
+
+    offset = (page - 1) * per_page
+    pieces = query(f"""
+        SELECT p.*,
+               c.nom AS categorie_nom, c.icone AS categorie_icone,
+               (SELECT COALESCE(SUM(quantite), 0) FROM stock s WHERE s.piece_id=p.id) AS stock_total
+        FROM pieces p
+        LEFT JOIN categories c ON c.id = p.categorie_id
+        {where}
+        ORDER BY p.id DESC LIMIT ? OFFSET ?
+    """, params + [per_page, offset])
+
+    categories = query("SELECT * FROM categories WHERE parent_id IS NOT NULL ORDER BY nom")
+    marques_pieces = [r['marque_piece'] for r in query("""
+        SELECT DISTINCT marque_piece FROM pieces WHERE marque_piece IS NOT NULL AND marque_piece != ''
+        ORDER BY marque_piece
+    """)]
+
+    # KPI
+    kpi = {
+        'total': total,
+        'disponibles': query("SELECT COUNT(*) c FROM pieces WHERE statut='disponible'", one=True)['c'],
+        'alertes': query("""
+            SELECT COUNT(*) c FROM (
+                SELECT p.id FROM pieces p
+                LEFT JOIN stock s ON s.piece_id=p.id
+                GROUP BY p.id
+                HAVING COALESCE(SUM(s.quantite), 0) <= p.stock_alerte
+            )
+        """, one=True)['c'],
+        'valeur_stock': query("""
+            SELECT COALESCE(SUM(s.quantite * p.prix_achat), 0) c
+            FROM stock s JOIN pieces p ON p.id=s.piece_id
+        """, one=True)['c'],
+    }
+
+    pages = (total + per_page - 1) // per_page
+    return render_template('pieces/list.html',
+                           pieces=pieces, categories=categories, marques_pieces=marques_pieces,
+                           q=q, categorie_id=categorie_id, marque=marque, qualite=qualite,
+                           statut=statut, alerte=alerte, kpi=kpi,
+                           page=page, pages=pages)
+
+@app.route('/pieces/nouvelle', methods=['GET', 'POST'])
+@login_required
+@gerant_required
+def piece_new():
+    if request.method == 'POST':
+        f = request.form
+
+        # Calculs prix
+        prix_achat = float(f.get('prix_achat') or 0)
+        prix_vente_detail = float(f.get('prix_vente_detail') or 0)
+        prix_vente_gros = float(f.get('prix_vente_gros') or 0)
+        prix_vente_mecano = float(f.get('prix_vente_mecano') or 0)
+
+        if prix_vente_detail == 0:
+            prix_vente_detail = prix_achat * 1.4
+        if prix_vente_gros == 0:
+            prix_vente_gros = prix_vente_detail * 0.85
+        if prix_vente_mecano == 0:
+            prix_vente_mecano = prix_vente_detail * 0.92
+
+        marge_pct = round((prix_vente_detail / prix_achat - 1) * 100, 1) if prix_achat else 0
+
+        pid = execute("""
+            INSERT INTO pieces (
+                sku, code_oem, code_barre, nom, description, categorie_id,
+                marque_piece, type_piece, unite, qualite, photo_principale,
+                prix_achat, prix_vente_detail, prix_vente_gros, prix_vente_mecano,
+                marge_pct, tva_pct, stock_min, stock_max, stock_alerte,
+                emplacement, poids_kg, dimensions, garantie_mois, pays_origine,
+                fournisseur_principal_id, statut, tags, created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            f.get('sku') or gen_sku_piece(),
+            f.get('code_oem'), f.get('code_barre'),
+            f.get('nom'), f.get('description'),
+            int(f.get('categorie_id') or 0) or None,
+            f.get('marque_piece'), f.get('type_piece'),
+            f.get('unite') or 'pièce', f.get('qualite') or 'standard',
+            None,
+            prix_achat, prix_vente_detail, prix_vente_gros, prix_vente_mecano,
+            marge_pct, float(f.get('tva_pct') or 18),
+            int(f.get('stock_min') or 5), int(f.get('stock_max') or 100),
+            int(f.get('stock_alerte') or 10),
+            f.get('emplacement'),
+            float(f.get('poids_kg') or 0), f.get('dimensions'),
+            int(f.get('garantie_mois') or 0), f.get('pays_origine'),
+            int(f.get('fournisseur_principal_id') or 0) or None,
+            f.get('statut') or 'disponible',
+            f.get('tags'),
+            datetime.now().isoformat(), datetime.now().isoformat()
+        ))
+
+        # Photo
+        photo = request.files.get('photo_principale')
+        if photo and photo.filename:
+            fname = save_upload(photo, PIECES_DIR, ALLOWED_IMG)
+            if fname:
+                execute("UPDATE pieces SET photo_principale=? WHERE id=?", (fname, pid))
+
+        # Stock initial par PDV
+        for pv in query("SELECT id FROM points_vente WHERE actif=1"):
+            qte = int(f.get(f'stock_pv_{pv["id"]}') or 0)
+            execute("""
+                INSERT INTO stock (piece_id, point_vente_id, quantite, updated_at)
+                VALUES (?,?,?,?)
+            """, (pid, pv['id'], qte, datetime.now().isoformat()))
+
+        audit('create', 'piece', pid)
+        flash("✅ Pièce créée avec succès.", "success")
+        return redirect(url_for('piece_detail', pid=pid))
+
+    categories = query("SELECT * FROM categories WHERE parent_id IS NOT NULL ORDER BY nom")
+    fournisseurs = query("SELECT * FROM fournisseurs WHERE actif=1 ORDER BY nom")
+    points_vente = query("SELECT * FROM points_vente WHERE actif=1 ORDER BY nom")
+    return render_template('pieces/form.html', piece=None, categories=categories,
+                           fournisseurs=fournisseurs, points_vente=points_vente)
+
+@app.route('/pieces/<int:pid>')
+@login_required
+def piece_detail(pid):
+    p = query("""
+        SELECT p.*, c.nom AS categorie_nom, c.icone AS categorie_icone,
+               f.nom AS fournisseur_nom, f.telephone AS fournisseur_tel
+        FROM pieces p
+        LEFT JOIN categories c ON c.id = p.categorie_id
+        LEFT JOIN fournisseurs f ON f.id = p.fournisseur_principal_id
+        WHERE p.id=?
+    """, (pid,), one=True)
+    if not p:
+        abort(404)
+
+    # Stock par PDV
+    stock_par_pdv = query("""
+        SELECT s.*, pv.nom AS pv_nom, pv.ville
+        FROM stock s
+        JOIN points_vente pv ON pv.id = s.point_vente_id
+        WHERE s.piece_id=?
+        ORDER BY pv.nom
+    """, (pid,))
+
+    stock_total = sum(s['quantite'] for s in stock_par_pdv)
+
+    # Compatibilités
+    compat = query("""
+        SELECT pc.*, vm.nom AS marque_nom, vmod.nom AS modele_nom
+        FROM piece_compatibilite pc
+        JOIN vehicules_marques vm ON vm.id = pc.marque_id
+        LEFT JOIN vehicules_modeles vmod ON vmod.id = pc.modele_id
+        WHERE pc.piece_id=?
+        ORDER BY vm.nom, vmod.nom
+    """, (pid,))
+
+    # Derniers mouvements
+    mouvements = query("""
+        SELECT sm.*, pv.nom AS pv_nom, u.nom_complet AS user_nom
+        FROM stock_mouvements sm
+        LEFT JOIN points_vente pv ON pv.id = sm.point_vente_id
+        LEFT JOIN users u ON u.id = sm.user_id
+        WHERE sm.piece_id=?
+        ORDER BY sm.id DESC LIMIT 20
+    """, (pid,))
+
+    # Ventes récentes
+    ventes = query("""
+        SELECT vl.*, v.numero, v.date_vente, c.nom AS client_nom
+        FROM ventes_lignes vl
+        JOIN ventes v ON v.id = vl.vente_id
+        LEFT JOIN clients c ON c.id = v.client_id
+        WHERE vl.piece_id=?
+        ORDER BY v.id DESC LIMIT 10
+    """, (pid,))
+
+    return render_template('pieces/detail.html', p=p,
+                           stock_par_pdv=stock_par_pdv, stock_total=stock_total,
+                           compat=compat, mouvements=mouvements, ventes=ventes)
+
+@app.route('/pieces/<int:pid>/editer', methods=['GET', 'POST'])
+@login_required
+@gerant_required
+def piece_edit(pid):
+    p = query("SELECT * FROM pieces WHERE id=?", (pid,), one=True)
+    if not p:
+        abort(404)
+
+    if request.method == 'POST':
+        f = request.form
+
+        prix_achat = float(f.get('prix_achat') or 0)
+        prix_vente_detail = float(f.get('prix_vente_detail') or 0)
+        prix_vente_gros = float(f.get('prix_vente_gros') or 0)
+        prix_vente_mecano = float(f.get('prix_vente_mecano') or 0)
+        marge_pct = round((prix_vente_detail / prix_achat - 1) * 100, 1) if prix_achat else 0
+
+        execute("""
+            UPDATE pieces SET
+                code_oem=?, code_barre=?, nom=?, description=?, categorie_id=?,
+                marque_piece=?, type_piece=?, unite=?, qualite=?,
+                prix_achat=?, prix_vente_detail=?, prix_vente_gros=?, prix_vente_mecano=?,
+                marge_pct=?, tva_pct=?, stock_min=?, stock_max=?, stock_alerte=?,
+                emplacement=?, poids_kg=?, dimensions=?, garantie_mois=?, pays_origine=?,
+                fournisseur_principal_id=?, statut=?, tags=?, updated_at=?
+            WHERE id=?
+        """, (
+            f.get('code_oem'), f.get('code_barre'), f.get('nom'), f.get('description'),
+            int(f.get('categorie_id') or 0) or None,
+            f.get('marque_piece'), f.get('type_piece'),
+            f.get('unite') or 'pièce', f.get('qualite') or 'standard',
+            prix_achat, prix_vente_detail, prix_vente_gros, prix_vente_mecano,
+            marge_pct, float(f.get('tva_pct') or 18),
+            int(f.get('stock_min') or 5), int(f.get('stock_max') or 100),
+            int(f.get('stock_alerte') or 10),
+            f.get('emplacement'),
+            float(f.get('poids_kg') or 0), f.get('dimensions'),
+            int(f.get('garantie_mois') or 0), f.get('pays_origine'),
+            int(f.get('fournisseur_principal_id') or 0) or None,
+            f.get('statut') or 'disponible', f.get('tags'),
+            datetime.now().isoformat(), pid
+        ))
+
+        photo = request.files.get('photo_principale')
+        if photo and photo.filename:
+            fname = save_upload(photo, PIECES_DIR, ALLOWED_IMG)
+            if fname:
+                execute("UPDATE pieces SET photo_principale=? WHERE id=?", (fname, pid))
+
+        audit('update', 'piece', pid)
+        flash("✅ Pièce mise à jour.", "success")
+        return redirect(url_for('piece_detail', pid=pid))
+
+    categories = query("SELECT * FROM categories WHERE parent_id IS NOT NULL ORDER BY nom")
+    fournisseurs = query("SELECT * FROM fournisseurs WHERE actif=1 ORDER BY nom")
+    points_vente = query("SELECT * FROM points_vente WHERE actif=1 ORDER BY nom")
+
+    # Stock actuel
+    stock_actuel = {s['point_vente_id']: s['quantite'] for s in query(
+        "SELECT point_vente_id, quantite FROM stock WHERE piece_id=?", (pid,))}
+
+    return render_template('pieces/form.html', piece=p, categories=categories,
+                           fournisseurs=fournisseurs, points_vente=points_vente,
+                           stock_actuel=stock_actuel)
+
+@app.route('/pieces/<int:pid>/supprimer', methods=['POST'])
+@login_required
+@admin_required
+def piece_delete(pid):
+    # Vérifier qu'aucune vente n'utilise cette pièce
+    nb_ventes = query("SELECT COUNT(*) c FROM ventes_lignes WHERE piece_id=?", (pid,), one=True)['c']
+
+    if nb_ventes > 0:
+        flash(f"❌ Impossible : {nb_ventes} vente(s) utilisent cette pièce. Désactivez-la plutôt.", "error")
+    else:
+        execute("DELETE FROM stock WHERE piece_id=?", (pid,))
+        execute("DELETE FROM piece_compatibilite WHERE piece_id=?", (pid,))
+        execute("DELETE FROM pieces WHERE id=?", (pid,))
+        audit('delete', 'piece', pid)
+        flash("🗑️ Pièce supprimée.", "success")
+
+    return redirect(url_for('pieces_list'))
+
+@app.route('/pieces/<int:pid>/qr')
+@login_required
+def piece_qr(pid):
+    p = query("SELECT * FROM pieces WHERE id=?", (pid,), one=True)
+    if not p:
+        abort(404)
+    data = f"OMEGA_PARTS|{p['sku']}|{p['code_oem'] or ''}|{p['nom']}|{p['prix_vente_detail']}"
+    img = qrcode.make(data)
+    buf = BytesIO()
+    img.save(buf, format='PNG')
+    return Response(buf.getvalue(), mimetype='image/png')
+
+# ─── API Pièces ───
+@app.route('/api/pieces/recherche')
+@login_required
+def api_pieces_search():
+    q = request.args.get('q', '').strip()
+    if len(q) < 2:
+        return jsonify([])
+    rows = query("""
+        SELECT p.id, p.sku, p.code_oem, p.nom, p.marque_piece,
+               p.prix_vente_detail, p.prix_vente_gros, p.prix_vente_mecano,
+               p.photo_principale,
+               (SELECT COALESCE(SUM(quantite), 0) FROM stock s WHERE s.piece_id=p.id) AS stock_total
+        FROM pieces p
+        WHERE p.statut='disponible'
+          AND (p.nom LIKE ? OR p.sku LIKE ? OR p.code_oem LIKE ? OR p.code_barre LIKE ?)
+        ORDER BY p.nom LIMIT 20
+    """, (f'%{q}%',) * 4)
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/pieces/<int:pid>')
+@login_required
+def api_piece_detail(pid):
+    p = query("SELECT * FROM pieces WHERE id=?", (pid,), one=True)
+    if not p:
+        return jsonify(error="not_found"), 404
+
+    stock = query("""
+        SELECT point_vente_id, quantite FROM stock WHERE piece_id=?
+    """, (pid,))
+
+    return jsonify({
+        'piece': dict(p),
+        'stock': [dict(s) for s in stock]
+    })
+
+# ═══════════════════════════════════════════════════════════
+# COMPATIBILITÉ — Cross-référencement pièces ↔ véhicules
+# ═══════════════════════════════════════════════════════════
+@app.route('/compat')
+@login_required
+def compat_list():
+    marque_id = request.args.get('marque_id', type=int)
+    q = request.args.get('q', '').strip()
+    page = max(1, request.args.get('page', 1, type=int))
+    per_page = 30
+
+    where = " WHERE 1=1"
+    params = []
+    if marque_id:
+        where += " AND pc.marque_id=?"; params.append(marque_id)
+    if q:
+        where += " AND (p.nom LIKE ? OR p.sku LIKE ? OR p.code_oem LIKE ?)"
+        params += [f'%{q}%'] * 3
+
+    total = query(f"""
+        SELECT COUNT(*) c FROM piece_compatibilite pc
+        JOIN pieces p ON p.id = pc.piece_id
+        {where}
+    """, params, one=True)['c']
+
+    offset = (page - 1) * per_page
+    items = query(f"""
+        SELECT pc.*, p.sku, p.nom AS piece_nom, p.code_oem,
+               vm.nom AS marque_nom, vmod.nom AS modele_nom
+        FROM piece_compatibilite pc
+        JOIN pieces p ON p.id = pc.piece_id
+        JOIN vehicules_marques vm ON vm.id = pc.marque_id
+        LEFT JOIN vehicules_modeles vmod ON vmod.id = pc.modele_id
+        {where}
+        ORDER BY vm.nom, vmod.nom, p.nom
+        LIMIT ? OFFSET ?
+    """, params + [per_page, offset])
+
+    marques = query("SELECT * FROM vehicules_marques ORDER BY nom")
+    pages = (total + per_page - 1) // per_page
+
+    return render_template('compat/list.html', items=items, marques=marques,
+                           marque_id=marque_id, q=q, page=page, pages=pages, total=total)
+
+@app.route('/pieces/<int:pid>/compat/ajouter', methods=['POST'])
+@login_required
+@gerant_required
+def piece_compat_add(pid):
+    f = request.form
+    marque_id = int(f.get('marque_id') or 0)
+    if not marque_id:
+        flash("❌ Marque obligatoire.", "error")
+        return redirect(url_for('piece_detail', pid=pid))
+
+    execute("""
+        INSERT INTO piece_compatibilite (piece_id, marque_id, modele_id, annee_debut, annee_fin, moteur, notes, created_at)
+        VALUES (?,?,?,?,?,?,?,?)
+    """, (pid, marque_id,
+          int(f.get('modele_id') or 0) or None,
+          int(f.get('annee_debut') or 0) or None,
+          int(f.get('annee_fin') or 0) or None,
+          f.get('moteur'), f.get('notes'),
+          datetime.now().isoformat()))
+
+    audit('create', 'compat', pid)
+    flash("✅ Compatibilité ajoutée.", "success")
+    return redirect(url_for('piece_detail', pid=pid))
+
+@app.route('/compat/<int:cid>/supprimer', methods=['POST'])
+@login_required
+@gerant_required
+def compat_delete(cid):
+    c = query("SELECT piece_id FROM piece_compatibilite WHERE id=?", (cid,), one=True)
+    if c:
+        execute("DELETE FROM piece_compatibilite WHERE id=?", (cid,))
+        flash("🗑️ Compatibilité supprimée.", "success")
+        return redirect(url_for('piece_detail', pid=c['piece_id']))
+    return redirect(url_for('compat_list'))
+
+@app.route('/api/modeles/<int:marque_id>')
+@login_required
+def api_modeles_marque(marque_id):
+    rows = query("SELECT id, nom, annee_debut, annee_fin FROM vehicules_modeles WHERE marque_id=? ORDER BY nom",
+                 (marque_id,))
+    return jsonify([dict(r) for r in rows])
+
+# ═══════════════════════════════════════════════════════════
+# FOURNISSEURS — CRUD
+# ═══════════════════════════════════════════════════════════
+@app.route('/fournisseurs')
+@login_required
+def fournisseurs_list():
+    q = request.args.get('q', '').strip()
+    type_f = request.args.get('type', '').strip()
+    pays = request.args.get('pays', '').strip()
+
+    where = " WHERE 1=1"
+    params = []
+    if q:
+        where += " AND (nom LIKE ? OR telephone LIKE ? OR email LIKE ? OR contact_nom LIKE ?)"
+        params += [f'%{q}%'] * 4
+    if type_f:
+        where += " AND type=?"; params.append(type_f)
+    if pays:
+        where += " AND pays=?"; params.append(pays)
+
+    fournisseurs = query(f"""
+        SELECT f.*,
+               (SELECT COUNT(*) FROM pieces p WHERE p.fournisseur_principal_id=f.id) AS nb_pieces,
+               (SELECT COUNT(*) FROM commandes_fournisseurs cf WHERE cf.fournisseur_id=f.id
+                AND cf.statut IN ('en_attente','confirmee','partielle')) AS nb_commandes
+        FROM fournisseurs f
+        {where}
+        ORDER BY f.nom
+    """, params)
+
+    pays_list = [r['pays'] for r in query("""
+        SELECT DISTINCT pays FROM fournisseurs WHERE pays IS NOT NULL AND pays != ''
+        ORDER BY pays
+    """)]
+
+    kpi = {
+        'total': len(fournisseurs),
+        'actifs': sum(1 for f in fournisseurs if f['actif']),
+        'pieces_fournies': query("SELECT COUNT(DISTINCT fournisseur_principal_id) c FROM pieces", one=True)['c'],
+    }
+
+    return render_template('fournisseurs/list.html', fournisseurs=fournisseurs,
+                           pays_list=pays_list, q=q, type_f=type_f, pays=pays, kpi=kpi)
+
+@app.route('/fournisseurs/nouveau', methods=['GET', 'POST'])
+@login_required
+@gerant_required
+def fournisseur_new():
+    if request.method == 'POST':
+        f = request.form
+        fid = execute("""
+            INSERT INTO fournisseurs (code, nom, type, pays, ville, adresse, telephone,
+                whatsapp, email, contact_nom, delai_livraison_jours,
+                conditions_paiement, note, actif, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            f.get('code') or None, f.get('nom'), f.get('type') or 'grossiste',
+            f.get('pays'), f.get('ville'), f.get('adresse'),
+            f.get('telephone'), f.get('whatsapp'), f.get('email'),
+            f.get('contact_nom'), int(f.get('delai_livraison_jours') or 7),
+            f.get('conditions_paiement'), int(f.get('note') or 0),
+            1 if f.get('actif') else 0,
+            datetime.now().isoformat()
+        ))
+        audit('create', 'fournisseur', fid)
+        flash("✅ Fournisseur créé.", "success")
+        return redirect(url_for('fournisseur_detail', fid=fid))
+
+    return render_template('fournisseurs/form.html', fournisseur=None)
+
+@app.route('/fournisseurs/<int:fid>')
+@login_required
+def fournisseur_detail(fid):
+    f = query("SELECT * FROM fournisseurs WHERE id=?", (fid,), one=True)
+    if not f:
+        abort(404)
+
+    # Pièces fournies
+    pieces = query("""
+        SELECT p.*,
+               (SELECT COALESCE(SUM(quantite), 0) FROM stock s WHERE s.piece_id=p.id) AS stock_total
+        FROM pieces p
+        WHERE p.fournisseur_principal_id=?
+        ORDER BY p.nom LIMIT 50
+    """, (fid,))
+
+    # Commandes en cours
+    commandes = query("""
+        SELECT * FROM commandes_fournisseurs
+        WHERE fournisseur_id=?
+        ORDER BY id DESC LIMIT 20
+    """, (fid,))
+
+    # Stats
+    stats = {
+        'nb_pieces': len(pieces),
+        'nb_commandes': len(commandes),
+        'total_achats': query("""
+            SELECT COALESCE(SUM(montant_total), 0) c FROM commandes_fournisseurs
+            WHERE fournisseur_id=? AND statut IN ('recue','partielle')
+        """, (fid,), one=True)['c'],
+    }
+
+    return render_template('fournisseurs/detail.html', f=f, pieces=pieces,
+                           commandes=commandes, stats=stats)
+
+@app.route('/fournisseurs/<int:fid>/editer', methods=['GET', 'POST'])
+@login_required
+@gerant_required
+def fournisseur_edit(fid):
+    f = query("SELECT * FROM fournisseurs WHERE id=?", (fid,), one=True)
+    if not f:
+        abort(404)
+
+    if request.method == 'POST':
+        form = request.form
+        execute("""
+            UPDATE fournisseurs SET
+                nom=?, type=?, pays=?, ville=?, adresse=?, telephone=?,
+                whatsapp=?, email=?, contact_nom=?, delai_livraison_jours=?,
+                conditions_paiement=?, note=?, actif=?
+            WHERE id=?
+        """, (
+            form.get('nom'), form.get('type'), form.get('pays'), form.get('ville'),
+            form.get('adresse'), form.get('telephone'), form.get('whatsapp'),
+            form.get('email'), form.get('contact_nom'),
+            int(form.get('delai_livraison_jours') or 7),
+            form.get('conditions_paiement'), int(form.get('note') or 0),
+            1 if form.get('actif') else 0,
+            fid
+        ))
+        audit('update', 'fournisseur', fid)
+        flash("✅ Fournisseur mis à jour.", "success")
+        return redirect(url_for('fournisseur_detail', fid=fid))
+
+    return render_template('fournisseurs/form.html', fournisseur=f)
+
+@app.route('/fournisseurs/<int:fid>/supprimer', methods=['POST'])
+@login_required
+@admin_required
+def fournisseur_delete(fid):
+    nb = query("SELECT COUNT(*) c FROM pieces WHERE fournisseur_principal_id=?", (fid,), one=True)['c']
+    if nb > 0:
+        flash(f"❌ Impossible : {nb} pièce(s) fournie(s) par ce fournisseur.", "error")
+    else:
+        execute("DELETE FROM fournisseurs WHERE id=?", (fid,))
+        audit('delete', 'fournisseur', fid)
+        flash("🗑️ Fournisseur supprimé.", "success")
+    return redirect(url_for('fournisseurs_list'))
+
+
+
+# ═══════════════════════════════════════════════════════════
+# BLOC 3 — STOCK · MOUVEMENTS · COMMANDES FOURNISSEURS
+# ═══════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════
+# STOCK — Vue globale multi-points de vente
+# ═══════════════════════════════════════════════════════════
+@app.route('/stock')
+@login_required
+def stock_list():
+    q = request.args.get('q', '').strip()
+    categorie_id = request.args.get('categorie_id', type=int)
+    point_vente_id = request.args.get('point_vente_id', type=int)
+    situation = request.args.get('situation', '').strip()  # rupture, alerte, ok
+    page = max(1, request.args.get('page', 1, type=int))
+    per_page = 40
+
+    where = " WHERE 1=1"
+    params = []
+    if q:
+        where += " AND (p.nom LIKE ? OR p.sku LIKE ? OR p.code_oem LIKE ?)"
+        params += [f'%{q}%'] * 3
+    if categorie_id:
+        where += " AND p.categorie_id=?"; params.append(categorie_id)
+
+    # Sous-requête stock total + par PDV
+    if point_vente_id:
+        stock_expr = f"(SELECT COALESCE(quantite, 0) FROM stock s WHERE s.piece_id=p.id AND s.point_vente_id={point_vente_id})"
+    else:
+        stock_expr = "(SELECT COALESCE(SUM(quantite), 0) FROM stock s WHERE s.piece_id=p.id)"
+
+    sql = f"""
+        SELECT p.*,
+               c.nom AS categorie_nom, c.icone AS categorie_icone,
+               {stock_expr} AS stock_total
+        FROM pieces p
+        LEFT JOIN categories c ON c.id = p.categorie_id
+        {where}
+    """
+
+    # Filtre situation
+    if situation == 'rupture':
+        sql += f" AND {stock_expr} = 0"
+    elif situation == 'alerte':
+        sql += f" AND {stock_expr} > 0 AND {stock_expr} <= p.stock_alerte"
+    elif situation == 'ok':
+        sql += f" AND {stock_expr} > p.stock_alerte"
+
+    # Total
+    total_q = query(f"SELECT COUNT(*) c FROM ({sql})", params, one=True)['c']
+
+    # Pagination
+    offset = (page - 1) * per_page
+    sql += f" ORDER BY stock_total ASC, p.nom LIMIT {per_page} OFFSET {offset}"
+    pieces = query(sql, params)
+
+    categories = query("SELECT * FROM categories WHERE parent_id IS NOT NULL ORDER BY nom")
+    points_vente = query("SELECT * FROM points_vente WHERE actif=1 ORDER BY nom")
+
+    # KPI
+    kpi = {
+        'total_pieces': query("SELECT COUNT(*) c FROM pieces WHERE statut='disponible'", one=True)['c'],
+        'valeur_achat': query("""
+            SELECT COALESCE(SUM(s.quantite * p.prix_achat), 0) c
+            FROM stock s JOIN pieces p ON p.id=s.piece_id
+        """, one=True)['c'],
+        'valeur_vente': query("""
+            SELECT COALESCE(SUM(s.quantite * p.prix_vente_detail), 0) c
+            FROM stock s JOIN pieces p ON p.id=s.piece_id
+        """, one=True)['c'],
+        'ruptures': query("""
+            SELECT COUNT(*) c FROM (
+                SELECT p.id FROM pieces p
+                LEFT JOIN stock s ON s.piece_id=p.id
+                GROUP BY p.id HAVING COALESCE(SUM(s.quantite), 0) = 0
+            )
+        """, one=True)['c'],
+        'alertes': query("""
+            SELECT COUNT(*) c FROM (
+                SELECT p.id, COALESCE(SUM(s.quantite), 0) AS qte, p.stock_alerte
+                FROM pieces p LEFT JOIN stock s ON s.piece_id=p.id
+                GROUP BY p.id HAVING qte > 0 AND qte <= p.stock_alerte
+            )
+        """, one=True)['c'],
+    }
+
+    pages = (total_q + per_page - 1) // per_page
+
+    return render_template('stock/list.html', pieces=pieces, categories=categories,
+                           points_vente=points_vente, kpi=kpi,
+                           q=q, categorie_id=categorie_id, point_vente_id=point_vente_id,
+                           situation=situation, page=page, pages=pages, total=total_q)
+
+@app.route('/stock/alertes')
+@login_required
+def stock_alertes():
+    """Vue dédiée aux alertes de stock"""
+    rupture = query("""
+        SELECT p.*, c.nom AS categorie_nom, c.icone AS categorie_icone,
+               (SELECT COALESCE(SUM(quantite), 0) FROM stock s WHERE s.piece_id=p.id) AS stock_total
+        FROM pieces p
+        LEFT JOIN categories c ON c.id = p.categorie_id
+        WHERE p.statut='disponible'
+        GROUP BY p.id
+        HAVING stock_total = 0
+        ORDER BY p.stock_alerte DESC, p.nom
+    """)
+
+    alerte = query("""
+        SELECT p.*, c.nom AS categorie_nom, c.icone AS categorie_icone,
+               (SELECT COALESCE(SUM(quantite), 0) FROM stock s WHERE s.piece_id=p.id) AS stock_total
+        FROM pieces p
+        LEFT JOIN categories c ON c.id = p.categorie_id
+        WHERE p.statut='disponible'
+        GROUP BY p.id
+        HAVING stock_total > 0 AND stock_total <= p.stock_alerte
+        ORDER BY (stock_total * 1.0 / NULLIF(p.stock_alerte, 0)) ASC
+    """)
+
+    return render_template('stock/alertes.html', rupture=rupture, alerte=alerte)
+
+@app.route('/stock/piece/<int:pid>/ajuster', methods=['POST'])
+@login_required
+@gerant_required
+def stock_ajuster(pid):
+    """Ajustement manuel du stock"""
+    f = request.form
+    point_vente_id = int(f.get('point_vente_id') or 0)
+    nouvelle_quantite = int(f.get('nouvelle_quantite') or 0)
+    motif = f.get('motif', '').strip()
+
+    if not point_vente_id:
+        flash("❌ Point de vente obligatoire.", "error")
+        return redirect(url_for('piece_detail', pid=pid))
+
+    # Récupérer stock actuel
+    stock = query("SELECT * FROM stock WHERE piece_id=? AND point_vente_id=?",
+                  (pid, point_vente_id), one=True)
+
+    if stock:
+        execute("""
+            UPDATE stock SET quantite=?, updated_at=? WHERE id=?
+        """, (nouvelle_quantite, datetime.now().isoformat(), stock['id']))
+
+        # Log mouvement manuel
+        execute("""
+            INSERT INTO stock_mouvements (piece_id, point_vente_id, type, quantite,
+                quantite_avant, quantite_apres, motif, user_id, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
+        """, (pid, point_vente_id, 'ajustement',
+              nouvelle_quantite - (stock['quantite'] or 0),
+              stock['quantite'] or 0, nouvelle_quantite,
+              motif or 'Ajustement manuel',
+              current_user.id, datetime.now().isoformat()))
+    else:
+        execute("""
+            INSERT INTO stock (piece_id, point_vente_id, quantite, updated_at)
+            VALUES (?,?,?,?)
+        """, (pid, point_vente_id, nouvelle_quantite, datetime.now().isoformat()))
+
+    audit('ajustement_stock', 'piece', pid, f'pdt={point_vente_id} qte={nouvelle_quantite}')
+    flash(f"✅ Stock ajusté à {nouvelle_quantite} unités.", "success")
+    return redirect(url_for('piece_detail', pid=pid))
+
+# ═══════════════════════════════════════════════════════════
+# MOUVEMENTS DE STOCK — Historique complet
+# ═══════════════════════════════════════════════════════════
+@app.route('/mouvements')
+@login_required
+def mouvements_list():
+    type_m = request.args.get('type', '').strip()
+    piece_id = request.args.get('piece_id', type=int)
+    point_vente_id = request.args.get('point_vente_id', type=int)
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+    page = max(1, request.args.get('page', 1, type=int))
+    per_page = 50
+
+    where = " WHERE 1=1"
+    params = []
+    if type_m:
+        where += " AND sm.type=?"; params.append(type_m)
+    if piece_id:
+        where += " AND sm.piece_id=?"; params.append(piece_id)
+    if point_vente_id:
+        where += " AND sm.point_vente_id=?"; params.append(point_vente_id)
+    if date_from:
+        where += " AND date(sm.created_at) >= date(?)"; params.append(date_from)
+    if date_to:
+        where += " AND date(sm.created_at) <= date(?)"; params.append(date_to)
+
+    total = query(f"SELECT COUNT(*) c FROM stock_mouvements sm {where}", params, one=True)['c']
+    offset = (page - 1) * per_page
+
+    mouvements = query(f"""
+        SELECT sm.*, p.sku, p.nom AS piece_nom, p.code_oem,
+               pv.nom AS pv_nom, pv.ville,
+               u.nom_complet AS user_nom
+        FROM stock_mouvements sm
+        JOIN pieces p ON p.id = sm.piece_id
+        LEFT JOIN points_vente pv ON pv.id = sm.point_vente_id
+        LEFT JOIN users u ON u.id = sm.user_id
+        {where}
+        ORDER BY sm.id DESC LIMIT ? OFFSET ?
+    """, params + [per_page, offset])
+
+    points_vente = query("SELECT * FROM points_vente ORDER BY nom")
+
+    pages = (total + per_page - 1) // per_page
+
+    return render_template('stock/mouvements.html', mouvements=mouvements,
+                           points_vente=points_vente,
+                           type_m=type_m, piece_id=piece_id, point_vente_id=point_vente_id,
+                           date_from=date_from, date_to=date_to,
+                           page=page, pages=pages, total=total)
+
+# ═══════════════════════════════════════════════════════════
+# COMMANDES FOURNISSEURS — Workflow achats
+# ═══════════════════════════════════════════════════════════
+def gen_numero_commande():
+    today = datetime.now().strftime('%Y%m%d')
+    row = query("""
+        SELECT numero FROM commandes_fournisseurs WHERE numero LIKE ? ORDER BY id DESC LIMIT 1
+    """, (f'CMD-{today}-%',), one=True)
+    if row and row['numero']:
+        try:
+            n = int(row['numero'].split('-')[-1]) + 1
+        except Exception:
+            n = 1
+    else:
+        n = 1
+    return f"CMD-{today}-{n:04d}"
+
+@app.route('/commandes')
+@login_required
+def commandes_list():
+    statut = request.args.get('statut', '').strip()
+    fournisseur_id = request.args.get('fournisseur_id', type=int)
+    page = max(1, request.args.get('page', 1, type=int))
+    per_page = 30
+
+    where = " WHERE 1=1"
+    params = []
+    if statut:
+        where += " AND cf.statut=?"; params.append(statut)
+    if fournisseur_id:
+        where += " AND cf.fournisseur_id=?"; params.append(fournisseur_id)
+
+    total = query(f"SELECT COUNT(*) c FROM commandes_fournisseurs cf {where}", params, one=True)['c']
+    offset = (page - 1) * per_page
+
+    commandes = query(f"""
+        SELECT cf.*, f.nom AS fournisseur_nom, pv.nom AS pv_nom,
+               (SELECT COUNT(*) FROM commandes_fournisseurs_lignes WHERE commande_id=cf.id) AS nb_lignes
+        FROM commandes_fournisseurs cf
+        JOIN fournisseurs f ON f.id = cf.fournisseur_id
+        LEFT JOIN points_vente pv ON pv.id = cf.point_vente_id
+        {where}
+        ORDER BY cf.id DESC LIMIT ? OFFSET ?
+    """, params + [per_page, offset])
+
+    fournisseurs = query("SELECT id, nom FROM fournisseurs WHERE actif=1 ORDER BY nom")
+
+    kpi = {
+        'total': total,
+        'en_attente': query("SELECT COUNT(*) c FROM commandes_fournisseurs WHERE statut='en_attente'", one=True)['c'],
+        'confirmees': query("SELECT COUNT(*) c FROM commandes_fournisseurs WHERE statut='confirmee'", one=True)['c'],
+        'partielles': query("SELECT COUNT(*) c FROM commandes_fournisseurs WHERE statut='partielle'", one=True)['c'],
+        'recues': query("SELECT COUNT(*) c FROM commandes_fournisseurs WHERE statut='recue'", one=True)['c'],
+        'montant_total': query("""
+            SELECT COALESCE(SUM(montant_total), 0) c FROM commandes_fournisseurs
+            WHERE statut IN ('en_attente','confirmee','partielle')
+        """, one=True)['c'],
+    }
+
+    pages = (total + per_page - 1) // per_page
+
+    return render_template('commandes/list.html', commandes=commandes,
+                           fournisseurs=fournisseurs, kpi=kpi,
+                           statut=statut, fournisseur_id=fournisseur_id,
+                           page=page, pages=pages)
+
+@app.route('/commandes/nouvelle', methods=['GET', 'POST'])
+@login_required
+@gerant_required
+def commande_new():
+    if request.method == 'POST':
+        f = request.form
+        fournisseur_id = int(f.get('fournisseur_id') or 0)
+        point_vente_id = int(f.get('point_vente_id') or 0)
+
+        if not (fournisseur_id and point_vente_id):
+            flash("❌ Fournisseur et point de vente obligatoires.", "error")
+            return redirect(request.url)
+
+        numero = gen_numero_commande()
+        cid = execute("""
+            INSERT INTO commandes_fournisseurs (numero, fournisseur_id, point_vente_id,
+                date_commande, date_livraison_prevue, statut, montant_total,
+                frais_livraison, notes, user_id, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            numero, fournisseur_id, point_vente_id,
+            f.get('date_commande') or datetime.now().strftime('%Y-%m-%d'),
+            f.get('date_livraison_prevue') or None,
+            'en_attente', 0,
+            float(f.get('frais_livraison') or 0),
+            f.get('notes'), current_user.id,
+            datetime.now().isoformat()
+        ))
+
+        audit('create', 'commande', cid, numero)
+        flash(f"✅ Commande {numero} créée.", "success")
+        return redirect(url_for('commande_detail', cid=cid))
+
+    fournisseurs = query("SELECT * FROM fournisseurs WHERE actif=1 ORDER BY nom")
+    points_vente = query("SELECT * FROM points_vente WHERE actif=1 ORDER BY nom")
+
+    return render_template('commandes/form.html', commande=None,
+                           fournisseurs=fournisseurs, points_vente=points_vente)
+
+@app.route('/commandes/<int:cid>')
+@login_required
+def commande_detail(cid):
+    c = query("""
+        SELECT cf.*, f.nom AS fournisseur_nom, f.telephone AS fournisseur_tel,
+               f.email AS fournisseur_email, f.contact_nom AS fournisseur_contact,
+               pv.nom AS pv_nom, pv.ville AS pv_ville,
+               u.nom_complet AS user_nom
+        FROM commandes_fournisseurs cf
+        JOIN fournisseurs f ON f.id = cf.fournisseur_id
+        LEFT JOIN points_vente pv ON pv.id = cf.point_vente_id
+        LEFT JOIN users u ON u.id = cf.user_id
+        WHERE cf.id=?
+    """, (cid,), one=True)
+    if not c:
+        abort(404)
+
+    lignes = query("""
+        SELECT cfl.*, p.sku, p.nom AS piece_nom, p.code_oem, p.photo_principale
+        FROM commandes_fournisseurs_lignes cfl
+        JOIN pieces p ON p.id = cfl.piece_id
+        WHERE cfl.commande_id=?
+        ORDER BY cfl.id
+    """, (cid,))
+
+    # Pièces disponibles pour ajout
+    pieces = query("""
+        SELECT p.* FROM pieces p
+        WHERE p.fournisseur_principal_id=? OR p.fournisseur_principal_id IS NULL
+        ORDER BY p.nom
+    """, (c['fournisseur_id'],))
+
+    return render_template('commandes/detail.html', c=c, lignes=lignes, pieces=pieces)
+
+@app.route('/commandes/<int:cid>/ajouter-ligne', methods=['POST'])
+@login_required
+@gerant_required
+def commande_add_ligne(cid):
+    f = request.form
+    piece_id = int(f.get('piece_id') or 0)
+    quantite = int(f.get('quantite') or 1)
+    prix_unitaire = float(f.get('prix_unitaire') or 0)
+
+    if not piece_id or quantite <= 0:
+        flash("❌ Pièce et quantité obligatoires.", "error")
+        return redirect(url_for('commande_detail', cid=cid))
+
+    montant = quantite * prix_unitaire
+
+    execute("""
+        INSERT INTO commandes_fournisseurs_lignes (commande_id, piece_id, quantite, prix_unitaire, montant)
+        VALUES (?,?,?,?,?)
+    """, (cid, piece_id, quantite, prix_unitaire, montant))
+
+    # Recalculer total
+    total = query("""
+        SELECT COALESCE(SUM(montant), 0) c FROM commandes_fournisseurs_lignes WHERE commande_id=?
+    """, (cid,), one=True)['c']
+
+    execute("UPDATE commandes_fournisseurs SET montant_total=? WHERE id=?", (total, cid))
+
+    flash("✅ Ligne ajoutée.", "success")
+    return redirect(url_for('commande_detail', cid=cid))
+
+@app.route('/commandes/<int:cid>/ligne/<int:lid>/supprimer', methods=['POST'])
+@login_required
+@gerant_required
+def commande_del_ligne(cid, lid):
+    execute("DELETE FROM commandes_fournisseurs_lignes WHERE id=? AND commande_id=?", (lid, cid))
+
+    # Recalculer total
+    total = query("""
+        SELECT COALESCE(SUM(montant), 0) c FROM commandes_fournisseurs_lignes WHERE commande_id=?
+    """, (cid,), one=True)['c']
+    execute("UPDATE commandes_fournisseurs SET montant_total=? WHERE id=?", (total, cid))
+
+    flash("🗑️ Ligne supprimée.", "success")
+    return redirect(url_for('commande_detail', cid=cid))
+
+@app.route('/commandes/<int:cid>/changer-statut', methods=['POST'])
+@login_required
+@gerant_required
+def commande_change_statut(cid):
+    nouveau_statut = request.form.get('statut', '').strip()
+    statuts_valides = ('en_attente', 'confirmee', 'partielle', 'recue', 'annulee')
+
+    if nouveau_statut not in statuts_valides:
+        flash("❌ Statut invalide.", "error")
+        return redirect(url_for('commande_detail', cid=cid))
+
+    execute("UPDATE commandes_fournisseurs SET statut=? WHERE id=?", (nouveau_statut, cid))
+
+    # Si réception, augmenter le stock
+    if nouveau_statut == 'recue':
+        c = query("SELECT * FROM commandes_fournisseurs WHERE id=?", (cid,), one=True)
+        lignes = query("SELECT * FROM commandes_fournisseurs_lignes WHERE commande_id=?", (cid,))
+
+        for l in lignes:
+            # Augmenter stock
+            stock = query("SELECT * FROM stock WHERE piece_id=? AND point_vente_id=?",
+                          (l['piece_id'], c['point_vente_id']), one=True)
+
+            if stock:
+                qte_avant = stock['quantite'] or 0
+                qte_apres = qte_avant + l['quantite']
+                execute("UPDATE stock SET quantite=?, updated_at=? WHERE id=?",
+                        (qte_apres, datetime.now().isoformat(), stock['id']))
+
+                execute("""
+                    INSERT INTO stock_mouvements (piece_id, point_vente_id, type, quantite,
+                        quantite_avant, quantite_apres, motif, reference, user_id, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)
+                """, (l['piece_id'], c['point_vente_id'], 'entree', l['quantite'],
+                      qte_avant, qte_apres, f'Réception commande', c['numero'],
+                      current_user.id, datetime.now().isoformat()))
+            else:
+                execute("""
+                    INSERT INTO stock (piece_id, point_vente_id, quantite, updated_at)
+                    VALUES (?,?,?,?)
+                """, (l['piece_id'], c['point_vente_id'], l['quantite'], datetime.now().isoformat()))
+
+            # MAJ quantite_recue
+            execute("UPDATE commandes_fournisseurs_lignes SET quantite_recue=quantite WHERE id=?",
+                    (l['id'],))
+
+        # Date de réception
+        execute("UPDATE commandes_fournisseurs SET date_reception=? WHERE id=?",
+                (datetime.now().strftime('%Y-%m-%d'), cid))
+
+        flash(f"✅ Commande reçue — stock mis à jour.", "success")
+    else:
+        flash(f"✅ Statut mis à jour : {nouveau_statut}.", "success")
+
+    audit('statut_commande', 'commande', cid, nouveau_statut)
+    return redirect(url_for('commande_detail', cid=cid))
+
+@app.route('/commandes/<int:cid>/supprimer', methods=['POST'])
+@login_required
+@admin_required
+def commande_delete(cid):
+    c = query("SELECT * FROM commandes_fournisseurs WHERE id=?", (cid,), one=True)
+    if not c:
+        abort(404)
+
+    if c['statut'] == 'recue':
+        flash("❌ Impossible de supprimer une commande reçue.", "error")
+    else:
+        execute("DELETE FROM commandes_fournisseurs_lignes WHERE commande_id=?", (cid,))
+        execute("DELETE FROM commandes_fournisseurs WHERE id=?", (cid,))
+        audit('delete', 'commande', cid)
+        flash("🗑️ Commande supprimée.", "success")
+
+    return redirect(url_for('commandes_list'))
+
+@app.route('/api/fournisseurs/<int:fid>/pieces')
+@login_required
+def api_fournisseur_pieces(fid):
+    """Retourne les pièces d'un fournisseur (pour commandes)"""
+    rows = query("""
+        SELECT id, sku, nom, code_oem, prix_achat
+        FROM pieces
+        WHERE fournisseur_principal_id=? OR fournisseur_principal_id IS NULL
+        ORDER BY nom
+    """, (fid,))
+    return jsonify([dict(r) for r in rows])
+
+
+
+# ═══════════════════════════════════════════════════════════
+# BLOC 4 — POS · VENTES · DEVIS · RETOURS · PAIEMENTS
+# ═══════════════════════════════════════════════════════════
+
+# ─── HELPERS VENTES ───
+def gen_numero_vente():
+    today = datetime.now().strftime('%Y%m%d')
+    row = query("SELECT numero FROM ventes WHERE numero LIKE ? ORDER BY id DESC LIMIT 1",
+                (f'VTE-{today}-%',), one=True)
+    if row and row['numero']:
+        try:
+            n = int(row['numero'].split('-')[-1]) + 1
+        except Exception:
+            n = 1
+    else:
+        n = 1
+    return f"VTE-{today}-{n:05d}"
+
+def gen_numero_devis():
+    today = datetime.now().strftime('%Y%m%d')
+    row = query("SELECT numero FROM devis WHERE numero LIKE ? ORDER BY id DESC LIMIT 1",
+                (f'DEV-{today}-%',), one=True)
+    if row and row['numero']:
+        try:
+            n = int(row['numero'].split('-')[-1]) + 1
+        except Exception:
+            n = 1
+    else:
+        n = 1
+    return f"DEV-{today}-{n:04d}"
+
+def gen_numero_retour():
+    today = datetime.now().strftime('%Y%m%d')
+    row = query("SELECT numero FROM retours WHERE numero LIKE ? ORDER BY id DESC LIMIT 1",
+                (f'RET-{today}-%',), one=True)
+    if row and row['numero']:
+        try:
+            n = int(row['numero'].split('-')[-1]) + 1
+        except Exception:
+            n = 1
+    else:
+        n = 1
+    return f"RET-{today}-{n:04d}"
+
+def get_prix_pour_type(piece, type_vente):
+    """Retourne le bon prix selon le type de vente"""
+    if type_vente == 'gros':
+        return piece['prix_vente_gros'] or piece['prix_vente_detail']
+    elif type_vente == 'mecano':
+        return piece['prix_vente_mecano'] or piece['prix_vente_detail']
+    else:
+        return piece['prix_vente_detail']
+
+def get_stock_pdv(piece_id, pdv_id):
+    """Retourne le stock d'une pièce dans un PDV"""
+    s = query("SELECT quantite FROM stock WHERE piece_id=? AND point_vente_id=?",
+              (piece_id, pdv_id), one=True)
+    return s['quantite'] if s else 0
+
+# ═══════════════════════════════════════════════════════════
+# POS — Point de Vente (Interface Caisse)
+# ═══════════════════════════════════════════════════════════
+@app.route('/pos')
+@login_required
+@vendeur_required
+def pos():
+    """Interface POS principale (V2 tactile)"""
+    points_vente = query("SELECT * FROM points_vente WHERE actif=1 ORDER BY nom")
+
+    # Catégories pour les filtres chips
+    categories_pos = query("""
+        SELECT c.id, c.nom, c.icone,
+               (SELECT COUNT(*) FROM pieces p WHERE p.categorie_id=c.id AND p.statut='disponible') AS nb
+        FROM categories c
+        WHERE c.parent_id IS NOT NULL
+        HAVING nb > 0
+        ORDER BY nb DESC, c.nom
+    """)
+
+    # PDV par défaut
+    pdv_defaut = None
+    if current_user.point_vente:
+        pdv_defaut = query("SELECT * FROM points_vente WHERE nom=? AND actif=1",
+                           (current_user.point_vente,), one=True)
+    if not pdv_defaut and points_vente:
+        pdv_defaut = points_vente[0]
+
+    return render_template('pos/index.html',
+                           points_vente=points_vente,
+                           categories_pos=categories_pos,
+                           pdv_defaut=pdv_defaut,
+                           today=datetime.now())
+
+@app.route('/pos/api/search')
+@login_required
+@vendeur_required
+def pos_api_search():
+    """API pour recherche instantanée dans le POS"""
+    q = request.args.get('q', '').strip()
+    pdv_id = request.args.get('pdv_id', type=int)
+
+    if len(q) < 1:
+        return jsonify([])
+
+    # Recherche par SKU, OEM, code-barres, nom
+    pieces = query("""
+        SELECT p.id, p.sku, p.code_oem, p.code_barre, p.nom,
+               p.prix_vente_detail, p.prix_vente_gros, p.prix_vente_mecano,
+               p.photo_principale, p.tva_pct, p.unite,
+               (SELECT COALESCE(quantite, 0) FROM stock s
+                WHERE s.piece_id=p.id AND s.point_vente_id=?) AS stock_pdv,
+               (SELECT COALESCE(SUM(quantite), 0) FROM stock s
+                WHERE s.piece_id=p.id) AS stock_total
+        FROM pieces p
+        WHERE p.statut='disponible'
+          AND (p.sku LIKE ? OR p.code_oem LIKE ? OR p.code_barre LIKE ? OR p.nom LIKE ?)
+        ORDER BY
+          CASE WHEN p.code_barre = ? THEN 1
+               WHEN p.sku = ? THEN 2
+               WHEN p.code_oem = ? THEN 3
+               ELSE 4 END,
+          p.nom
+        LIMIT 30
+    """, (pdv_id, f'%{q}%', f'%{q}%', f'%{q}%', f'%{q}%', q, q, q))
+
+    return jsonify([dict(p) for p in pieces])
+
+@app.route('/pos/api/client-search')
+@login_required
+@vendeur_required
+def pos_api_client_search():
+    """API recherche client pour le POS"""
+    q = request.args.get('q', '').strip()
+    if len(q) < 2:
+        return jsonify([])
+
+    clients = query("""
+        SELECT id, code, nom, prenom, telephone, whatsapp,
+               type_client, remise_pct, score, total_achats
+        FROM clients
+        WHERE statut='actif'
+          AND (nom LIKE ? OR prenom LIKE ? OR telephone LIKE ? OR code LIKE ?)
+        ORDER BY nom LIMIT 15
+    """, (f'%{q}%',) * 4)
+
+    return jsonify([dict(c) for c in clients])
+
+@app.route('/pos/api/checkout', methods=['POST'])
+@login_required
+@vendeur_required
+def pos_checkout():
+    """Enregistre une vente depuis le POS"""
+    data = request.get_json() or {}
+
+    pdv_id = int(data.get('pdv_id') or 0)
+    client_id = int(data.get('client_id') or 0) or None
+    type_vente = data.get('type_vente', 'detail')
+    lignes = data.get('lignes', [])
+    remise_pct = float(data.get('remise_pct') or 0)
+    montant_paye = float(data.get('montant_paye') or 0)
+    mode_paiement = data.get('mode_paiement', 'especes')
+    notes = data.get('notes', '')
+
+    if not pdv_id:
+        return jsonify(success=False, error="Point de vente obligatoire"), 400
+    if not lignes:
+        return jsonify(success=False, error="Panier vide"), 400
+
+    # Calculer les totaux
+    sous_total = 0
+    for l in lignes:
+        sous_total += float(l.get('montant', 0))
+
+    remise_montant = sous_total * (remise_pct / 100)
+    sous_total_apres_remise = sous_total - remise_montant
+
+    # TVA moyenne (calculée au prorata)
+    tva = 0
+    for l in lignes:
+        piece = query("SELECT tva_pct FROM pieces WHERE id=?", (l['piece_id'],), one=True)
+        if piece:
+            tva_pct = piece['tva_pct'] or 18
+            montant_ligne = float(l.get('montant', 0))
+            montant_apres = montant_ligne * (1 - remise_pct/100)
+            tva += montant_apres * (tva_pct / 118)  # TVA déjà incluse
+
+    montant_ttc = sous_total_apres_remise
+    monnaie = max(0, montant_paye - montant_ttc)
+
+    # Créer la vente
+    numero = gen_numero_vente()
+    vente_id = execute("""
+        INSERT INTO ventes (numero, client_id, point_vente_id, user_id,
+            type_vente, date_vente, sous_total, remise_pct, remise_montant,
+            tva, montant_ttc, mode_paiement, montant_paye, monnaie,
+            statut, notes, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (numero, client_id, pdv_id, current_user.id,
+          type_vente, datetime.now().strftime('%Y-%m-%d'),
+          sous_total, remise_pct, remise_montant,
+          round(tva, 0), montant_ttc, mode_paiement, montant_paye, monnaie,
+          'complete', notes, datetime.now().isoformat()))
+
+    # Lignes + maj stock
+    for l in lignes:
+        piece_id = int(l['piece_id'])
+        quantite = int(l['quantite'])
+        prix_unitaire = float(l['prix_unitaire'])
+        montant_ligne = float(l['montant'])
+
+        execute("""
+            INSERT INTO ventes_lignes (vente_id, piece_id, quantite, prix_unitaire,
+                remise_pct, montant)
+            VALUES (?,?,?,?,?,?)
+        """, (vente_id, piece_id, quantite, prix_unitaire, remise_pct, montant_ligne))
+
+        # Décrémenter stock
+        stock = query("SELECT * FROM stock WHERE piece_id=? AND point_vente_id=?",
+                      (piece_id, pdv_id), one=True)
+        if stock:
+            qte_avant = stock['quantite'] or 0
+            qte_apres = max(0, qte_avant - quantite)
+            execute("UPDATE stock SET quantite=?, updated_at=? WHERE id=?",
+                    (qte_apres, datetime.now().isoformat(), stock['id']))
+
+            # Log mouvement
+            execute("""
+                INSERT INTO stock_mouvements (piece_id, point_vente_id, type, quantite,
+                    quantite_avant, quantite_apres, motif, reference, user_id, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
+            """, (piece_id, pdv_id, 'sortie', -quantite,
+                  qte_avant, qte_apres, f'Vente {numero}', numero,
+                  current_user.id, datetime.now().isoformat()))
+
+    # Enregistrer paiement
+    if montant_paye > 0:
+        execute("""
+            INSERT INTO paiements (vente_id, client_id, montant, mode, statut,
+                date_paiement, created_at)
+            VALUES (?,?,?,?,?,?,?)
+        """, (vente_id, client_id, montant_paye, mode_paiement, 'valide',
+              datetime.now().strftime('%Y-%m-%d'), datetime.now().isoformat()))
+
+    # Mise à jour stats client
+    if client_id:
+        execute("""
+            UPDATE clients SET
+                nb_achats = nb_achats + 1,
+                total_achats = total_achats + ?,
+                derniere_visite = ?
+            WHERE id=?
+        """, (montant_ttc, datetime.now().isoformat(), client_id))
+
+    audit('create', 'vente', vente_id, f'{numero} · {montant_ttc}')
+    return jsonify(success=True, vente_id=vente_id, numero=numero)
+
+@app.route('/pos/ticket/<int:vente_id>')
+@login_required
+def pos_ticket(vente_id):
+    """Affiche le ticket imprimable"""
+    v = query("""
+        SELECT v.*, c.nom AS client_nom, c.prenom AS client_prenom,
+               c.telephone AS client_tel, u.nom_complet AS vendeur_nom,
+               pv.nom AS pdv_nom, pv.adresse AS pdv_adresse, pv.telephone AS pdv_tel
+        FROM ventes v
+        LEFT JOIN clients c ON c.id = v.client_id
+        LEFT JOIN users u ON u.id = v.user_id
+        LEFT JOIN points_vente pv ON pv.id = v.point_vente_id
+        WHERE v.id=?
+    """, (vente_id,), one=True)
+    if not v:
+        abort(404)
+
+    lignes = query("""
+        SELECT vl.*, p.sku, p.nom AS piece_nom, p.code_oem, p.unite
+        FROM ventes_lignes vl
+        JOIN pieces p ON p.id = vl.piece_id
+        WHERE vl.vente_id=?
+    """, (vente_id,))
+
+    return render_template('pos/ticket.html', v=v, lignes=lignes,
+                           settings=inject_globals().get('settings', {}))
+
+@app.route('/pos/ticket-58/<int:vente_id>')
+@login_required
+def pos_ticket_58(vente_id):
+    """Ticket format 58mm pour imprimante thermique"""
+    v = query("""
+        SELECT v.*, c.nom AS client_nom, c.prenom AS client_prenom,
+               c.telephone AS client_tel, u.nom_complet AS vendeur_nom,
+               pv.nom AS pdv_nom, pv.adresse AS pdv_adresse, pv.telephone AS pdv_tel
+        FROM ventes v
+        LEFT JOIN clients c ON c.id = v.client_id
+        LEFT JOIN users u ON u.id = v.user_id
+        LEFT JOIN points_vente pv ON pv.id = v.point_vente_id
+        WHERE v.id=?
+    """, (vente_id,), one=True)
+    if not v:
+        abort(404)
+
+    lignes = query("""
+        SELECT vl.*, p.sku, p.nom AS piece_nom, p.unite
+        FROM ventes_lignes vl
+        JOIN pieces p ON p.id = vl.piece_id
+        WHERE vl.vente_id=?
+    """, (vente_id,))
+
+    return render_template('pos/ticket_58.html', v=v, lignes=lignes)
+
+# ═══════════════════════════════════════════════════════════
+# VENTES — Liste & détail
+# ═══════════════════════════════════════════════════════════
+@app.route('/ventes')
+@login_required
+def ventes_list():
+    q = request.args.get('q', '').strip()
+    statut = request.args.get('statut', '').strip()
+    mode = request.args.get('mode', '').strip()
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+    vendeur_id = request.args.get('vendeur_id', type=int)
+    page = max(1, request.args.get('page', 1, type=int))
+    per_page = 30
+
+    where = " WHERE 1=1"
+    params = []
+    if q:
+        where += " AND (v.numero LIKE ? OR c.nom LIKE ? OR c.prenom LIKE ? OR c.telephone LIKE ?)"
+        params += [f'%{q}%'] * 4
+    if statut:
+        where += " AND v.statut=?"; params.append(statut)
+    if mode:
+        where += " AND v.mode_paiement=?"; params.append(mode)
+    if date_from:
+        where += " AND date(v.date_vente) >= date(?)"; params.append(date_from)
+    if date_to:
+        where += " AND date(v.date_vente) <= date(?)"; params.append(date_to)
+    if vendeur_id:
+        where += " AND v.user_id=?"; params.append(vendeur_id)
+
+    total = query(f"""
+        SELECT COUNT(*) c FROM ventes v
+        LEFT JOIN clients c ON c.id = v.client_id
+        {where}
+    """, params, one=True)['c']
+
+    offset = (page - 1) * per_page
+    ventes = query(f"""
+        SELECT v.*, c.nom AS client_nom, c.prenom AS client_prenom,
+               c.telephone AS client_tel,
+               u.nom_complet AS vendeur_nom,
+               pv.nom AS pdv_nom,
+               (SELECT COUNT(*) FROM ventes_lignes WHERE vente_id=v.id) AS nb_lignes
+        FROM ventes v
+        LEFT JOIN clients c ON c.id = v.client_id
+        LEFT JOIN users u ON u.id = v.user_id
+        LEFT JOIN points_vente pv ON pv.id = v.point_vente_id
+        {where}
+        ORDER BY v.id DESC LIMIT ? OFFSET ?
+    """, params + [per_page, offset])
+
+    # KPI
+    kpi = {
+        'total': total,
+        'aujourdhui': query("""
+            SELECT COUNT(*) c FROM ventes WHERE statut='complete' AND date(date_vente)=date('now')
+        """, one=True)['c'],
+        'ca_aujourdhui': query("""
+            SELECT COALESCE(SUM(montant_ttc), 0) c FROM ventes
+            WHERE statut='complete' AND date(date_vente)=date('now')
+        """, one=True)['c'],
+        'ca_periode': query(f"""
+            SELECT COALESCE(SUM(v.montant_ttc), 0) c FROM ventes v
+            LEFT JOIN clients c ON c.id = v.client_id
+            {where} AND v.statut='complete'
+        """, params, one=True)['c'],
+        'nb_periode': query(f"""
+            SELECT COUNT(*) c FROM ventes v
+            LEFT JOIN clients c ON c.id = v.client_id
+            {where} AND v.statut='complete'
+        """, params, one=True)['c'],
+    }
+
+    vendeurs = query("""
+        SELECT DISTINCT u.id, u.nom_complet FROM users u
+        WHERE u.actif=1 ORDER BY u.nom_complet
+    """)
+
+    pages = (total + per_page - 1) // per_page
+
+    return render_template('ventes/list.html', ventes=ventes, kpi=kpi,
+                           vendeurs=vendeurs,
+                           q=q, statut=statut, mode=mode,
+                           date_from=date_from, date_to=date_to,
+                           vendeur_id=vendeur_id,
+                           page=page, pages=pages)
+
+@app.route('/ventes/<int:vid>')
+@login_required
+def vente_detail(vid):
+    v = query("""
+        SELECT v.*, c.nom AS client_nom, c.prenom AS client_prenom,
+               c.telephone AS client_tel, c.email AS client_email,
+               c.adresse AS client_adresse, c.code AS client_code,
+               u.nom_complet AS vendeur_nom,
+               pv.nom AS pdv_nom, pv.adresse AS pdv_adresse, pv.telephone AS pdv_tel
+        FROM ventes v
+        LEFT JOIN clients c ON c.id = v.client_id
+        LEFT JOIN users u ON u.id = v.user_id
+        LEFT JOIN points_vente pv ON pv.id = v.point_vente_id
+        WHERE v.id=?
+    """, (vid,), one=True)
+    if not v:
+        abort(404)
+
+    lignes = query("""
+        SELECT vl.*, p.sku, p.nom AS piece_nom, p.code_oem, p.unite,
+               p.photo_principale
+        FROM ventes_lignes vl
+        JOIN pieces p ON p.id = vl.piece_id
+        WHERE vl.vente_id=?
+    """, (vid,))
+
+    paiements = query("SELECT * FROM paiements WHERE vente_id=? ORDER BY id", (vid,))
+
+    return render_template('ventes/detail.html', v=v, lignes=lignes, paiements=paiements)
+
+@app.route('/ventes/<int:vid>/annuler', methods=['POST'])
+@login_required
+@gerant_required
+def vente_annuler(vid):
+    v = query("SELECT * FROM ventes WHERE id=?", (vid,), one=True)
+    if not v:
+        abort(404)
+
+    if v['statut'] == 'annulee':
+        flash("Vente déjà annulée.", "error")
+        return redirect(url_for('vente_detail', vid=vid))
+
+    # Restaurer le stock
+    lignes = query("SELECT * FROM ventes_lignes WHERE vente_id=?", (vid,))
+    for l in lignes:
+        stock = query("SELECT * FROM stock WHERE piece_id=? AND point_vente_id=?",
+                      (l['piece_id'], v['point_vente_id']), one=True)
+        if stock:
+            qte_avant = stock['quantite'] or 0
+            qte_apres = qte_avant + l['quantite']
+            execute("UPDATE stock SET quantite=?, updated_at=? WHERE id=?",
+                    (qte_apres, datetime.now().isoformat(), stock['id']))
+
+            execute("""
+                INSERT INTO stock_mouvements (piece_id, point_vente_id, type, quantite,
+                    quantite_avant, quantite_apres, motif, reference, user_id, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
+            """, (l['piece_id'], v['point_vente_id'], 'entree', l['quantite'],
+                  qte_avant, qte_apres, f'Annulation vente {v["numero"]}', v['numero'],
+                  current_user.id, datetime.now().isoformat()))
+
+    # Mettre à jour statut
+    execute("UPDATE ventes SET statut='annulee' WHERE id=?", (vid,))
+
+    # Soustraire stats client
+    if v['client_id']:
+        execute("""
+            UPDATE clients SET
+                nb_achats = MAX(0, nb_achats - 1),
+                total_achats = MAX(0, total_achats - ?)
+            WHERE id=?
+        """, (v['montant_ttc'], v['client_id']))
+
+    audit('cancel', 'vente', vid, v['numero'])
+    flash(f"✅ Vente {v['numero']} annulée. Stock restauré.", "success")
+    return redirect(url_for('vente_detail', vid=vid))
+
+@app.route('/ventes/<int:vid>/supprimer', methods=['POST'])
+@login_required
+@admin_required
+def vente_delete(vid):
+    v = query("SELECT * FROM ventes WHERE id=?", (vid,), one=True)
+    if not v:
+        abort(404)
+
+    # Restaurer le stock si pas déjà annulée
+    if v['statut'] != 'annulee':
+        lignes = query("SELECT * FROM ventes_lignes WHERE vente_id=?", (vid,))
+        for l in lignes:
+            stock = query("SELECT * FROM stock WHERE piece_id=? AND point_vente_id=?",
+                          (l['piece_id'], v['point_vente_id']), one=True)
+            if stock:
+                execute("UPDATE stock SET quantite = quantite + ? WHERE id=?",
+                        (l['quantite'], stock['id']))
+
+    execute("DELETE FROM ventes_lignes WHERE vente_id=?", (vid,))
+    execute("DELETE FROM paiements WHERE vente_id=?", (vid,))
+    execute("DELETE FROM ventes WHERE id=?", (vid,))
+
+    audit('delete', 'vente', vid, v['numero'])
+    flash("🗑️ Vente supprimée.", "success")
+    return redirect(url_for('ventes_list'))
+
+@app.route('/ventes/<int:vid>/facture')
+@login_required
+def vente_facture(vid):
+    """Facture format A4 (PDF-ready)"""
+    v = query("""
+        SELECT v.*, c.nom AS client_nom, c.prenom AS client_prenom,
+               c.telephone AS client_tel, c.email AS client_email,
+               c.adresse AS client_adresse, c.code AS client_code,
+               u.nom_complet AS vendeur_nom,
+               pv.nom AS pdv_nom, pv.adresse AS pdv_adresse, pv.telephone AS pdv_tel
+        FROM ventes v
+        LEFT JOIN clients c ON c.id = v.client_id
+        LEFT JOIN users u ON u.id = v.user_id
+        LEFT JOIN points_vente pv ON pv.id = v.point_vente_id
+        WHERE v.id=?
+    """, (vid,), one=True)
+    if not v:
+        abort(404)
+
+    lignes = query("""
+        SELECT vl.*, p.sku, p.nom AS piece_nom, p.code_oem, p.unite
+        FROM ventes_lignes vl
+        JOIN pieces p ON p.id = vl.piece_id
+        WHERE vl.vente_id=?
+    """, (vid,))
+
+    return render_template('ventes/facture.html', v=v, lignes=lignes,
+                           settings=inject_globals().get('settings', {}))
+
+# ═══════════════════════════════════════════════════════════
+# DEVIS — Création & conversion en vente
+# ═══════════════════════════════════════════════════════════
+@app.route('/devis')
+@login_required
+def devis_list():
+    statut = request.args.get('statut', '').strip()
+    q = request.args.get('q', '').strip()
+    page = max(1, request.args.get('page', 1, type=int))
+    per_page = 30
+
+    where = " WHERE 1=1"
+    params = []
+    if statut:
+        where += " AND d.statut=?"; params.append(statut)
+    if q:
+        where += " AND (d.numero LIKE ? OR c.nom LIKE ? OR c.prenom LIKE ?)"
+        params += [f'%{q}%'] * 3
+
+    total = query(f"""
+        SELECT COUNT(*) c FROM devis d
+        LEFT JOIN clients c ON c.id = d.client_id
+        {where}
+    """, params, one=True)['c']
+
+    offset = (page - 1) * per_page
+    devis = query(f"""
+        SELECT d.*, c.nom AS client_nom, c.prenom AS client_prenom,
+               c.telephone AS client_tel,
+               pv.nom AS pdv_nom,
+               (SELECT COUNT(*) FROM devis_lignes WHERE devis_id=d.id) AS nb_lignes
+        FROM devis d
+        LEFT JOIN clients c ON c.id = d.client_id
+        LEFT JOIN points_vente pv ON pv.id = d.point_vente_id
+        {where}
+        ORDER BY d.id DESC LIMIT ? OFFSET ?
+    """, params + [per_page, offset])
+
+    kpi = {
+        'total': total,
+        'en_attente': query("SELECT COUNT(*) c FROM devis WHERE statut='en_attente'", one=True)['c'],
+        'acceptes': query("SELECT COUNT(*) c FROM devis WHERE statut='accepte'", one=True)['c'],
+        'refuses': query("SELECT COUNT(*) c FROM devis WHERE statut='refuse'", one=True)['c'],
+        'montant_total': query("""
+            SELECT COALESCE(SUM(montant_total), 0) c FROM devis WHERE statut='en_attente'
+        """, one=True)['c'],
+    }
+
+    pages = (total + per_page - 1) // per_page
+
+    return render_template('devis/list.html', devis=devis, kpi=kpi,
+                           statut=statut, q=q, page=page, pages=pages)
+
+@app.route('/devis/nouveau', methods=['GET', 'POST'])
+@login_required
+@vendeur_required
+def devis_new():
+    if request.method == 'POST':
+        f = request.form
+        client_id = int(f.get('client_id') or 0) or None
+        point_vente_id = int(f.get('point_vente_id') or 0)
+
+        if not point_vente_id:
+            flash("❌ Point de vente obligatoire.", "error")
+            return redirect(request.url)
+
+        numero = gen_numero_devis()
+
+        # Validité par défaut : 30 jours
+        date_validite = f.get('date_validite') or (
+            datetime.now() + timedelta(days=30)
+        ).strftime('%Y-%m-%d')
+
+        did = execute("""
+            INSERT INTO devis (numero, client_id, point_vente_id, date_devis,
+                date_validite, montant_total, statut, notes, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
+        """, (numero, client_id, point_vente_id,
+              datetime.now().strftime('%Y-%m-%d'), date_validite,
+              0, 'en_attente', f.get('notes'), datetime.now().isoformat()))
+
+        audit('create', 'devis', did, numero)
+        flash(f"✅ Devis {numero} créé.", "success")
+        return redirect(url_for('devis_detail', did=did))
+
+    clients = query("SELECT * FROM clients WHERE statut='actif' ORDER BY nom LIMIT 200")
+    points_vente = query("SELECT * FROM points_vente WHERE actif=1 ORDER BY nom")
+
+    return render_template('devis/form.html', devis=None,
+                           clients=clients, points_vente=points_vente)
+
+@app.route('/devis/<int:did>')
+@login_required
+def devis_detail(did):
+    d = query("""
+        SELECT d.*, c.nom AS client_nom, c.prenom AS client_prenom,
+               c.telephone AS client_tel, c.email AS client_email,
+               c.adresse AS client_adresse,
+               pv.nom AS pdv_nom, pv.adresse AS pdv_adresse
+        FROM devis d
+        LEFT JOIN clients c ON c.id = d.client_id
+        LEFT JOIN points_vente pv ON pv.id = d.point_vente_id
+        WHERE d.id=?
+    """, (did,), one=True)
+    if not d:
+        abort(404)
+
+    lignes = query("""
+        SELECT dl.*, p.sku, p.nom AS piece_nom, p.code_oem, p.unite
+        FROM devis_lignes dl
+        JOIN pieces p ON p.id = dl.piece_id
+        WHERE dl.devis_id=?
+    """, (did,))
+
+    pieces = query("""
+        SELECT id, sku, nom, code_oem, prix_vente_detail
+        FROM pieces WHERE statut='disponible' ORDER BY nom LIMIT 500
+    """)
+
+    return render_template('devis/detail.html', d=d, lignes=lignes, pieces=pieces)
+
+@app.route('/devis/<int:did>/ajouter-ligne', methods=['POST'])
+@login_required
+@vendeur_required
+def devis_add_ligne(did):
+    f = request.form
+    piece_id = int(f.get('piece_id') or 0)
+    quantite = int(f.get('quantite') or 1)
+    prix_unitaire = float(f.get('prix_unitaire') or 0)
+
+    if not piece_id or quantite <= 0:
+        flash("❌ Pièce et quantité obligatoires.", "error")
+        return redirect(url_for('devis_detail', did=did))
+
+    montant = quantite * prix_unitaire
+
+    execute("""
+        INSERT INTO devis_lignes (devis_id, piece_id, quantite, prix_unitaire, montant)
+        VALUES (?,?,?,?,?)
+    """, (did, piece_id, quantite, prix_unitaire, montant))
+
+    total = query("SELECT COALESCE(SUM(montant), 0) c FROM devis_lignes WHERE devis_id=?",
+                  (did,), one=True)['c']
+    execute("UPDATE devis SET montant_total=? WHERE id=?", (total, did))
+
+    flash("✅ Ligne ajoutée.", "success")
+    return redirect(url_for('devis_detail', did=did))
+
+@app.route('/devis/<int:did>/ligne/<int:lid>/supprimer', methods=['POST'])
+@login_required
+@vendeur_required
+def devis_del_ligne(did, lid):
+    execute("DELETE FROM devis_lignes WHERE id=? AND devis_id=?", (lid, did))
+
+    total = query("SELECT COALESCE(SUM(montant), 0) c FROM devis_lignes WHERE devis_id=?",
+                  (did,), one=True)['c']
+    execute("UPDATE devis SET montant_total=? WHERE id=?", (total, did))
+
+    flash("🗑️ Ligne supprimée.", "success")
+    return redirect(url_for('devis_detail', did=did))
+
+@app.route('/devis/<int:did>/changer-statut', methods=['POST'])
+@login_required
+@vendeur_required
+def devis_change_statut(did):
+    nouveau = request.form.get('statut', '').strip()
+    if nouveau not in ('en_attente', 'accepte', 'refuse', 'expire'):
+        flash("❌ Statut invalide.", "error")
+        return redirect(url_for('devis_detail', did=did))
+
+    execute("UPDATE devis SET statut=? WHERE id=?", (nouveau, did))
+    audit('statut', 'devis', did, nouveau)
+    flash(f"✅ Statut : {nouveau}.", "success")
+    return redirect(url_for('devis_detail', did=did))
+
+@app.route('/devis/<int:did>/convertir', methods=['POST'])
+@login_required
+@vendeur_required
+def devis_convertir(did):
+    """Convertit un devis en vente"""
+    d = query("SELECT * FROM devis WHERE id=?", (did,), one=True)
+    if not d:
+        abort(404)
+
+    if d['statut'] == 'accepte':
+        flash("Devis déjà converti.", "error")
+        return redirect(url_for('devis_detail', did=did))
+
+    lignes = query("SELECT * FROM devis_lignes WHERE devis_id=?", (did,))
+    if not lignes:
+        flash("❌ Devis vide.", "error")
+        return redirect(url_for('devis_detail', did=did))
+
+    # Créer la vente
+    numero = gen_numero_vente()
+    montant_ttc = d['montant_total']
+
+    vente_id = execute("""
+        INSERT INTO ventes (numero, client_id, point_vente_id, user_id,
+            type_vente, date_vente, sous_total, remise_pct, remise_montant,
+            tva, montant_ttc, mode_paiement, montant_paye, monnaie,
+            statut, notes, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (numero, d['client_id'], d['point_vente_id'], current_user.id,
+          'detail', datetime.now().strftime('%Y-%m-%d'),
+          montant_ttc, 0, 0, 0, montant_ttc, 'especes', 0, 0,
+          'complete', f'Converti depuis devis {d["numero"]}',
+          datetime.now().isoformat()))
+
+    # Copier les lignes
+    for l in lignes:
+        execute("""
+            INSERT INTO ventes_lignes (vente_id, piece_id, quantite, prix_unitaire, montant)
+            VALUES (?,?,?,?,?)
+        """, (vente_id, l['piece_id'], l['quantite'], l['prix_unitaire'], l['montant']))
+
+        # Décrémenter stock
+        stock = query("SELECT * FROM stock WHERE piece_id=? AND point_vente_id=?",
+                      (l['piece_id'], d['point_vente_id']), one=True)
+        if stock:
+            execute("UPDATE stock SET quantite = MAX(0, quantite - ?) WHERE id=?",
+                    (l['quantite'], stock['id']))
+
+    # Marquer devis comme accepté
+    execute("UPDATE devis SET statut='accepte' WHERE id=?", (did,))
+
+    audit('convert', 'devis', did, f'vente_id={vente_id}')
+    flash(f"✅ Devis converti en vente {numero}.", "success")
+    return redirect(url_for('vente_detail', vid=vente_id))
+
+@app.route('/devis/<int:did>/supprimer', methods=['POST'])
+@login_required
+@gerant_required
+def devis_delete(did):
+    execute("DELETE FROM devis_lignes WHERE devis_id=?", (did,))
+    execute("DELETE FROM devis WHERE id=?", (did,))
+    audit('delete', 'devis', did)
+    flash("🗑️ Devis supprimé.", "success")
+    return redirect(url_for('devis_list'))
+
+# ═══════════════════════════════════════════════════════════
+# RETOURS — Gestion RMA
+# ═══════════════════════════════════════════════════════════
+@app.route('/retours')
+@login_required
+def retours_list():
+    statut = request.args.get('statut', '').strip()
+    page = max(1, request.args.get('page', 1, type=int))
+    per_page = 30
+
+    where = " WHERE 1=1"
+    params = []
+    if statut:
+        where += " AND r.statut=?"; params.append(statut)
+
+    total = query(f"SELECT COUNT(*) c FROM retours r {where}", params, one=True)['c']
+    offset = (page - 1) * per_page
+
+    retours = query(f"""
+        SELECT r.*, c.nom AS client_nom, c.prenom AS client_prenom,
+               c.telephone AS client_tel,
+               v.numero AS vente_numero, v.date_vente,
+               p.sku, p.nom AS piece_nom
+        FROM retours r
+        LEFT JOIN clients c ON c.id = r.client_id
+        LEFT JOIN ventes v ON v.id = r.vente_id
+        LEFT JOIN pieces p ON p.id = r.piece_id
+        {where}
+        ORDER BY r.id DESC LIMIT ? OFFSET ?
+    """, params + [per_page, offset])
+
+    kpi = {
+        'total': total,
+        'en_attente': query("SELECT COUNT(*) c FROM retours WHERE statut='en_attente'", one=True)['c'],
+        'acceptes': query("SELECT COUNT(*) c FROM retours WHERE statut='accepte'", one=True)['c'],
+        'refuses': query("SELECT COUNT(*) c FROM retours WHERE statut='refuse'", one=True)['c'],
+        'montant_total': query("""
+            SELECT COALESCE(SUM(montant_rembourse), 0) c FROM retours WHERE statut='accepte'
+        """, one=True)['c'],
+    }
+
+    pages = (total + per_page - 1) // per_page
+
+    return render_template('retours/list.html', retours=retours, kpi=kpi,
+                           statut=statut, page=page, pages=pages)
+
+@app.route('/retours/nouveau', methods=['GET', 'POST'])
+@login_required
+@vendeur_required
+def retour_new():
+    if request.method == 'POST':
+        f = request.form
+        vente_id = int(f.get('vente_id') or 0)
+        piece_id = int(f.get('piece_id') or 0)
+        quantite = int(f.get('quantite') or 1)
+
+        if not (vente_id and piece_id and quantite):
+            flash("❌ Vente, pièce et quantité obligatoires.", "error")
+            return redirect(request.url)
+
+        vente = query("SELECT * FROM ventes WHERE id=?", (vente_id,), one=True)
+        if not vente:
+            flash("❌ Vente introuvable.", "error")
+            return redirect(request.url)
+
+        # Vérifier que la pièce est bien dans la vente
+        ligne = query("SELECT * FROM ventes_lignes WHERE vente_id=? AND piece_id=?",
+                      (vente_id, piece_id), one=True)
+        if not ligne:
+            flash("❌ Cette pièce n'est pas dans la vente.", "error")
+            return redirect(request.url)
+
+        if quantite > ligne['quantite']:
+            flash(f"❌ Quantité > quantité vendue ({ligne['quantite']}).", "error")
+            return redirect(request.url)
+
+        montant = (ligne['prix_unitaire'] or 0) * quantite
+        numero = gen_numero_retour()
+
+        rid = execute("""
+            INSERT INTO retours (numero, vente_id, client_id, piece_id, quantite,
+                motif, type_retour, montant_rembourse, statut, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+        """, (numero, vente_id, vente['client_id'], piece_id, quantite,
+              f.get('motif'), f.get('type_retour') or 'remboursement',
+              montant, 'en_attente', datetime.now().isoformat()))
+
+        audit('create', 'retour', rid, numero)
+        flash(f"✅ Retour {numero} créé.", "success")
+        return redirect(url_for('retour_detail', rid=rid))
+
+    ventes = query("""
+        SELECT v.id, v.numero, v.date_vente, c.nom AS client_nom, c.prenom AS client_prenom
+        FROM ventes v
+        LEFT JOIN clients c ON c.id = v.client_id
+        WHERE v.statut='complete'
+        ORDER BY v.id DESC LIMIT 100
+    """)
+
+    return render_template('retours/form.html', retour=None, ventes=ventes)
+
+@app.route('/retours/<int:rid>')
+@login_required
+def retour_detail(rid):
+    r = query("""
+        SELECT r.*, c.nom AS client_nom, c.prenom AS client_prenom,
+               c.telephone AS client_tel, c.code AS client_code,
+               v.numero AS vente_numero, v.date_vente, v.montant_ttc AS vente_montant,
+               p.sku, p.nom AS piece_nom, p.code_oem, p.prix_vente_detail
+        FROM retours r
+        LEFT JOIN clients c ON c.id = r.client_id
+        LEFT JOIN ventes v ON v.id = r.vente_id
+        LEFT JOIN pieces p ON p.id = r.piece_id
+        WHERE r.id=?
+    """, (rid,), one=True)
+    if not r:
+        abort(404)
+
+    return render_template('retours/detail.html', r=r)
+
+@app.route('/retours/<int:rid>/changer-statut', methods=['POST'])
+@login_required
+@gerant_required
+def retour_change_statut(rid):
+    nouveau = request.form.get('statut', '').strip()
+    if nouveau not in ('en_attente', 'accepte', 'refuse', 'rembourse'):
+        flash("❌ Statut invalide.", "error")
+        return redirect(url_for('retour_detail', rid=rid))
+
+    r = query("SELECT * FROM retours WHERE id=?", (rid,), one=True)
+    if not r:
+        abort(404)
+
+    # Si accepté, remettre en stock
+    if nouveau == 'accepte' and r['statut'] != 'accepte':
+        v = query("SELECT point_vente_id FROM ventes WHERE id=?", (r['vente_id'],), one=True)
+        if v:
+            stock = query("SELECT * FROM stock WHERE piece_id=? AND point_vente_id=?",
+                          (r['piece_id'], v['point_vente_id']), one=True)
+            if stock:
+                qte_avant = stock['quantite'] or 0
+                qte_apres = qte_avant + r['quantite']
+                execute("UPDATE stock SET quantite=?, updated_at=? WHERE id=?",
+                        (qte_apres, datetime.now().isoformat(), stock['id']))
+
+                execute("""
+                    INSERT INTO stock_mouvements (piece_id, point_vente_id, type, quantite,
+                        quantite_avant, quantite_apres, motif, reference, user_id, created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)
+                """, (r['piece_id'], v['point_vente_id'], 'entree', r['quantite'],
+                      qte_avant, qte_apres, f'Retour {r["numero"]}', r['numero'],
+                      current_user.id, datetime.now().isoformat()))
+
+    execute("UPDATE retours SET statut=? WHERE id=?", (nouveau, rid))
+    audit('statut', 'retour', rid, nouveau)
+    flash(f"✅ Statut : {nouveau}.", "success")
+    return redirect(url_for('retour_detail', rid=rid))
+
+@app.route('/retours/<int:rid>/supprimer', methods=['POST'])
+@login_required
+@admin_required
+def retour_delete(rid):
+    execute("DELETE FROM retours WHERE id=?", (rid,))
+    audit('delete', 'retour', rid)
+    flash("🗑️ Retour supprimé.", "success")
+    return redirect(url_for('retours_list'))
+
+@app.route('/api/vente/<int:vid>/lignes')
+@login_required
+def api_vente_lignes(vid):
+    """Récupère les lignes d'une vente (pour le formulaire retour)"""
+    lignes = query("""
+        SELECT vl.*, p.sku, p.nom AS piece_nom
+        FROM ventes_lignes vl
+        JOIN pieces p ON p.id = vl.piece_id
+        WHERE vl.vente_id=?
+    """, (vid,))
+    return jsonify([dict(l) for l in lignes])
+
+# ═══════════════════════════════════════════════════════════
+# PAIEMENTS — Vue globale
+# ═══════════════════════════════════════════════════════════
+@app.route('/paiements')
+@login_required
+def paiements_list():
+    mode = request.args.get('mode', '').strip()
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+    page = max(1, request.args.get('page', 1, type=int))
+    per_page = 30
+
+    where = " WHERE 1=1"
+    params = []
+    if mode:
+        where += " AND p.mode=?"; params.append(mode)
+    if date_from:
+        where += " AND date(p.date_paiement) >= date(?)"; params.append(date_from)
+    if date_to:
+        where += " AND date(p.date_paiement) <= date(?)"; params.append(date_to)
+
+    total = query(f"SELECT COUNT(*) c FROM paiements p {where}", params, one=True)['c']
+    offset = (page - 1) * per_page
+
+    paiements = query(f"""
+        SELECT p.*, c.nom AS client_nom, c.prenom AS client_prenom,
+               c.telephone AS client_tel,
+               v.numero AS vente_numero
+        FROM paiements p
+        LEFT JOIN clients c ON c.id = p.client_id
+        LEFT JOIN ventes v ON v.id = p.vente_id
+        {where}
+        ORDER BY p.id DESC LIMIT ? OFFSET ?
+    """, params + [per_page, offset])
+
+    kpi = {
+        'total': total,
+        'aujourdhui': query("""
+            SELECT COALESCE(SUM(montant), 0) c FROM paiements
+            WHERE date(date_paiement)=date('now')
+        """, one=True)['c'],
+        'ca_mois': query("""
+            SELECT COALESCE(SUM(montant), 0) c FROM paiements
+            WHERE strftime('%Y-%m', date_paiement)=strftime('%Y-%m','now')
+        """, one=True)['c'],
+        'wave': query("""
+            SELECT COALESCE(SUM(montant), 0) c FROM paiements WHERE mode='wave'
+        """, one=True)['c'],
+        'orange_money': query("""
+            SELECT COALESCE(SUM(montant), 0) c FROM paiements WHERE mode='orange_money'
+        """, one=True)['c'],
+    }
+
+    pages = (total + per_page - 1) // per_page
+
+    return render_template('paiements/list.html', paiements=paiements, kpi=kpi,
+                           mode=mode, date_from=date_from, date_to=date_to,
+                           page=page, pages=pages)
+
+
+
+# ═══════════════════════════════════════════════════════════
+# BLOC 5 — CLIENTS · RAPPORTS · EXPORTS · MOBILE · ADMIN
+# ═══════════════════════════════════════════════════════════
+
+def parse_periode():
+    periode = request.args.get('periode', 'mois')
+    today = datetime.now().date()
+    if periode == 'jour':
+        d1 = d2 = today; label = f"Aujourd'hui ({d1.strftime('%d/%m/%Y')})"
+    elif periode == 'semaine':
+        d1 = today - timedelta(days=today.weekday()); d2 = today; label = "Cette semaine"
+    elif periode == 'mois':
+        d1 = today.replace(day=1); d2 = today; label = f"{d1.strftime('%B %Y')}"
+    elif periode == 'trimestre':
+        q = (today.month - 1) // 3
+        d1 = today.replace(month=q * 3 + 1, day=1); d2 = today; label = f"T{q + 1} {today.year}"
+    elif periode == 'annee':
+        d1 = today.replace(month=1, day=1); d2 = today; label = f"Année {today.year}"
+    elif periode == 'custom':
+        try:
+            d1 = datetime.fromisoformat(request.args.get('date_from', '')).date()
+            d2 = datetime.fromisoformat(request.args.get('date_to', '')).date()
+            label = f"{d1.strftime('%d/%m/%Y')} → {d2.strftime('%d/%m/%Y')}"
+        except Exception:
+            d1 = today.replace(day=1); d2 = today; label = "Période personnalisée"
+    else:
+        d1 = today.replace(day=1); d2 = today; label = "Ce mois"
+    return d1.isoformat(), d2.isoformat(), label, periode
+
+def csv_response(rows, headers, filename):
+    def gen():
+        yield '\ufeff'
+        yield ','.join(f'"{h}"' for h in headers) + '\n'
+        for r in rows:
+            line = []
+            for h in headers:
+                v = r.get(h, '') if isinstance(r, dict) else ''
+                v = str(v).replace('"', '""')
+                line.append(f'"{v}"')
+            yield ','.join(line) + '\n'
+    return Response(gen(), mimetype='text/csv; charset=utf-8',
+                    headers={'Content-Disposition': f'attachment; filename={filename}'})
+
+# ═══════════════════════════════════════════════════════════
+# CLIENTS
+# ═══════════════════════════════════════════════════════════
+@app.route('/clients')
+@login_required
+def clients_list():
+    q = request.args.get('q', '').strip()
+    type_c = request.args.get('type', '').strip()
+    tri = request.args.get('tri', 'recent')
+    page = max(1, request.args.get('page', 1, type=int))
+    per_page = 30
+
+    where = " WHERE 1=1"
+    params = []
+    if q:
+        where += " AND (nom LIKE ? OR prenom LIKE ? OR telephone LIKE ? OR code LIKE ? OR garage_nom LIKE ?)"
+        params += [f'%{q}%'] * 5
+    if type_c:
+        where += " AND type_client=?"; params.append(type_c)
+
+    order = {'recent': 'id DESC', 'nom': 'nom ASC', 'ca': 'total_achats DESC',
+             'achats': 'nb_achats DESC', 'score': 'score DESC'}.get(tri, 'id DESC')
+
+    total = query(f"SELECT COUNT(*) c FROM clients {where}", params, one=True)['c']
+    offset = (page - 1) * per_page
+
+    clients = query(f"SELECT * FROM clients {where} ORDER BY {order} LIMIT ? OFFSET ?",
+                    params + [per_page, offset])
+
+    kpi = {
+        'total': total,
+        'particuliers': query("SELECT COUNT(*) c FROM clients WHERE type_client='particulier'", one=True)['c'],
+        'mecanos': query("SELECT COUNT(*) c FROM clients WHERE type_client='mecano'", one=True)['c'],
+        'garages': query("SELECT COUNT(*) c FROM clients WHERE type_client='garage'", one=True)['c'],
+    }
+
+    pages = (total + per_page - 1) // per_page
+    return render_template('clients/list.html', clients=clients, kpi=kpi,
+                           q=q, type_c=type_c, tri=tri, page=page, pages=pages)
+
+@app.route('/clients/nouveau', methods=['GET', 'POST'])
+@login_required
+def client_new():
+    if request.method == 'POST':
+        f = request.form
+        try:
+            cid = execute("""
+                INSERT INTO clients (code, nom, prenom, type, telephone, whatsapp,
+                    email, adresse, ville, pays, type_client, garage_nom,
+                    remise_pct, score, statut, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (None, f.get('nom'), f.get('prenom'), f.get('type') or 'particulier',
+                  f.get('telephone'), f.get('whatsapp') or f.get('telephone'),
+                  f.get('email'), f.get('adresse'), f.get('ville'),
+                  f.get('pays') or 'Sénégal', f.get('type_client') or 'particulier',
+                  f.get('garage_nom'), float(f.get('remise_pct') or 0),
+                  50, 'actif', datetime.now().isoformat()))
+            audit('create', 'client', cid)
+            flash("✅ Client créé.", "success")
+            return redirect(url_for('client_detail', cid=cid))
+        except sqlite3.IntegrityError:
+            flash("❌ Téléphone déjà utilisé.", "error")
+    return render_template('clients/form.html', client=None)
+
+@app.route('/clients/<int:cid>')
+@login_required
+def client_detail(cid):
+    c = query("SELECT * FROM clients WHERE id=?", (cid,), one=True)
+    if not c: abort(404)
+
+    ventes = query("""
+        SELECT v.*, pv.nom AS pdv_nom FROM ventes v
+        LEFT JOIN points_vente pv ON pv.id = v.point_vente_id
+        WHERE v.client_id=? ORDER BY v.id DESC LIMIT 30
+    """, (cid,))
+
+    pieces_pref = query("""
+        SELECT p.id, p.sku, p.nom, p.prix_vente_detail,
+               COUNT(vl.id) AS nb_achats, SUM(vl.quantite) AS qte_totale
+        FROM ventes_lignes vl
+        JOIN ventes v ON v.id = vl.vente_id
+        JOIN pieces p ON p.id = vl.piece_id
+        WHERE v.client_id=?
+        GROUP BY p.id ORDER BY nb_achats DESC LIMIT 10
+    """, (cid,))
+
+    kpi = {
+        'ca_total': c['total_achats'] or 0,
+        'nb_ventes': len(ventes),
+        'panier_moyen': (c['total_achats'] / c['nb_achats']) if c['nb_achats'] else 0,
+        'score': c['score'] or 0,
+    }
+
+    return render_template('clients/detail.html', c=c, ventes=ventes,
+                           pieces_pref=pieces_pref, kpi=kpi)
+
+@app.route('/clients/<int:cid>/editer', methods=['GET', 'POST'])
+@login_required
+def client_edit(cid):
+    c = query("SELECT * FROM clients WHERE id=?", (cid,), one=True)
+    if not c: abort(404)
+    if request.method == 'POST':
+        f = request.form
+        try:
+            execute("""
+                UPDATE clients SET nom=?, prenom=?, type=?, telephone=?, whatsapp=?,
+                    email=?, adresse=?, ville=?, pays=?, type_client=?,
+                    garage_nom=?, remise_pct=?, statut=? WHERE id=?
+            """, (f.get('nom'), f.get('prenom'), f.get('type'), f.get('telephone'),
+                  f.get('whatsapp'), f.get('email'), f.get('adresse'), f.get('ville'),
+                  f.get('pays') or 'Sénégal', f.get('type_client') or 'particulier',
+                  f.get('garage_nom'), float(f.get('remise_pct') or 0),
+                  f.get('statut') or 'actif', cid))
+            audit('update', 'client', cid)
+            flash("✅ Client mis à jour.", "success")
+            return redirect(url_for('client_detail', cid=cid))
+        except sqlite3.IntegrityError:
+            flash("❌ Téléphone déjà utilisé.", "error")
+    return render_template('clients/form.html', client=c)
+
+@app.route('/clients/<int:cid>/supprimer', methods=['POST'])
+@login_required
+@gerant_required
+def client_delete(cid):
+    nb = query("SELECT COUNT(*) c FROM ventes WHERE client_id=?", (cid,), one=True)['c']
+    if nb > 0:
+        flash(f"❌ {nb} vente(s) liée(s).", "error")
+    else:
+        execute("DELETE FROM clients WHERE id=?", (cid,))
+        audit('delete', 'client', cid)
+        flash("🗑️ Client supprimé.", "success")
+    return redirect(url_for('clients_list'))
+
+@app.route('/api/clients/recherche')
+@login_required
+def api_clients_search():
+    q = request.args.get('q', '').strip()
+    if len(q) < 2: return jsonify([])
+    rows = query("""
+        SELECT id, code, nom, prenom, telephone, type_client, remise_pct
+        FROM clients WHERE statut='actif'
+          AND (nom LIKE ? OR prenom LIKE ? OR telephone LIKE ? OR code LIKE ?)
+        ORDER BY nom LIMIT 15
+    """, (f'%{q}%',) * 4)
+    return jsonify([dict(r) for r in rows])
+
+# ═══════════════════════════════════════════════════════════
+# RAPPORTS
+# ═══════════════════════════════════════════════════════════
+@app.route('/rapports')
+@login_required
+def rapports_home():
+    return render_template('rapports/home.html')
+
+@app.route('/rapports/ventes')
+@login_required
+def rapports_ventes():
+    d1, d2, label, periode = parse_periode()
+    kpi = {
+        'nb_ventes': query("SELECT COUNT(*) c FROM ventes WHERE statut='complete' AND date(date_vente) BETWEEN ? AND ?", (d1, d2), one=True)['c'],
+        'ca': query("SELECT COALESCE(SUM(montant_ttc), 0) c FROM ventes WHERE statut='complete' AND date(date_vente) BETWEEN ? AND ?", (d1, d2), one=True)['c'],
+        'panier_moyen': 0,
+    }
+    if kpi['nb_ventes']:
+        kpi['panier_moyen'] = round(kpi['ca'] / kpi['nb_ventes'], 0)
+
+    par_vendeur = query("""
+        SELECT COALESCE(u.nom_complet, '—') AS vendeur, COUNT(v.id) AS nb,
+               COALESCE(SUM(v.montant_ttc), 0) AS ca
+        FROM ventes v LEFT JOIN users u ON u.id = v.user_id
+        WHERE v.statut='complete' AND date(v.date_vente) BETWEEN ? AND ?
+        GROUP BY u.id ORDER BY ca DESC
+    """, (d1, d2))
+
+    par_mode = query("""
+        SELECT mode_paiement, COUNT(*) AS nb, COALESCE(SUM(montant_ttc), 0) AS ca
+        FROM ventes WHERE statut='complete' AND date(date_vente) BETWEEN ? AND ?
+        GROUP BY mode_paiement ORDER BY ca DESC
+    """, (d1, d2))
+
+    evolution = query("""
+        SELECT date(date_vente) AS jour, COUNT(*) AS nb,
+               COALESCE(SUM(montant_ttc), 0) AS ca
+        FROM ventes WHERE statut='complete' AND date(date_vente) BETWEEN ? AND ?
+        GROUP BY jour ORDER BY jour
+    """, (d1, d2))
+
+    return render_template('rapports/ventes.html', kpi=kpi, par_vendeur=par_vendeur,
+                           par_mode=par_mode, evolution=evolution,
+                           label=label, periode=periode, d1=d1, d2=d2)
+
+@app.route('/rapports/produits')
+@login_required
+def rapports_produits():
+    d1, d2, label, periode = parse_periode()
+    top_pieces = query("""
+        SELECT p.id, p.sku, p.nom, p.code_oem, p.marque_piece, p.prix_vente_detail,
+               COALESCE(SUM(vl.quantite), 0) AS qte_vendue,
+               COALESCE(SUM(vl.montant), 0) AS ca
+        FROM ventes_lignes vl
+        JOIN ventes v ON v.id = vl.vente_id
+        JOIN pieces p ON p.id = vl.piece_id
+        WHERE v.statut='complete' AND date(v.date_vente) BETWEEN ? AND ?
+        GROUP BY p.id ORDER BY ca DESC LIMIT 30
+    """, (d1, d2))
+
+    top_categories = query("""
+        SELECT c.nom AS categorie, c.icone,
+               COUNT(DISTINCT p.id) AS nb_pieces,
+               COALESCE(SUM(vl.quantite), 0) AS qte_vendue,
+               COALESCE(SUM(vl.montant), 0) AS ca
+        FROM categories c
+        JOIN pieces p ON p.categorie_id = c.id
+        LEFT JOIN ventes_lignes vl ON vl.piece_id = p.id
+        LEFT JOIN ventes v ON v.id = vl.vente_id AND v.statut='complete'
+            AND date(v.date_vente) BETWEEN ? AND ?
+        GROUP BY c.id ORDER BY ca DESC
+    """, (d1, d2))
+
+    dormants = query("""
+        SELECT p.id, p.sku, p.nom,
+               (SELECT COALESCE(SUM(quantite), 0) FROM stock s WHERE s.piece_id=p.id) AS stock_total,
+               COALESCE((SELECT MAX(v.date_vente) FROM ventes_lignes vl
+                    JOIN ventes v ON v.id = vl.vente_id
+                    WHERE vl.piece_id = p.id AND v.statut='complete'), 'jamais') AS derniere_vente
+        FROM pieces p
+        WHERE p.statut='disponible'
+          AND p.id NOT IN (
+              SELECT DISTINCT vl.piece_id FROM ventes_lignes vl
+              JOIN ventes v ON v.id = vl.vente_id
+              WHERE v.statut='complete' AND date(v.date_vente) >= date('now', '-90 days')
+          )
+        ORDER BY stock_total DESC LIMIT 30
+    """)
+
+    return render_template('rapports/produits.html', top_pieces=top_pieces,
+                           top_categories=top_categories, dormants=dormants,
+                           label=label, periode=periode, d1=d1, d2=d2)
+
+@app.route('/rapports/stock')
+@login_required
+def rapports_stock():
+    kpi = {
+        'valeur_achat': query("SELECT COALESCE(SUM(s.quantite * p.prix_achat), 0) c FROM stock s JOIN pieces p ON p.id=s.piece_id", one=True)['c'],
+        'valeur_vente': query("SELECT COALESCE(SUM(s.quantite * p.prix_vente_detail), 0) c FROM stock s JOIN pieces p ON p.id=s.piece_id", one=True)['c'],
+        'total_unites': query("SELECT COALESCE(SUM(quantite), 0) c FROM stock", one=True)['c'],
+        'total_refs': query("SELECT COUNT(*) c FROM pieces WHERE statut='disponible'", one=True)['c'],
+        'ruptures': query("SELECT COUNT(*) c FROM (SELECT p.id FROM pieces p LEFT JOIN stock s ON s.piece_id=p.id GROUP BY p.id HAVING COALESCE(SUM(s.quantite), 0) = 0)", one=True)['c'],
+        'alertes': query("SELECT COUNT(*) c FROM (SELECT p.id FROM pieces p LEFT JOIN stock s ON s.piece_id=p.id GROUP BY p.id HAVING COALESCE(SUM(s.quantite), 0) > 0 AND COALESCE(SUM(s.quantite), 0) <= p.stock_alerte)", one=True)['c'],
+    }
+    kpi['marge_potentielle'] = kpi['valeur_vente'] - kpi['valeur_achat']
+    kpi['taux_marge'] = round(100 * kpi['marge_potentielle'] / kpi['valeur_achat'], 1) if kpi['valeur_achat'] else 0
+
+    par_categorie = query("""
+        SELECT c.nom, c.icone, COUNT(p.id) AS nb,
+               COALESCE(SUM(s.quantite * p.prix_vente_detail), 0) AS valeur
+        FROM categories c
+        LEFT JOIN pieces p ON p.categorie_id = c.id
+        LEFT JOIN stock s ON s.piece_id = p.id
+        GROUP BY c.id HAVING valeur > 0 ORDER BY valeur DESC LIMIT 10
+    """)
+
+    par_pdv = query("""
+        SELECT pv.nom, pv.ville, COALESCE(SUM(s.quantite), 0) AS unites,
+               COALESCE(SUM(s.quantite * p.prix_vente_detail), 0) AS valeur
+        FROM points_vente pv
+        LEFT JOIN stock s ON s.point_vente_id = pv.id
+        LEFT JOIN pieces p ON p.id = s.piece_id
+        GROUP BY pv.id ORDER BY valeur DESC
+    """)
+
+    return render_template('rapports/stock.html', kpi=kpi,
+                           par_categorie=par_categorie, par_pdv=par_pdv)
+
+@app.route('/rapports/clients')
+@login_required
+def rapports_clients():
+    kpi = {
+        'total': query("SELECT COUNT(*) c FROM clients", one=True)['c'],
+        'particuliers': query("SELECT COUNT(*) c FROM clients WHERE type_client='particulier'", one=True)['c'],
+        'mecanos': query("SELECT COUNT(*) c FROM clients WHERE type_client='mecano'", one=True)['c'],
+        'garages': query("SELECT COUNT(*) c FROM clients WHERE type_client='garage'", one=True)['c'],
+    }
+    top_clients = query("SELECT * FROM clients WHERE total_achats > 0 ORDER BY total_achats DESC LIMIT 20")
+    par_ville = query("""
+        SELECT COALESCE(ville, 'Non renseigné') AS ville, COUNT(*) AS nb,
+               COALESCE(SUM(total_achats), 0) AS ca
+        FROM clients GROUP BY ville ORDER BY ca DESC LIMIT 10
+    """)
+    return render_template('rapports/clients.html', kpi=kpi,
+                           top_clients=top_clients, par_ville=par_ville)
+
+# ═══════════════════════════════════════════════════════════
+# EXPORTS CSV
+# ═══════════════════════════════════════════════════════════
+@app.route('/export/pieces.csv')
+@login_required
+def export_pieces():
+    rows = query("""
+        SELECT p.sku, p.code_oem, p.nom, c.nom AS categorie, p.marque_piece, p.qualite,
+               p.prix_achat, p.prix_vente_detail, p.prix_vente_gros, p.prix_vente_mecano,
+               (SELECT COALESCE(SUM(quantite), 0) FROM stock s WHERE s.piece_id=p.id) AS stock_total,
+               p.statut FROM pieces p LEFT JOIN categories c ON c.id = p.categorie_id ORDER BY p.sku
+    """)
+    dicts = [dict(r) for r in rows]
+    headers = ['sku', 'code_oem', 'nom', 'categorie', 'marque_piece', 'qualite',
+               'prix_achat', 'prix_vente_detail', 'prix_vente_gros', 'prix_vente_mecano',
+               'stock_total', 'statut']
+    return csv_response(dicts, headers, f"pieces_{datetime.now().strftime('%Y%m%d')}.csv")
+
+@app.route('/export/stock.csv')
+@login_required
+def export_stock():
+    rows = query("""
+        SELECT p.sku, p.nom, pv.nom AS point_vente, s.quantite,
+               p.prix_achat, p.prix_vente_detail,
+               (s.quantite * p.prix_achat) AS valeur_achat,
+               (s.quantite * p.prix_vente_detail) AS valeur_vente
+        FROM stock s JOIN pieces p ON p.id = s.piece_id
+        JOIN points_vente pv ON pv.id = s.point_vente_id ORDER BY pv.nom, p.sku
+    """)
+    dicts = [dict(r) for r in rows]
+    headers = ['sku', 'nom', 'point_vente', 'quantite', 'prix_achat', 'prix_vente_detail',
+               'valeur_achat', 'valeur_vente']
+    return csv_response(dicts, headers, f"stock_{datetime.now().strftime('%Y%m%d')}.csv")
+
+@app.route('/export/ventes.csv')
+@login_required
+def export_ventes():
+    d1, d2, label, periode = parse_periode()
+    rows = query("""
+        SELECT v.numero, v.date_vente, v.statut, c.code AS client_code,
+               c.nom AS client_nom, c.telephone AS client_tel,
+               u.nom_complet AS vendeur, pv.nom AS point_vente,
+               v.sous_total, v.remise_montant, v.montant_ttc, v.mode_paiement
+        FROM ventes v
+        LEFT JOIN clients c ON c.id = v.client_id
+        LEFT JOIN users u ON u.id = v.user_id
+        LEFT JOIN points_vente pv ON pv.id = v.point_vente_id
+        WHERE date(v.date_vente) BETWEEN ? AND ? ORDER BY v.date_vente DESC
+    """, (d1, d2))
+    dicts = [dict(r) for r in rows]
+    headers = ['numero', 'date_vente', 'statut', 'client_code', 'client_nom', 'client_tel',
+               'vendeur', 'point_vente', 'sous_total', 'remise_montant', 'montant_ttc', 'mode_paiement']
+    return csv_response(dicts, headers, f"ventes_{d1}_{d2}.csv")
+
+@app.route('/export/clients.csv')
+@login_required
+def export_clients():
+    rows = query("""
+        SELECT code, nom, prenom, telephone, email, ville, type_client,
+               garage_nom, remise_pct, score, nb_achats, total_achats, statut
+        FROM clients ORDER BY code
+    """)
+    dicts = [dict(r) for r in rows]
+    headers = ['code', 'nom', 'prenom', 'telephone', 'email', 'ville', 'type_client',
+               'garage_nom', 'remise_pct', 'score', 'nb_achats', 'total_achats', 'statut']
+    return csv_response(dicts, headers, f"clients_{datetime.now().strftime('%Y%m%d')}.csv")
+
+@app.route('/export/mouvements.csv')
+@login_required
+def export_mouvements():
+    d1, d2, label, periode = parse_periode()
+    rows = query("""
+        SELECT sm.created_at, sm.type, sm.quantite, sm.motif, sm.reference,
+               p.sku, p.nom AS piece_nom, pv.nom AS point_vente, u.nom_complet AS user_nom
+        FROM stock_mouvements sm
+        JOIN pieces p ON p.id = sm.piece_id
+        LEFT JOIN points_vente pv ON pv.id = sm.point_vente_id
+        LEFT JOIN users u ON u.id = sm.user_id
+        WHERE date(sm.created_at) BETWEEN ? AND ? ORDER BY sm.id DESC
+    """, (d1, d2))
+    dicts = [dict(r) for r in rows]
+    headers = ['created_at', 'type', 'quantite', 'motif', 'reference',
+               'sku', 'piece_nom', 'point_vente', 'user_nom']
+    return csv_response(dicts, headers, f"mouvements_{d1}_{d2}.csv")
+
+# ═══════════════════════════════════════════════════════════
+# MOBILE PUBLIC
+# ═══════════════════════════════════════════════════════════
+@app.route('/mobile')
+def mobile_home():
+    marques = query("""
+        SELECT DISTINCT p.marque_piece AS nom, COUNT(*) AS nb FROM pieces p
+        WHERE p.statut='disponible' AND p.marque_piece IS NOT NULL
+        GROUP BY p.marque_piece ORDER BY nb DESC LIMIT 12
+    """)
+    categories = query("""
+        SELECT c.id, c.nom, c.icone, COUNT(p.id) AS nb
+        FROM categories c LEFT JOIN pieces p ON p.categorie_id = c.id AND p.statut='disponible'
+        WHERE c.parent_id IS NULL GROUP BY c.id HAVING nb > 0 ORDER BY nb DESC LIMIT 10
+    """)
+    top_pieces = query("""
+        SELECT p.*, c.nom AS categorie_nom, c.icone AS categorie_icone
+        FROM pieces p LEFT JOIN categories c ON c.id = p.categorie_id
+        WHERE p.statut='disponible' ORDER BY p.id DESC LIMIT 8
+    """)
+    kpi = {
+        'total_pieces': query("SELECT COUNT(*) c FROM pieces WHERE statut='disponible'", one=True)['c'],
+        'total_categories': query("SELECT COUNT(*) c FROM categories WHERE parent_id IS NULL", one=True)['c'],
+        'total_marques': query("SELECT COUNT(DISTINCT marque_piece) c FROM pieces WHERE marque_piece IS NOT NULL", one=True)['c'],
+    }
+    return render_template('mobile/home.html', marques=marques,
+                           categories=categories, top_pieces=top_pieces, kpi=kpi)
+
+@app.route('/mobile/catalogue')
+def mobile_catalogue():
+    q = request.args.get('q', '').strip()
+    categorie_id = request.args.get('categorie_id', type=int)
+    marque = request.args.get('marque', '').strip()
+    page = max(1, request.args.get('page', 1, type=int))
+    per_page = 20
+
+    where = " WHERE p.statut='disponible'"
+    params = []
+    if q:
+        where += " AND (p.nom LIKE ? OR p.sku LIKE ? OR p.code_oem LIKE ?)"
+        params += [f'%{q}%'] * 3
+    if categorie_id:
+        where += " AND p.categorie_id=?"; params.append(categorie_id)
+    if marque:
+        where += " AND p.marque_piece=?"; params.append(marque)
+
+    total = query(f"SELECT COUNT(*) c FROM pieces p {where}", params, one=True)['c']
+    offset = (page - 1) * per_page
+
+    pieces = query(f"""
+        SELECT p.*, c.nom AS categorie_nom,
+               (SELECT COALESCE(SUM(quantite), 0) FROM stock s WHERE s.piece_id=p.id) AS stock_total
+        FROM pieces p LEFT JOIN categories c ON c.id = p.categorie_id
+        {where} ORDER BY p.nom LIMIT ? OFFSET ?
+    """, params + [per_page, offset])
+
+    pages = (total + per_page - 1) // per_page
+    return render_template('mobile/catalogue.html', pieces=pieces,
+                           q=q, page=page, pages=pages, total=total)
+
+@app.route('/mobile/piece/<int:pid>')
+def mobile_piece(pid):
+    p = query("""
+        SELECT p.*, c.nom AS categorie_nom,
+               (SELECT COALESCE(SUM(quantite), 0) FROM stock s WHERE s.piece_id=p.id) AS stock_total
+        FROM pieces p LEFT JOIN categories c ON c.id = p.categorie_id
+        WHERE p.id=? AND p.statut='disponible'
+    """, (pid,), one=True)
+    if not p: abort(404)
+
+    compat = query("""
+        SELECT pc.*, vm.nom AS marque_nom, vmod.nom AS modele_nom
+        FROM piece_compatibilite pc
+        JOIN vehicules_marques vm ON vm.id = pc.marque_id
+        LEFT JOIN vehicules_modeles vmod ON vmod.id = pc.modele_id
+        WHERE pc.piece_id=?
+    """, (pid,))
+
+    return render_template('mobile/piece.html', p=p, compat=compat)
+
+# ═══════════════════════════════════════════════════════════
+# UTILISATEURS
+# ═══════════════════════════════════════════════════════════
+@app.route('/utilisateurs')
+@login_required
+@admin_required
+def users_list():
+    users = query("""
+        SELECT u.*,
+               (SELECT COUNT(*) FROM ventes v WHERE v.user_id=u.id) AS nb_ventes,
+               (SELECT COALESCE(SUM(montant_ttc), 0) FROM ventes v
+                WHERE v.user_id=u.id AND v.statut='complete') AS ca_total
+        FROM users u ORDER BY u.id
+    """)
+    return render_template('users/list.html', users=users)
+
+@app.route('/utilisateurs/nouveau', methods=['GET', 'POST'])
+@login_required
+@admin_required
+def user_new():
+    if request.method == 'POST':
+        f = request.form
+        try:
+            uid = execute("""
+                INSERT INTO users (username, password_hash, role, nom_complet,
+                    email, telephone, point_vente, actif, created_at)
+                VALUES (?,?,?,?,?,?,?,1,?)
+            """, (f.get('username'), generate_password_hash(f.get('password') or 'changeme123'),
+                  f.get('role') or 'vendeur', f.get('nom_complet'), f.get('email'),
+                  f.get('telephone'), f.get('point_vente'), datetime.now().isoformat()))
+            audit('create', 'user', uid)
+            flash("✅ Utilisateur créé.", "success")
+            return redirect(url_for('users_list'))
+        except sqlite3.IntegrityError:
+            flash("❌ Nom d'utilisateur déjà pris.", "error")
+    points_vente = query("SELECT * FROM points_vente ORDER BY nom")
+    return render_template('users/form.html', user=None, points_vente=points_vente)
+
+@app.route('/utilisateurs/<int:uid>/editer', methods=['GET', 'POST'])
+@login_required
+@admin_required
+def user_edit(uid):
+    u = query("SELECT * FROM users WHERE id=?", (uid,), one=True)
+    if not u: abort(404)
+    if request.method == 'POST':
+        f = request.form
+        pw = f.get('password', '').strip()
+        if pw:
+            execute("""UPDATE users SET username=?, password_hash=?, role=?, nom_complet=?,
+                    email=?, telephone=?, point_vente=?, actif=? WHERE id=?""",
+                (f.get('username'), generate_password_hash(pw), f.get('role'),
+                 f.get('nom_complet'), f.get('email'), f.get('telephone'),
+                 f.get('point_vente'), 1 if f.get('actif') else 0, uid))
+        else:
+            execute("""UPDATE users SET username=?, role=?, nom_complet=?, email=?,
+                    telephone=?, point_vente=?, actif=? WHERE id=?""",
+                (f.get('username'), f.get('role'), f.get('nom_complet'), f.get('email'),
+                 f.get('telephone'), f.get('point_vente'),
+                 1 if f.get('actif') else 0, uid))
+        audit('update', 'user', uid)
+        flash("✅ Utilisateur mis à jour.", "success")
+        return redirect(url_for('users_list'))
+    points_vente = query("SELECT * FROM points_vente ORDER BY nom")
+    return render_template('users/form.html', user=u, points_vente=points_vente)
+
+@app.route('/utilisateurs/<int:uid>/supprimer', methods=['POST'])
+@login_required
+@admin_required
+def user_delete(uid):
+    if uid == current_user.id:
+        flash("❌ Impossible de supprimer votre propre compte.", "error")
+    else:
+        execute("DELETE FROM users WHERE id=?", (uid,))
+        audit('delete', 'user', uid)
+        flash("🗑️ Utilisateur supprimé.", "success")
+    return redirect(url_for('users_list'))
+
+@app.route('/profil', methods=['GET', 'POST'])
+@login_required
+def profil():
+    if request.method == 'POST':
+        f = request.form
+        pw = f.get('password', '').strip()
+        if pw:
+            execute("UPDATE users SET password_hash=?, nom_complet=?, email=?, telephone=? WHERE id=?",
+                    (generate_password_hash(pw), f.get('nom_complet'), f.get('email'),
+                     f.get('telephone'), current_user.id))
+            flash("✅ Mot de passe et profil mis à jour.", "success")
+        else:
+            execute("UPDATE users SET nom_complet=?, email=?, telephone=? WHERE id=?",
+                    (f.get('nom_complet'), f.get('email'), f.get('telephone'), current_user.id))
+            flash("✅ Profil mis à jour.", "success")
+        return redirect(url_for('profil'))
+    u = query("SELECT * FROM users WHERE id=?", (current_user.id,), one=True)
+    return render_template('users/profil.html', u=u)
+
+# ═══════════════════════════════════════════════════════════
+# PARAMÈTRES + AUDIT + RECHERCHE
+# ═══════════════════════════════════════════════════════════
+@app.route('/parametres', methods=['GET', 'POST'])
+@login_required
+@admin_required
+def parametres():
+    if request.method == 'POST':
+        f = request.form
+        for cle, valeur in f.items():
+            execute("""INSERT INTO parametres (cle, valeur) VALUES (?,?)
+                ON CONFLICT(cle) DO UPDATE SET valeur=excluded.valeur""", (cle, valeur))
+        flash("✅ Paramètres enregistrés.", "success")
+        return redirect(url_for('parametres'))
+    params = query("SELECT * FROM parametres ORDER BY cle")
+    return render_template('parametres.html', params=params)
+
+@app.route('/audit')
+@login_required
+@admin_required
+def audit_list():
+    action = request.args.get('action', '').strip()
+    entity = request.args.get('entity', '').strip()
+    page = max(1, request.args.get('page', 1, type=int))
+    per_page = 50
+
+    where = " WHERE 1=1"
+    params = []
+    if action: where += " AND a.action=?"; params.append(action)
+    if entity: where += " AND a.entity=?"; params.append(entity)
+
+    total = query(f"SELECT COUNT(*) c FROM audit_log a {where}", params, one=True)['c']
+    offset = (page - 1) * per_page
+    logs = query(f"""SELECT a.*, u.nom_complet AS user_nom FROM audit_log a
+        LEFT JOIN users u ON u.id = a.user_id {where}
+        ORDER BY a.id DESC LIMIT ? OFFSET ?""", params + [per_page, offset])
+
+    actions = [r['action'] for r in query("SELECT DISTINCT action FROM audit_log ORDER BY action")]
+    entities = [r['entity'] for r in query("SELECT DISTINCT entity FROM audit_log WHERE entity IS NOT NULL ORDER BY entity")]
+    pages = (total + per_page - 1) // per_page
+
+    return render_template('audit/list.html', logs=logs, actions=actions, entities=entities,
+                           action=action, entity=entity, page=page, pages=pages, total=total)
+
+@app.route('/recherche')
+@login_required
+def recherche_globale():
+    q = request.args.get('q', '').strip()
+    resultats = {'pieces': [], 'clients': [], 'ventes': []}
+    if q and len(q) >= 2:
+        resultats['pieces'] = query("""
+            SELECT id, sku, nom, code_oem, prix_vente_detail FROM pieces
+            WHERE statut='disponible' AND (sku LIKE ? OR nom LIKE ? OR code_oem LIKE ? OR code_barre LIKE ?)
+            LIMIT 10
+        """, (f'%{q}%',) * 4)
+        resultats['clients'] = query("""
+            SELECT id, code, nom, prenom, telephone FROM clients
+            WHERE nom LIKE ? OR prenom LIKE ? OR telephone LIKE ? OR code LIKE ? LIMIT 10
+        """, (f'%{q}%',) * 4)
+        resultats['ventes'] = query("SELECT id, numero, montant_ttc, date_vente FROM ventes WHERE numero LIKE ? LIMIT 10",
+                                     (f'%{q}%',))
+    return render_template('recherche.html', q=q, resultats=resultats)
+
+
+
+
+# ═══════════════════════════════════════════════════════════
+# API STATS LIVE — Dashboard temps réel
+# ═══════════════════════════════════════════════════════════
+@app.route('/stats-live')
+@login_required
+def stats_live_page():
+    """Page dashboard temps réel"""
+    return render_template('pos/stats_live.html')
+
+
+@app.route('/pos/api/stats-live')
+@login_required
+def pos_api_stats_live():
+    """API JSON pour le dashboard temps réel"""
+
+    # KPI du jour
+    today = datetime.now().strftime('%Y-%m-%d')
+
+    kpi = query("""
+        SELECT
+            COUNT(*) AS nb_ventes,
+            COALESCE(SUM(montant_ttc), 0) AS ca,
+            COALESCE(SUM(sous_total), 0) AS sous_total
+        FROM ventes
+        WHERE statut='complete' AND date(date_vente) = date(?)
+    """, (today,), one=True)
+
+    nb_ventes = kpi['nb_ventes'] or 0
+    ca_jour = kpi['ca'] or 0
+
+    panier_moyen = round(ca_jour / nb_ventes, 0) if nb_ventes else 0
+
+    # Pièces vendues
+    pieces_vendues = query("""
+        SELECT COALESCE(SUM(vl.quantite), 0) AS qte
+        FROM ventes_lignes vl
+        JOIN ventes v ON v.id = vl.vente_id
+        WHERE v.statut='complete' AND date(v.date_vente) = date(?)
+    """, (today,), one=True)['qte'] or 0
+
+    # Évolution horaire (24h)
+    hourly = query("""
+        SELECT strftime('%H', created_at) AS heure,
+               COUNT(*) AS nb,
+               COALESCE(SUM(montant_ttc), 0) AS ca
+        FROM ventes
+        WHERE statut='complete' AND date(date_vente) = date(?)
+        GROUP BY heure
+        ORDER BY heure
+    """, (today,))
+
+    # Compléter les heures manquantes (0-23)
+    hourly_map = {h['heure']: dict(h) for h in hourly}
+    full_hourly = []
+    for h in range(24):
+        h_str = f"{h:02d}"
+        if h_str in hourly_map:
+            full_hourly.append({
+                'heure': h_str,
+                'nb': hourly_map[h_str]['nb'],
+                'ca': hourly_map[h_str]['ca']
+            })
+        else:
+            full_hourly.append({'heure': h_str, 'nb': 0, 'ca': 0})
+
+    # Modes de paiement
+    modes = query("""
+        SELECT mode_paiement AS mode, COUNT(*) AS nb,
+               COALESCE(SUM(montant_ttc), 0) AS ca
+        FROM ventes
+        WHERE statut='complete' AND date(date_vente) = date(?)
+        GROUP BY mode_paiement
+    """, (today,))
+
+    # Top 10 pièces
+    top_pieces = query("""
+        SELECT p.nom, p.sku,
+               SUM(vl.quantite) AS qte,
+               SUM(vl.montant) AS ca
+        FROM ventes_lignes vl
+        JOIN ventes v ON v.id = vl.vente_id
+        JOIN pieces p ON p.id = vl.piece_id
+        WHERE v.statut='complete' AND date(v.date_vente) = date(?)
+        GROUP BY p.id
+        ORDER BY qte DESC
+        LIMIT 10
+    """, (today,))
+
+    # Top vendeurs
+    top_vendeurs = query("""
+        SELECT COALESCE(u.nom_complet, 'Inconnu') AS nom,
+               COUNT(v.id) AS nb,
+               COALESCE(SUM(v.montant_ttc), 0) AS ca
+        FROM ventes v
+        LEFT JOIN users u ON u.id = v.user_id
+        WHERE v.statut='complete' AND date(v.date_vente) = date(?)
+        GROUP BY v.user_id
+        ORDER BY ca DESC
+        LIMIT 5
+    """, (today,))
+
+    return jsonify({
+        'ca_jour': ca_jour,
+        'nb_ventes_jour': nb_ventes,
+        'panier_moyen': panier_moyen,
+        'pieces_vendues': pieces_vendues,
+        'hourly': full_hourly,
+        'modes': [dict(m) for m in modes],
+        'top_pieces': [dict(p) for p in top_pieces],
+        'top_vendeurs': [dict(v) for v in top_vendeurs],
+    })
+
+
+
+
+# ═══════════════════════════════════════════════════════════
+# API STATS LIVE — Dashboard temps réel
+# ═══════════════════════════════════════════════════════════
+@app.route('/stats-live')
+@login_required
+def stats_live_page():
+    """Page dashboard temps réel"""
+    return render_template('pos/stats_live.html')
+
+
+@app.route('/pos/api/stats-live')
+@login_required
+def pos_api_stats_live():
+    """API JSON pour le dashboard temps réel"""
+
+    # KPI du jour
+    today = datetime.now().strftime('%Y-%m-%d')
+
+    kpi = query("""
+        SELECT
+            COUNT(*) AS nb_ventes,
+            COALESCE(SUM(montant_ttc), 0) AS ca,
+            COALESCE(SUM(sous_total), 0) AS sous_total
+        FROM ventes
+        WHERE statut='complete' AND date(date_vente) = date(?)
+    """, (today,), one=True)
+
+    nb_ventes = kpi['nb_ventes'] or 0
+    ca_jour = kpi['ca'] or 0
+
+    panier_moyen = round(ca_jour / nb_ventes, 0) if nb_ventes else 0
+
+    # Pièces vendues
+    pieces_vendues = query("""
+        SELECT COALESCE(SUM(vl.quantite), 0) AS qte
+        FROM ventes_lignes vl
+        JOIN ventes v ON v.id = vl.vente_id
+        WHERE v.statut='complete' AND date(v.date_vente) = date(?)
+    """, (today,), one=True)['qte'] or 0
+
+    # Évolution horaire (24h)
+    hourly = query("""
+        SELECT strftime('%H', created_at) AS heure,
+               COUNT(*) AS nb,
+               COALESCE(SUM(montant_ttc), 0) AS ca
+        FROM ventes
+        WHERE statut='complete' AND date(date_vente) = date(?)
+        GROUP BY heure
+        ORDER BY heure
+    """, (today,))
+
+    # Compléter les heures manquantes (0-23)
+    hourly_map = {h['heure']: dict(h) for h in hourly}
+    full_hourly = []
+    for h in range(24):
+        h_str = f"{h:02d}"
+        if h_str in hourly_map:
+            full_hourly.append({
+                'heure': h_str,
+                'nb': hourly_map[h_str]['nb'],
+                'ca': hourly_map[h_str]['ca']
+            })
+        else:
+            full_hourly.append({'heure': h_str, 'nb': 0, 'ca': 0})
+
+    # Modes de paiement
+    modes = query("""
+        SELECT mode_paiement AS mode, COUNT(*) AS nb,
+               COALESCE(SUM(montant_ttc), 0) AS ca
+        FROM ventes
+        WHERE statut='complete' AND date(date_vente) = date(?)
+        GROUP BY mode_paiement
+    """, (today,))
+
+    # Top 10 pièces
+    top_pieces = query("""
+        SELECT p.nom, p.sku,
+               SUM(vl.quantite) AS qte,
+               SUM(vl.montant) AS ca
+        FROM ventes_lignes vl
+        JOIN ventes v ON v.id = vl.vente_id
+        JOIN pieces p ON p.id = vl.piece_id
+        WHERE v.statut='complete' AND date(v.date_vente) = date(?)
+        GROUP BY p.id
+        ORDER BY qte DESC
+        LIMIT 10
+    """, (today,))
+
+    # Top vendeurs
+    top_vendeurs = query("""
+        SELECT COALESCE(u.nom_complet, 'Inconnu') AS nom,
+               COUNT(v.id) AS nb,
+               COALESCE(SUM(v.montant_ttc), 0) AS ca
+        FROM ventes v
+        LEFT JOIN users u ON u.id = v.user_id
+        WHERE v.statut='complete' AND date(v.date_vente) = date(?)
+        GROUP BY v.user_id
+        ORDER BY ca DESC
+        LIMIT 5
+    """, (today,))
+
+    return jsonify({
+        'ca_jour': ca_jour,
+        'nb_ventes_jour': nb_ventes,
+        'panier_moyen': panier_moyen,
+        'pieces_vendues': pieces_vendues,
+        'hourly': full_hourly,
+        'modes': [dict(m) for m in modes],
+        'top_pieces': [dict(p) for p in top_pieces],
+        'top_vendeurs': [dict(v) for v in top_vendeurs],
+    })
+
+

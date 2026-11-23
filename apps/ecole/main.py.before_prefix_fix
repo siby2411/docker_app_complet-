@@ -1,0 +1,1321 @@
+from flask import Flask, render_template_string, request, redirect, url_for, flash
+from werkzeug.middleware.proxy_fix import ProxyFix
+import sqlite3
+from datetime import datetime
+import os
+
+app = Flask(__name__)
+app.secret_key = 'omega_ecole_lmd_2026'
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
+PREFIX = "/ecole"
+
+@app.context_processor
+def utility_processor():
+    def url_for_with_prefix(endpoint, **kwargs):
+        url = url_for(endpoint, **kwargs)
+        if url.startswith('/'):
+            return PREFIX + url
+        return url
+    return dict(url_for=url_for_with_prefix)
+
+DB_PATH = "/app/data/ecole.db"
+
+
+# ==================== CONNEXION ====================
+def get_db():
+    """Connexion avec WAL + busy_timeout pour la concurrence"""
+    os.makedirs("/app/data", exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
+
+
+# ==================== FONCTIONS UTILITAIRES ====================
+def generer_code(prefix, table, champ):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute(f"SELECT COUNT(*) FROM {table}")
+    count = c.fetchone()[0] + 1
+    conn.close()
+    return f"{prefix}{count:04d}"
+
+
+def calculer_moyenne_etudiant(etudiant_id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT SUM(b.note_finale * m.coefficient) / SUM(m.coefficient),
+            COUNT(*), SUM(CASE WHEN b.note_finale >= 10 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN b.note_finale < 10 AND b.note_finale > 0 THEN 1 ELSE 0 END)
+        FROM bulletins b JOIN matieres m ON b.matiere_id = m.id
+        WHERE b.etudiant_id = ? AND b.statut != 'Non inscrit'""", (etudiant_id,))
+    r = c.fetchone()
+    conn.close()
+    return {'moyenne': round(r[0] or 0, 2), 'nb_matieres': r[1] or 0,
+            'validees': r[2] or 0, 'echecs': r[3] or 0}
+
+
+def get_classement(etudiant_id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT e.id, (SELECT AVG(b.note_finale * m.coefficient) / AVG(m.coefficient)
+            FROM bulletins b JOIN matieres m ON b.matiere_id = m.id
+            WHERE b.etudiant_id = e.id AND b.statut != 'Non inscrit')
+        FROM etudiants e
+        WHERE e.classe_id = (SELECT classe_id FROM etudiants WHERE id = ?)
+        ORDER BY 2 DESC""", (etudiant_id,))
+    classement = c.fetchall()
+    conn.close()
+    for i, e in enumerate(classement):
+        if e[0] == etudiant_id:
+            return i + 1, len(classement)
+    return 0, 0
+
+
+# ==================== TEMPLATE BASE ====================
+HTML_BASE = """
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Omega Ecole - Systeme LMD</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; font-family:'Segoe UI',sans-serif; }
+        body { background:#f0f4f8; }
+        .header { background:linear-gradient(135deg,#1a1a2e,#0f3460); padding:15px 30px; display:flex; justify-content:space-between; align-items:center; border-bottom:4px solid #e94560; flex-wrap:wrap; gap:10px; }
+        .header h1 { color:white; font-size:1.5rem; }
+        .header h1 span { color:#e94560; }
+        .header .badge-top { background:rgba(233,69,96,0.3); color:white; padding:5px 15px; border-radius:20px; }
+        .nav { background:white; padding:0 20px; display:flex; gap:2px; border-bottom:2px solid #e2e8f0; flex-wrap:wrap; }
+        .nav a { padding:12px 18px; color:#4a5568; text-decoration:none; border-bottom:3px solid transparent; transition:0.3s; font-size:0.9rem; display:flex; align-items:center; gap:6px; }
+        .nav a:hover, .nav a.active { color:#e94560; border-bottom-color:#e94560; background:#f7fafc; }
+        .container { max-width:1400px; margin:20px auto; padding:0 20px; }
+        .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:15px; margin-bottom:20px; }
+        .stat-card { background:white; padding:15px; border-radius:12px; border-left:4px solid #e94560; box-shadow:0 2px 8px rgba(0,0,0,0.05); }
+        .stat-card .num { font-size:1.8rem; font-weight:700; color:#1a1a2e; }
+        .stat-card .label { color:#718096; font-size:0.8rem; text-transform:uppercase; }
+        .stat-card .icon { float:right; font-size:2rem; color:#e94560; opacity:0.2; }
+        .card { background:white; border-radius:12px; padding:20px; box-shadow:0 2px 8px rgba(0,0,0,0.05); margin-top:20px; overflow-x:auto; }
+        .card-header { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:15px; }
+        .card-header h2 { font-size:1.2rem; color:#1a1a2e; }
+        .btn { padding:8px 16px; border:none; border-radius:6px; cursor:pointer; font-weight:600; display:inline-flex; align-items:center; gap:6px; text-decoration:none; transition:0.3s; font-size:0.85rem; }
+        .btn-primary { background:#e94560; color:white; }
+        .btn-primary:hover { background:#c73652; }
+        .btn-success { background:#2ecc71; color:white; }
+        .btn-success:hover { background:#27ae60; }
+        .btn-warning { background:#f39c12; color:white; }
+        .btn-warning:hover { background:#e67e22; }
+        .btn-danger { background:#e74c3c; color:white; }
+        .btn-danger:hover { background:#c0392b; }
+        .btn-info { background:#3498db; color:white; }
+        .btn-info:hover { background:#2980b9; }
+        .btn-sm { padding:4px 10px; font-size:0.75rem; }
+        table { width:100%; border-collapse:collapse; }
+        th, td { padding:10px 12px; text-align:left; border-bottom:1px solid #e2e8f0; font-size:0.9rem; }
+        th { background:#f7fafc; color:#4a5568; font-size:0.75rem; text-transform:uppercase; }
+        tr:hover { background:#f7fafc; }
+        .badge { padding:3px 10px; border-radius:20px; font-size:0.7rem; font-weight:600; }
+        .badge-success { background:#d1fae5; color:#065f46; }
+        .badge-warning { background:#fef3c7; color:#92400e; }
+        .badge-danger { background:#fee2e2; color:#991b1b; }
+        .badge-info { background:#dbeafe; color:#1e40af; }
+        .form-container { background:white; border-radius:12px; padding:25px; max-width:800px; margin:0 auto; box-shadow:0 2px 8px rgba(0,0,0,0.05); }
+        .form-group { margin-bottom:12px; }
+        .form-group label { display:block; font-weight:600; color:#4a5568; margin-bottom:4px; font-size:0.9rem; }
+        .form-group input, .form-group select, .form-group textarea { width:100%; padding:8px 12px; border:2px solid #e2e8f0; border-radius:6px; font-size:0.9rem; }
+        .form-group input:focus, .form-group select:focus { outline:none; border-color:#e94560; }
+        .form-row { display:grid; grid-template-columns:1fr 1fr; gap:15px; }
+        .footer { background:#1a1a2e; color:#a8b2d1; text-align:center; padding:15px; margin-top:30px; border-top:4px solid #e94560; font-size:0.85rem; }
+        .footer span { color:#e94560; }
+        .flash { padding:10px 15px; border-radius:6px; margin-bottom:10px; }
+        .flash-success { background:#d1fae5; color:#065f46; }
+        .flash-danger { background:#fee2e2; color:#991b1b; }
+        @media (max-width:768px){ .form-row{ grid-template-columns:1fr; } .header{ flex-direction:column; } .stats{ grid-template-columns:1fr 1fr; } }
+        @media print { .nav, .header, .footer, .btn, .flash { display:none !important; } .card { box-shadow:none; } }
+    </style>
+</head>
+<body>
+<header class="header">
+    <div><h1>🎓 OMEGA <span>CONSULTING</span></h1></div>
+    <div class="badge-top"><i class="fas fa-school"></i> Systeme LMD</div>
+</header>
+<nav class="nav">
+    <a href="/" class="{{ 'active' if active=='dashboard' else '' }}"><i class="fas fa-home"></i> Dashboard</a>
+    <a href="/etudiants" class="{{ 'active' if active=='etudiants' else '' }}"><i class="fas fa-users"></i> Etudiants</a>
+    <a href="/inscription" class="{{ 'active' if active=='inscription' else '' }}"><i class="fas fa-user-plus"></i> Inscription</a>
+    <a href="/classes" class="{{ 'active' if active=='classes' else '' }}"><i class="fas fa-chalkboard"></i> Classes</a>
+    <a href="/matieres" class="{{ 'active' if active=='matieres' else '' }}"><i class="fas fa-book"></i> Matieres</a>
+    <a href="/professeurs" class="{{ 'active' if active=='professeurs' else '' }}"><i class="fas fa-chalkboard-teacher"></i> Professeurs</a>
+    <a href="/bulletins" class="{{ 'active' if active=='bulletins' else '' }}"><i class="fas fa-file-alt"></i> Bulletins</a>
+    <a href="/scolarite" class="{{ 'active' if active=='scolarite' else '' }}"><i class="fas fa-money-bill-wave"></i> Scolarite</a>
+</nav>
+<div class="container">
+    {FLASH_MESSAGES}
+    {CONTENT}
+</div>
+<footer class="footer">&copy; 2026 <span>Omega Consulting</span> - Tous droits reserves</footer>
+</body>
+</html>
+"""
+
+
+def render_page(content, active='dashboard'):
+    """Rendu avec template de base + remplacement du bloc actif"""
+    flash_html = """
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+            <div class="flash flash-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+    """
+    page = HTML_BASE.replace("{CONTENT}", content).replace("{FLASH_MESSAGES}", flash_html)
+    page = page.replace("{{ 'active' if active=='" + active + "' else '' }}", "active")
+    return render_template_string(page, active=active)
+
+
+# ==================== DASHBOARD ====================
+@app.route("/")
+def index():
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM etudiants")
+        total = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM etudiants WHERE statut='Actif'")
+        actifs = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM classes")
+        classes_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM professeurs WHERE statut='Actif'")
+        profs = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM matieres")
+        matieres_count = c.fetchone()[0]
+        c.execute("SELECT SUM(montant) FROM scolarite WHERE statut='Payé'")
+        scolarite_total = c.fetchone()[0] or 0
+
+        c.execute("""SELECT e.*, c.nom as classe_nom,
+            (SELECT AVG(b.note_finale * m.coefficient) / AVG(m.coefficient)
+            FROM bulletins b JOIN matieres m ON b.matiere_id = m.id
+            WHERE b.etudiant_id = e.id) as moyenne
+            FROM etudiants e JOIN classes c ON e.classe_id = c.id
+            ORDER BY e.id DESC LIMIT 15""")
+        etudiants = c.fetchall()
+        conn.close()
+
+        content = f"""
+        <div class="stats">
+            <div class="stat-card"><div class="icon"><i class="fas fa-users"></i></div><div class="num">{total}</div><div class="label">Etudiants</div></div>
+            <div class="stat-card" style="border-left-color:#2ecc71;"><div class="icon"><i class="fas fa-user-check"></i></div><div class="num">{actifs}</div><div class="label">Actifs</div></div>
+            <div class="stat-card" style="border-left-color:#3498db;"><div class="icon"><i class="fas fa-chalkboard"></i></div><div class="num">{classes_count}</div><div class="label">Classes</div></div>
+            <div class="stat-card" style="border-left-color:#9b59b6;"><div class="icon"><i class="fas fa-chalkboard-teacher"></i></div><div class="num">{profs}</div><div class="label">Professeurs</div></div>
+            <div class="stat-card" style="border-left-color:#e67e22;"><div class="icon"><i class="fas fa-book"></i></div><div class="num">{matieres_count}</div><div class="label">Matieres</div></div>
+            <div class="stat-card" style="border-left-color:#f39c12;"><div class="icon"><i class="fas fa-money-bill-wave"></i></div><div class="num">{scolarite_total:,.0f}</div><div class="label">Scolarite FCFA</div></div>
+        </div>
+        <div class="card">
+            <div class="card-header">
+                <h2><i class="fas fa-users"></i> Derniers Etudiants</h2>
+                <a href="/inscription" class="btn btn-primary"><i class="fas fa-plus"></i> Inscrire</a>
+            </div>
+            <table>
+                <thead><tr><th>Matricule</th><th>Nom & Prenom</th><th>Classe</th><th>Moyenne</th><th>Statut</th><th>Actions</th></tr></thead>
+                <tbody>
+        """
+        for e in etudiants:
+            content += f"""
+            <tr>
+                <td><strong>{e['matricule']}</strong></td>
+                <td>{e['nom']} {e['prenom']}</td>
+                <td>{e['classe_nom']}</td>
+                <td>{round(e['moyenne'], 2) if e['moyenne'] else '-'}</td>
+                <td><span class="badge badge-success">{e['statut']}</span></td>
+                <td>
+                    <a href="/etudiant/{e['id']}" class="btn btn-info btn-sm"><i class="fas fa-eye"></i></a>
+                    <a href="/bulletin/{e['id']}" class="btn btn-primary btn-sm"><i class="fas fa-file-alt"></i></a>
+                    <a href="/notes/{e['id']}" class="btn btn-success btn-sm"><i class="fas fa-star"></i></a>
+                </td>
+            </tr>
+            """
+        content += "</tbody></table></div>"
+        return render_page(content, active='dashboard')
+    except Exception as e:
+        return f"<h1>Erreur</h1><p>{str(e)}</p>"
+
+
+# ==================== CLASSES ====================
+@app.route("/classes")
+def classes():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT c.*, f.nom as filiere, n.nom as niveau
+        FROM classes c JOIN filieres f ON c.filiere_id = f.id
+        JOIN niveaux n ON c.niveau_id = n.id ORDER BY n.ordre, f.nom""")
+    rows = c.fetchall()
+    conn.close()
+
+    content = """
+    <div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-chalkboard"></i> Gestion des Classes</h2>
+            <a href="/classes/ajouter" class="btn btn-primary"><i class="fas fa-plus"></i> Ajouter</a>
+        </div>
+        <table>
+            <thead><tr><th>Code</th><th>Nom</th><th>Filiere</th><th>Niveau</th><th>Effectif</th><th>Capacite</th><th>Actions</th></tr></thead>
+            <tbody>
+    """
+    for cl in rows:
+        content += f"""
+        <tr>
+            <td><strong>{cl['code']}</strong></td>
+            <td>{cl['nom']}</td>
+            <td>{cl['filiere']}</td>
+            <td>{cl['niveau']}</td>
+            <td>{cl['effectif'] or 0}</td>
+            <td>{cl['capacite']}</td>
+            <td>
+                <a href="/classes/{cl['id']}/edit" class="btn btn-warning btn-sm"><i class="fas fa-edit"></i></a>
+                <a href="/classes/{cl['id']}/delete" class="btn btn-danger btn-sm" onclick="return confirm('Supprimer ?')"><i class="fas fa-trash"></i></a>
+            </td>
+        </tr>
+        """
+    content += "</tbody></table></div>"
+    return render_page(content, active='classes')
+
+
+@app.route("/classes/ajouter", methods=["GET", "POST"])
+def ajouter_classe():
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        code = generer_code("CL-", "classes", "code")
+        c.execute("""INSERT INTO classes (code, nom, niveau_id, filiere_id, annee_academique, capacite)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (code, request.form['nom'], int(request.form['niveau_id']),
+             int(request.form['filiere_id']), request.form['annee_academique'],
+             int(request.form['capacite'])))
+        conn.commit()
+        conn.close()
+        flash("Classe ajoutée", "success")
+        return redirect("/classes")
+
+    c.execute("SELECT id, nom FROM niveaux ORDER BY ordre")
+    niveaux = c.fetchall()
+    c.execute("SELECT id, nom FROM filieres ORDER BY nom")
+    filieres = c.fetchall()
+    conn.close()
+
+    niveaux_opts = "".join(f'<option value="{n["id"]}">{n["nom"]}</option>' for n in niveaux)
+    filieres_opts = "".join(f'<option value="{f["id"]}">{f["nom"]}</option>' for f in filieres)
+
+    content = f"""
+    <div class="form-container">
+        <h2><i class="fas fa-plus"></i> Ajouter une Classe</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Nom *</label><input type="text" name="nom" required></div>
+                <div class="form-group"><label>Annee academique *</label><input type="text" name="annee_academique" value="2025-2026" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Niveau *</label><select name="niveau_id" required>{niveaux_opts}</select></div>
+                <div class="form-group"><label>Filiere *</label><select name="filiere_id" required>{filieres_opts}</select></div>
+            </div>
+            <div class="form-group"><label>Capacite *</label><input type="number" name="capacite" value="30" required></div>
+            <button type="submit" class="btn btn-success" style="width:100%;"><i class="fas fa-save"></i> Enregistrer</button>
+        </form>
+        <br><a href="/classes" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>
+    """
+    return render_page(content, active='classes')
+
+
+@app.route("/classes/<int:id>/edit", methods=["GET", "POST"])
+def edit_classe(id):
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        c.execute("""UPDATE classes SET nom=?, niveau_id=?, filiere_id=?, annee_academique=?, capacite=? WHERE id=?""",
+            (request.form['nom'], int(request.form['niveau_id']), int(request.form['filiere_id']),
+             request.form['annee_academique'], int(request.form['capacite']), id))
+        conn.commit()
+        conn.close()
+        flash("Classe mise à jour", "success")
+        return redirect("/classes")
+
+    c.execute("SELECT * FROM classes WHERE id = ?", (id,))
+    cl = c.fetchone()
+    c.execute("SELECT id, nom FROM niveaux ORDER BY ordre")
+    niveaux = c.fetchall()
+    c.execute("SELECT id, nom FROM filieres ORDER BY nom")
+    filieres = c.fetchall()
+    conn.close()
+
+    niveaux_opts = "".join(f'<option value="{n["id"]}" {"selected" if n["id"]==cl["niveau_id"] else ""}>{n["nom"]}</option>' for n in niveaux)
+    filieres_opts = "".join(f'<option value="{f["id"]}" {"selected" if f["id"]==cl["filiere_id"] else ""}>{f["nom"]}</option>' for f in filieres)
+
+    content = f"""
+    <div class="form-container">
+        <h2><i class="fas fa-edit"></i> Modifier Classe {cl['code']}</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Nom *</label><input type="text" name="nom" value="{cl['nom']}" required></div>
+                <div class="form-group"><label>Annee academique *</label><input type="text" name="annee_academique" value="{cl['annee_academique']}" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Niveau *</label><select name="niveau_id" required>{niveaux_opts}</select></div>
+                <div class="form-group"><label>Filiere *</label><select name="filiere_id" required>{filieres_opts}</select></div>
+            </div>
+            <div class="form-group"><label>Capacite *</label><input type="number" name="capacite" value="{cl['capacite']}" required></div>
+            <button type="submit" class="btn btn-primary" style="width:100%;"><i class="fas fa-save"></i> Mettre a jour</button>
+        </form>
+        <br><a href="/classes" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>
+    """
+    return render_page(content, active='classes')
+
+
+@app.route("/classes/<int:id>/delete")
+def delete_classe(id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM classes WHERE id = ?", (id,))
+    conn.commit()
+    conn.close()
+    flash("Classe supprimée", "success")
+    return redirect("/classes")
+
+
+# ==================== MATIÈRES ====================
+@app.route("/matieres")
+def matieres():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT m.*, n.nom as niveau_nom FROM matieres m
+        JOIN niveaux n ON m.niveau_id = n.id ORDER BY n.ordre, m.nom""")
+    rows = c.fetchall()
+    conn.close()
+
+    content = """
+    <div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-book"></i> Gestion des Matieres</h2>
+            <a href="/matieres/ajouter" class="btn btn-primary"><i class="fas fa-plus"></i> Ajouter</a>
+        </div>
+        <table>
+            <thead><tr><th>Code</th><th>Nom</th><th>Niveau</th><th>Coeff</th><th>Credits</th><th>Heures</th><th>Actions</th></tr></thead>
+            <tbody>
+    """
+    for m in rows:
+        content += f"""
+        <tr>
+            <td><strong>{m['code']}</strong></td>
+            <td>{m['nom']}</td>
+            <td>{m['niveau_nom']}</td>
+            <td>{m['coefficient']}</td>
+            <td>{m['credit']}</td>
+            <td>{m['heures_cours']}h</td>
+            <td>
+                <a href="/matieres/{m['id']}/edit" class="btn btn-warning btn-sm"><i class="fas fa-edit"></i></a>
+                <a href="/matieres/{m['id']}/delete" class="btn btn-danger btn-sm" onclick="return confirm('Supprimer ?')"><i class="fas fa-trash"></i></a>
+            </td>
+        </tr>
+        """
+    content += "</tbody></table></div>"
+    return render_page(content, active='matieres')
+
+
+@app.route("/matieres/ajouter", methods=["GET", "POST"])
+def ajouter_matiere():
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        code = generer_code("MAT-", "matieres", "code")
+        c.execute("""INSERT INTO matieres (code, nom, niveau_id, coefficient, credit, heures_cours, heures_td, heures_tp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (code, request.form['nom'], int(request.form['niveau_id']),
+             int(request.form['coefficient']), int(request.form['credit']),
+             int(request.form.get('heures_cours', 0)), int(request.form.get('heures_td', 0)),
+             int(request.form.get('heures_tp', 0))))
+        conn.commit()
+        conn.close()
+        flash("Matière ajoutée", "success")
+        return redirect("/matieres")
+
+    c.execute("SELECT id, nom FROM niveaux ORDER BY ordre")
+    niveaux = c.fetchall()
+    conn.close()
+    niveaux_opts = "".join(f'<option value="{n["id"]}">{n["nom"]}</option>' for n in niveaux)
+
+    content = f"""
+    <div class="form-container">
+        <h2><i class="fas fa-plus"></i> Ajouter une Matiere</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Nom *</label><input type="text" name="nom" required></div>
+                <div class="form-group"><label>Niveau *</label><select name="niveau_id" required>{niveaux_opts}</select></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Coefficient *</label><input type="number" name="coefficient" value="1" required></div>
+                <div class="form-group"><label>Credits *</label><input type="number" name="credit" value="3" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Heures Cours</label><input type="number" name="heures_cours" value="0"></div>
+                <div class="form-group"><label>Heures TD</label><input type="number" name="heures_td" value="0"></div>
+            </div>
+            <div class="form-group"><label>Heures TP</label><input type="number" name="heures_tp" value="0"></div>
+            <button type="submit" class="btn btn-success" style="width:100%;"><i class="fas fa-save"></i> Enregistrer</button>
+        </form>
+        <br><a href="/matieres" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>
+    """
+    return render_page(content, active='matieres')
+
+
+@app.route("/matieres/<int:id>/edit", methods=["GET", "POST"])
+def edit_matiere(id):
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        c.execute("""UPDATE matieres SET nom=?, niveau_id=?, coefficient=?, credit=?, heures_cours=?, heures_td=?, heures_tp=? WHERE id=?""",
+            (request.form['nom'], int(request.form['niveau_id']), int(request.form['coefficient']),
+             int(request.form['credit']), int(request.form.get('heures_cours', 0)),
+             int(request.form.get('heures_td', 0)), int(request.form.get('heures_tp', 0)), id))
+        conn.commit()
+        conn.close()
+        flash("Matière mise à jour", "success")
+        return redirect("/matieres")
+
+    c.execute("SELECT * FROM matieres WHERE id = ?", (id,))
+    m = c.fetchone()
+    c.execute("SELECT id, nom FROM niveaux ORDER BY ordre")
+    niveaux = c.fetchall()
+    conn.close()
+    niveaux_opts = "".join(f'<option value="{n["id"]}" {"selected" if n["id"]==m["niveau_id"] else ""}>{n["nom"]}</option>' for n in niveaux)
+
+    content = f"""
+    <div class="form-container">
+        <h2><i class="fas fa-edit"></i> Modifier Matiere {m['code']}</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Nom *</label><input type="text" name="nom" value="{m['nom']}" required></div>
+                <div class="form-group"><label>Niveau *</label><select name="niveau_id" required>{niveaux_opts}</select></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Coefficient *</label><input type="number" name="coefficient" value="{m['coefficient']}" required></div>
+                <div class="form-group"><label>Credits *</label><input type="number" name="credit" value="{m['credit']}" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Heures Cours</label><input type="number" name="heures_cours" value="{m['heures_cours']}"></div>
+                <div class="form-group"><label>Heures TD</label><input type="number" name="heures_td" value="{m['heures_td']}"></div>
+            </div>
+            <div class="form-group"><label>Heures TP</label><input type="number" name="heures_tp" value="{m['heures_tp']}"></div>
+            <button type="submit" class="btn btn-primary" style="width:100%;"><i class="fas fa-save"></i> Mettre a jour</button>
+        </form>
+        <br><a href="/matieres" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>
+    """
+    return render_page(content, active='matieres')
+
+
+@app.route("/matieres/<int:id>/delete")
+def delete_matiere(id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM matieres WHERE id = ?", (id,))
+    conn.commit()
+    conn.close()
+    flash("Matière supprimée", "success")
+    return redirect("/matieres")
+
+
+# ==================== PROFESSEURS ====================
+@app.route("/professeurs")
+def professeurs():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT p.*, (SELECT COUNT(*) FROM affectations WHERE professeur_id = p.id) as nb_matieres
+        FROM professeurs p ORDER BY p.nom""")
+    rows = c.fetchall()
+    conn.close()
+
+    content = """
+    <div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-chalkboard-teacher"></i> Gestion des Professeurs</h2>
+            <a href="/professeurs/ajouter" class="btn btn-primary"><i class="fas fa-plus"></i> Ajouter</a>
+        </div>
+        <table>
+            <thead><tr><th>Code</th><th>Nom & Prenom</th><th>Specialite</th><th>Telephone</th><th>Email</th><th>Statut</th><th>Actions</th></tr></thead>
+            <tbody>
+    """
+    for p in rows:
+        content += f"""
+        <tr>
+            <td><strong>{p['code']}</strong></td>
+            <td>{p['nom']} {p['prenom']}</td>
+            <td>{p['specialite'] or '-'}</td>
+            <td>{p['telephone']}</td>
+            <td>{p['email']}</td>
+            <td><span class="badge badge-success">{p['statut']}</span></td>
+            <td>
+                <a href="/professeurs/{p['id']}/edit" class="btn btn-warning btn-sm"><i class="fas fa-edit"></i></a>
+                <a href="/professeurs/{p['id']}/delete" class="btn btn-danger btn-sm" onclick="return confirm('Supprimer ?')"><i class="fas fa-trash"></i></a>
+            </td>
+        </tr>
+        """
+    content += "</tbody></table></div>"
+    return render_page(content, active='professeurs')
+
+
+@app.route("/professeurs/ajouter", methods=["GET", "POST"])
+def ajouter_professeur():
+    if request.method == "POST":
+        conn = get_db()
+        c = conn.cursor()
+        code = generer_code("P", "professeurs", "code")
+        c.execute("""INSERT INTO professeurs (code, nom, prenom, telephone, email, specialite, date_embauche, statut)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'Actif')""",
+            (code, request.form['nom'], request.form['prenom'], request.form['telephone'],
+             request.form['email'], request.form.get('specialite', ''),
+             request.form.get('date_embauche', datetime.now().strftime('%Y-%m-%d'))))
+        conn.commit()
+        conn.close()
+        flash("Professeur ajouté", "success")
+        return redirect("/professeurs")
+
+    content = """
+    <div class="form-container">
+        <h2><i class="fas fa-plus"></i> Ajouter un Professeur</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Nom *</label><input type="text" name="nom" required></div>
+                <div class="form-group"><label>Prenom *</label><input type="text" name="prenom" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Telephone *</label><input type="text" name="telephone" required></div>
+                <div class="form-group"><label>Email *</label><input type="email" name="email" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Specialite</label><input type="text" name="specialite"></div>
+                <div class="form-group"><label>Date embauche</label><input type="date" name="date_embauche" value="2025-01-01"></div>
+            </div>
+            <button type="submit" class="btn btn-success" style="width:100%;"><i class="fas fa-save"></i> Enregistrer</button>
+        </form>
+        <br><a href="/professeurs" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>
+    """
+    return render_page(content, active='professeurs')
+
+
+@app.route("/professeurs/<int:id>/edit", methods=["GET", "POST"])
+def edit_professeur(id):
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        c.execute("""UPDATE professeurs SET nom=?, prenom=?, telephone=?, email=?, specialite=?, date_embauche=? WHERE id=?""",
+            (request.form['nom'], request.form['prenom'], request.form['telephone'], request.form['email'],
+             request.form.get('specialite', ''), request.form.get('date_embauche', ''), id))
+        conn.commit()
+        conn.close()
+        flash("Professeur mis à jour", "success")
+        return redirect("/professeurs")
+
+    c.execute("SELECT * FROM professeurs WHERE id = ?", (id,))
+    p = c.fetchone()
+    conn.close()
+
+    content = f"""
+    <div class="form-container">
+        <h2><i class="fas fa-edit"></i> Modifier Professeur {p['code']}</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Nom *</label><input type="text" name="nom" value="{p['nom']}" required></div>
+                <div class="form-group"><label>Prenom *</label><input type="text" name="prenom" value="{p['prenom']}" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Telephone *</label><input type="text" name="telephone" value="{p['telephone']}" required></div>
+                <div class="form-group"><label>Email *</label><input type="email" name="email" value="{p['email']}" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Specialite</label><input type="text" name="specialite" value="{p['specialite'] or ''}"></div>
+                <div class="form-group"><label>Date embauche</label><input type="date" name="date_embauche" value="{p['date_embauche']}"></div>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%;"><i class="fas fa-save"></i> Mettre a jour</button>
+        </form>
+        <br><a href="/professeurs" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>
+    """
+    return render_page(content, active='professeurs')
+
+
+@app.route("/professeurs/<int:id>/delete")
+def delete_professeur(id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM professeurs WHERE id = ?", (id,))
+    conn.commit()
+    conn.close()
+    flash("Professeur supprimé", "success")
+    return redirect("/professeurs")
+
+
+# ==================== SCOLARITÉ ====================
+@app.route("/scolarite")
+def scolarite():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT s.*, e.nom, e.prenom, e.matricule FROM scolarite s
+        JOIN etudiants e ON s.etudiant_id = e.id ORDER BY s.date_paiement DESC""")
+    paiements = c.fetchall()
+    c.execute("SELECT SUM(montant) FROM scolarite WHERE statut='Payé'")
+    total_paye = c.fetchone()[0] or 0
+    c.execute("SELECT SUM(montant) FROM scolarite WHERE statut='En attente'")
+    total_attente = c.fetchone()[0] or 0
+    conn.close()
+
+    content = f"""
+    <div class="stats">
+        <div class="stat-card" style="border-left-color:#2ecc71;"><div class="num">{total_paye:,.0f} FCFA</div><div class="label">Total Payé</div></div>
+        <div class="stat-card" style="border-left-color:#f39c12;"><div class="num">{total_attente:,.0f} FCFA</div><div class="label">En Attente</div></div>
+    </div>
+    <div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-money-bill-wave"></i> Gestion de la Scolarité</h2>
+            <a href="/scolarite/ajouter" class="btn btn-primary"><i class="fas fa-plus"></i> Nouveau Paiement</a>
+        </div>
+        <table>
+            <thead><tr><th>Etudiant</th><th>Matricule</th><th>Montant</th><th>Mois</th><th>Mode</th><th>Date</th><th>Statut</th><th>Actions</th></tr></thead>
+            <tbody>
+    """
+    for p in paiements:
+        badge = "badge-success" if p['statut'] == "Payé" else "badge-warning"
+        content += f"""
+        <tr>
+            <td>{p['nom']} {p['prenom']}</td>
+            <td>{p['matricule']}</td>
+            <td><strong>{p['montant']:,.0f} FCFA</strong></td>
+            <td>{p['mois']}</td>
+            <td>{p['mode_paiement'] or '-'}</td>
+            <td>{p['date_paiement'][:10] if p['date_paiement'] else '-'}</td>
+            <td><span class="badge {badge}">{p['statut']}</span></td>
+            <td>
+                <a href="/scolarite/{p['id']}/edit" class="btn btn-warning btn-sm"><i class="fas fa-edit"></i></a>
+                <a href="/scolarite/{p['id']}/delete" class="btn btn-danger btn-sm" onclick="return confirm('Supprimer ?')"><i class="fas fa-trash"></i></a>
+            </td>
+        </tr>
+        """
+    content += "</tbody></table></div>"
+    return render_page(content, active='scolarite')
+
+
+@app.route("/scolarite/ajouter", methods=["GET", "POST"])
+def ajouter_scolarite():
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        c.execute("""INSERT INTO scolarite (etudiant_id, montant, mois, date_paiement, mode_paiement, reference, statut)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (int(request.form['etudiant_id']), float(request.form['montant']),
+             request.form['mois'], datetime.now().isoformat(),
+             request.form.get('mode_paiement', 'Espèces'),
+             request.form.get('reference', ''), request.form.get('statut', 'En attente')))
+        conn.commit()
+        conn.close()
+        flash("Paiement enregistré", "success")
+        return redirect("/scolarite")
+
+    c.execute("SELECT id, matricule, nom, prenom FROM etudiants ORDER BY nom")
+    etudiants = c.fetchall()
+    conn.close()
+    etudiants_opts = "".join(f'<option value="{e["id"]}">{e["matricule"]} - {e["nom"]} {e["prenom"]}</option>' for e in etudiants)
+
+    content = f"""
+    <div class="form-container">
+        <h2><i class="fas fa-plus"></i> Nouveau Paiement Scolarité</h2>
+        <form method="POST">
+            <div class="form-group">
+                <label>Etudiant * (Recherche par code)</label>
+                <input type="text" id="search_etudiant" placeholder="Tapez le matricule..." onkeyup="filterEtudiants()">
+                <select name="etudiant_id" id="etudiant_select" required style="margin-top:5px;">
+                    <option value="">-- Sélectionner --</option>
+                    {etudiants_opts}
+                </select>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Montant (FCFA) *</label><input type="number" name="montant" value="150000" required></div>
+                <div class="form-group"><label>Mois *</label>
+                    <select name="mois" required>
+                        <option>Octobre</option><option>Novembre</option><option>Décembre</option>
+                        <option>Janvier</option><option>Février</option><option>Mars</option>
+                        <option>Avril</option><option>Mai</option><option>Juin</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Mode de paiement</label>
+                    <select name="mode_paiement">
+                        <option value="Wave">Wave</option>
+                        <option value="Orange Money">Orange Money</option>
+                        <option value="Espèces">Espèces</option>
+                        <option value="Virement">Virement</option>
+                    </select>
+                </div>
+                <div class="form-group"><label>Référence</label><input type="text" name="reference"></div>
+            </div>
+            <div class="form-group"><label>Statut</label>
+                <select name="statut">
+                    <option value="En attente">En attente</option>
+                    <option value="Payé">Payé</option>
+                </select>
+            </div>
+            <button type="submit" class="btn btn-success" style="width:100%;"><i class="fas fa-save"></i> Enregistrer</button>
+        </form>
+        <br><a href="/scolarite" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>
+    <script>
+        function filterEtudiants() {{
+            var input = document.getElementById('search_etudiant');
+            var filter = input.value.toUpperCase();
+            var select = document.getElementById('etudiant_select');
+            var options = select.options;
+            for (var i = 0; i < options.length; i++) {{
+                var txtValue = options[i].text.toUpperCase();
+                if (txtValue.indexOf(filter) > -1) {{
+                    options[i].style.display = "";
+                }} else {{
+                    options[i].style.display = "none";
+                }}
+            }}
+        }}
+    </script>
+    """
+    return render_page(content, active='scolarite')
+
+
+@app.route("/scolarite/<int:id>/edit", methods=["GET", "POST"])
+def edit_scolarite(id):
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        c.execute("""UPDATE scolarite SET montant=?, mois=?, mode_paiement=?, reference=?, statut=? WHERE id=?""",
+            (float(request.form['montant']), request.form['mois'], request.form.get('mode_paiement', ''),
+             request.form.get('reference', ''), request.form['statut'], id))
+        conn.commit()
+        conn.close()
+        flash("Paiement mis à jour", "success")
+        return redirect("/scolarite")
+
+    c.execute("SELECT s.*, e.nom, e.prenom, e.matricule FROM scolarite s JOIN etudiants e ON s.etudiant_id = e.id WHERE s.id = ?", (id,))
+    p = c.fetchone()
+    conn.close()
+
+    content = f"""
+    <div class="form-container">
+        <h2><i class="fas fa-edit"></i> Modifier Paiement - {p['nom']} {p['prenom']}</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Montant (FCFA) *</label><input type="number" name="montant" value="{p['montant']}" required></div>
+                <div class="form-group"><label>Mois *</label><input type="text" name="mois" value="{p['mois']}" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Mode de paiement</label>
+                    <select name="mode_paiement">
+                        <option value="Wave" {"selected" if p['mode_paiement']=="Wave" else ""}>Wave</option>
+                        <option value="Orange Money" {"selected" if p['mode_paiement']=="Orange Money" else ""}>Orange Money</option>
+                        <option value="Espèces" {"selected" if p['mode_paiement']=="Espèces" else ""}>Espèces</option>
+                        <option value="Virement" {"selected" if p['mode_paiement']=="Virement" else ""}>Virement</option>
+                    </select>
+                </div>
+                <div class="form-group"><label>Référence</label><input type="text" name="reference" value="{p['reference'] or ''}"></div>
+            </div>
+            <div class="form-group"><label>Statut</label>
+                <select name="statut">
+                    <option value="En attente" {"selected" if p['statut']=="En attente" else ""}>En attente</option>
+                    <option value="Payé" {"selected" if p['statut']=="Payé" else ""}>Payé</option>
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%;"><i class="fas fa-save"></i> Mettre a jour</button>
+        </form>
+        <br><a href="/scolarite" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>
+    """
+    return render_page(content, active='scolarite')
+
+
+@app.route("/scolarite/<int:id>/delete")
+def delete_scolarite(id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM scolarite WHERE id = ?", (id,))
+    conn.commit()
+    conn.close()
+    flash("Paiement supprimé", "success")
+    return redirect("/scolarite")
+
+
+# ==================== ÉTUDIANTS ====================
+@app.route("/etudiants")
+def liste_etudiants():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT e.*, c.nom as classe_nom,
+        (SELECT AVG(b.note_finale * m.coefficient) / AVG(m.coefficient)
+        FROM bulletins b JOIN matieres m ON b.matiere_id = m.id
+        WHERE b.etudiant_id = e.id) as moyenne
+        FROM etudiants e JOIN classes c ON e.classe_id = c.id ORDER BY e.nom""")
+    etudiants = c.fetchall()
+    conn.close()
+
+    content = """
+    <div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-users"></i> Liste des Étudiants</h2>
+            <a href="/inscription" class="btn btn-primary"><i class="fas fa-plus"></i> Inscrire</a>
+        </div>
+        <table>
+            <thead><tr><th>Matricule</th><th>Nom</th><th>Classe</th><th>Telephone</th><th>Moyenne</th><th>Statut</th><th>Actions</th></tr></thead>
+            <tbody>
+    """
+    for e in etudiants:
+        content += f"""
+        <tr>
+            <td><strong>{e['matricule']}</strong></td>
+            <td>{e['nom']} {e['prenom']}</td>
+            <td>{e['classe_nom']}</td>
+            <td>{e['telephone']}</td>
+            <td>{round(e['moyenne'], 2) if e['moyenne'] else '-'}</td>
+            <td><span class="badge badge-success">{e['statut']}</span></td>
+            <td>
+                <a href="/etudiant/{e['id']}" class="btn btn-info btn-sm"><i class="fas fa-eye"></i></a>
+                <a href="/etudiant/{e['id']}/edit" class="btn btn-warning btn-sm"><i class="fas fa-edit"></i></a>
+                <a href="/etudiant/{e['id']}/delete" class="btn btn-danger btn-sm" onclick="return confirm('Supprimer ?')"><i class="fas fa-trash"></i></a>
+            </td>
+        </tr>
+        """
+    content += "</tbody></table></div>"
+    return render_page(content, active='etudiants')
+
+
+@app.route("/inscription", methods=["GET", "POST"])
+def inscription():
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        matricule = generer_code("E", "etudiants", "matricule")
+        c.execute("""INSERT INTO etudiants (matricule, nom, prenom, date_naissance, lieu_naissance,
+            sexe, telephone, email, adresse, classe_id, date_inscription, statut)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Actif')""",
+            (matricule, request.form['nom'], request.form['prenom'], request.form['date_naissance'],
+             request.form.get('lieu_naissance', ''), request.form['sexe'], request.form['telephone'],
+             request.form['email'], request.form.get('adresse', ''),
+             int(request.form['classe_id']), datetime.now().isoformat()))
+        etudiant_id = c.lastrowid
+
+        c.execute("""INSERT INTO bulletins (etudiant_id, matiere_id, note_cc, note_tp, note_examen, note_finale, moyenne, statut)
+            SELECT ?, m.id, 0, 0, 0, 0, 0, 'En cours' FROM matieres m
+            JOIN classes c ON c.niveau_id = m.niveau_id WHERE c.id = ?""",
+            (etudiant_id, int(request.form['classe_id'])))
+
+        conn.commit()
+        conn.close()
+        flash(f"Étudiant inscrit avec succès : {matricule}", "success")
+        return redirect("/etudiants")
+
+    c.execute("""SELECT c.id, c.code, c.nom, n.nom as niveau, f.nom as filiere
+        FROM classes c JOIN niveaux n ON c.niveau_id = n.id
+        JOIN filieres f ON c.filiere_id = f.id ORDER BY n.ordre""")
+    classes_rows = c.fetchall()
+    conn.close()
+    classes_opts = "".join(
+        f'<option value="{cl["id"]}">{cl["code"]} - {cl["niveau"]} / {cl["filiere"]}</option>'
+        for cl in classes_rows)
+
+    content = f"""
+    <div class="form-container">
+        <h2><i class="fas fa-user-plus"></i> Inscription d'un Nouvel Étudiant</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Nom *</label><input type="text" name="nom" required></div>
+                <div class="form-group"><label>Prenom *</label><input type="text" name="prenom" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Date de naissance *</label><input type="date" name="date_naissance" required></div>
+                <div class="form-group"><label>Lieu de naissance</label><input type="text" name="lieu_naissance"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Sexe *</label>
+                    <select name="sexe" required>
+                        <option value="M">Masculin</option>
+                        <option value="F">Féminin</option>
+                    </select>
+                </div>
+                <div class="form-group"><label>Telephone *</label><input type="text" name="telephone" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Email *</label><input type="email" name="email" required></div>
+                <div class="form-group"><label>Adresse</label><input type="text" name="adresse"></div>
+            </div>
+            <div class="form-group"><label>Classe *</label>
+                <select name="classe_id" required>
+                    <option value="">-- Sélectionner une classe --</option>
+                    {classes_opts}
+                </select>
+            </div>
+            <button type="submit" class="btn btn-success" style="width:100%;"><i class="fas fa-save"></i> Inscrire</button>
+        </form>
+        <br><a href="/etudiants" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>
+    """
+    return render_page(content, active='inscription')
+
+
+@app.route("/etudiant/<int:id>")
+def detail_etudiant(id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT e.*, c.nom as classe_nom, n.nom as niveau_nom, f.nom as filiere_nom
+        FROM etudiants e JOIN classes c ON e.classe_id = c.id
+        JOIN niveaux n ON c.niveau_id = n.id
+        JOIN filieres f ON c.filiere_id = f.id WHERE e.id = ?""", (id,))
+    e = c.fetchone()
+    if not e:
+        conn.close()
+        return redirect("/etudiants")
+
+    c.execute("""SELECT b.*, m.nom as matiere_nom, m.coefficient, m.credit
+        FROM bulletins b JOIN matieres m ON b.matiere_id = m.id
+        WHERE b.etudiant_id = ? ORDER BY m.nom""", (id,))
+    notes = c.fetchall()
+    conn.close()
+
+    stats = calculer_moyenne_etudiant(id)
+    rang, total = get_classement(id)
+
+    content = f"""
+    <div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-user"></i> {e['nom']} {e['prenom']} ({e['matricule']})</h2>
+            <a href="/bulletin/{id}" class="btn btn-primary"><i class="fas fa-file-alt"></i> Bulletin</a>
+        </div>
+        <div class="stats">
+            <div class="stat-card"><div class="num">{e['classe_nom']}</div><div class="label">Classe</div></div>
+            <div class="stat-card" style="border-left-color:#3498db;"><div class="num">{e['niveau_nom']}</div><div class="label">Niveau</div></div>
+            <div class="stat-card" style="border-left-color:#9b59b6;"><div class="num">{stats['moyenne']}</div><div class="label">Moyenne</div></div>
+            <div class="stat-card" style="border-left-color:#2ecc71;"><div class="num">{rang}/{total}</div><div class="label">Rang</div></div>
+        </div>
+        <table>
+            <thead><tr><th>Matiere</th><th>Coeff</th><th>CC</th><th>TP</th><th>Examen</th><th>Note finale</th><th>Statut</th></tr></thead>
+            <tbody>
+    """
+    for n in notes:
+        badge = "badge-success" if n['note_finale'] >= 10 else "badge-warning"
+        content += f"""
+        <tr>
+            <td>{n['matiere_nom']}</td>
+            <td>{n['coefficient']}</td>
+            <td>{n['note_cc']}</td>
+            <td>{n['note_tp']}</td>
+            <td>{n['note_examen']}</td>
+            <td><strong>{n['note_finale']}</strong></td>
+            <td><span class="badge {badge}">{n['statut']}</span></td>
+        </tr>
+        """
+    content += "</tbody></table></div>"
+    return render_page(content, active='etudiants')
+
+
+@app.route("/etudiant/<int:id>/edit", methods=["GET", "POST"])
+def edit_etudiant(id):
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        c.execute("""UPDATE etudiants SET nom=?, prenom=?, date_naissance=?, lieu_naissance=?,
+            sexe=?, telephone=?, email=?, adresse=?, classe_id=?, statut=? WHERE id=?""",
+            (request.form['nom'], request.form['prenom'], request.form['date_naissance'],
+             request.form.get('lieu_naissance', ''), request.form['sexe'], request.form['telephone'],
+             request.form['email'], request.form.get('adresse', ''),
+             int(request.form['classe_id']), request.form['statut'], id))
+        conn.commit()
+        conn.close()
+        flash("Étudiant mis à jour", "success")
+        return redirect(f"/ecole/etudiant/{id}")
+
+    c.execute("SELECT * FROM etudiants WHERE id = ?", (id,))
+    e = c.fetchone()
+    c.execute("SELECT id, code, nom FROM classes ORDER BY nom")
+    classes_rows = c.fetchall()
+    conn.close()
+    classes_opts = "".join(
+        f'<option value="{cl["id"]}" {"selected" if cl["id"]==e["classe_id"] else ""}>{cl["code"]} - {cl["nom"]}</option>'
+        for cl in classes_rows)
+
+    content = f"""
+    <div class="form-container">
+        <h2><i class="fas fa-edit"></i> Modifier Étudiant {e['matricule']}</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Nom *</label><input type="text" name="nom" value="{e['nom']}" required></div>
+                <div class="form-group"><label>Prenom *</label><input type="text" name="prenom" value="{e['prenom']}" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Date de naissance *</label><input type="date" name="date_naissance" value="{e['date_naissance']}" required></div>
+                <div class="form-group"><label>Lieu de naissance</label><input type="text" name="lieu_naissance" value="{e['lieu_naissance'] or ''}"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Sexe *</label>
+                    <select name="sexe" required>
+                        <option value="M" {"selected" if e['sexe']=="M" else ""}>Masculin</option>
+                        <option value="F" {"selected" if e['sexe']=="F" else ""}>Féminin</option>
+                    </select>
+                </div>
+                <div class="form-group"><label>Telephone *</label><input type="text" name="telephone" value="{e['telephone']}" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Email *</label><input type="email" name="email" value="{e['email']}" required></div>
+                <div class="form-group"><label>Adresse</label><input type="text" name="adresse" value="{e['adresse'] or ''}"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Classe *</label><select name="classe_id" required>{classes_opts}</select></div>
+                <div class="form-group"><label>Statut *</label>
+                    <select name="statut" required>
+                        <option value="Actif" {"selected" if e['statut']=="Actif" else ""}>Actif</option>
+                        <option value="Inactif" {"selected" if e['statut']=="Inactif" else ""}>Inactif</option>
+                        <option value="Diplômé" {"selected" if e['statut']=="Diplômé" else ""}>Diplômé</option>
+                    </select>
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%;"><i class="fas fa-save"></i> Mettre a jour</button>
+        </form>
+        <br><a href="/etudiants" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>
+    """
+    return render_page(content, active='etudiants')
+
+
+@app.route("/etudiant/<int:id>/delete")
+def delete_etudiant(id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM bulletins WHERE etudiant_id = ?", (id,))
+    c.execute("DELETE FROM scolarite WHERE etudiant_id = ?", (id,))
+    c.execute("DELETE FROM etudiants WHERE id = ?", (id,))
+    conn.commit()
+    conn.close()
+    flash("Étudiant supprimé", "success")
+    return redirect("/etudiants")
+
+
+# ==================== NOTES ====================
+@app.route("/notes/<int:etudiant_id>", methods=["GET", "POST"])
+def notes(etudiant_id):
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        for key, val in request.form.items():
+            if key.startswith("note_cc_"):
+                bulletin_id = int(key.replace("note_cc_", ""))
+                cc = float(val or 0)
+                tp = float(request.form.get(f"note_tp_{bulletin_id}", 0) or 0)
+                ex = float(request.form.get(f"note_examen_{bulletin_id}", 0) or 0)
+                finale = round(cc * 0.3 + tp * 0.2 + ex * 0.5, 2)
+                statut = "Validé" if finale >= 10 else "En cours"
+                c.execute("""UPDATE bulletins SET note_cc=?, note_tp=?, note_examen=?,
+                    note_finale=?, moyenne=?, statut=? WHERE id=?""",
+                    (cc, tp, ex, finale, finale, statut, bulletin_id))
+        conn.commit()
+        conn.close()
+        flash("Notes enregistrées", "success")
+        return redirect(f"/ecole/notes/{etudiant_id}")
+
+    c.execute("SELECT nom, prenom, matricule FROM etudiants WHERE id = ?", (etudiant_id,))
+    e = c.fetchone()
+    c.execute("""SELECT b.*, m.nom as matiere_nom, m.coefficient FROM bulletins b
+        JOIN matieres m ON b.matiere_id = m.id WHERE b.etudiant_id = ? ORDER BY m.nom""",
+        (etudiant_id,))
+    bulletins_rows = c.fetchall()
+    conn.close()
+
+    content = f"""
+    <div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-star"></i> Saisie des Notes - {e['nom']} {e['prenom']} ({e['matricule']})</h2>
+        </div>
+        <p style="color:#718096; margin-bottom:15px; font-size:0.85rem;">
+            Formule : <strong>30% CC + 20% TP + 50% Examen</strong>
+        </p>
+        <form method="POST">
+        <table>
+            <thead><tr><th>Matiere</th><th>Coeff</th><th>Note CC (/20)</th><th>Note TP (/20)</th><th>Note Examen (/20)</th></tr></thead>
+            <tbody>
+    """
+    for b in bulletins_rows:
+        content += f"""
+        <tr>
+            <td><strong>{b['matiere_nom']}</strong></td>
+            <td>{b['coefficient']}</td>
+            <td><input type="number" step="0.25" min="0" max="20" name="note_cc_{b['id']}" value="{b['note_cc']}" style="width:80px; padding:5px;"></td>
+            <td><input type="number" step="0.25" min="0" max="20" name="note_tp_{b['id']}" value="{b['note_tp']}" style="width:80px; padding:5px;"></td>
+            <td><input type="number" step="0.25" min="0" max="20" name="note_examen_{b['id']}" value="{b['note_examen']}" style="width:80px; padding:5px;"></td>
+        </tr>
+        """
+    content += f"""
+            </tbody>
+        </table>
+        <br>
+        <button type="submit" class="btn btn-success"><i class="fas fa-save"></i> Enregistrer les notes</button>
+        <a href="/etudiants" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+        </form>
+    </div>
+    """
+    return render_page(content, active='etudiants')
+
+
+# ==================== BULLETIN ====================
+@app.route("/bulletin/<int:etudiant_id>")
+def bulletin(etudiant_id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT e.*, c.nom as classe_nom, n.nom as niveau_nom, f.nom as filiere_nom
+        FROM etudiants e JOIN classes c ON e.classe_id = c.id
+        JOIN niveaux n ON c.niveau_id = n.id
+        JOIN filieres f ON c.filiere_id = f.id WHERE e.id = ?""", (etudiant_id,))
+    e = c.fetchone()
+    if not e:
+        conn.close()
+        return redirect("/etudiants")
+
+    c.execute("""SELECT b.*, m.nom as matiere_nom, m.coefficient, m.credit
+        FROM bulletins b JOIN matieres m ON b.matiere_id = m.id
+        WHERE b.etudiant_id = ? ORDER BY m.nom""", (etudiant_id,))
+    notes = c.fetchall()
+    conn.close()
+
+    stats = calculer_moyenne_etudiant(etudiant_id)
+    rang, total = get_classement(etudiant_id)
+
+    mention = "Passable"
+    if stats['moyenne'] >= 16: mention = "Très Bien"
+    elif stats['moyenne'] >= 14: mention = "Bien"
+    elif stats['moyenne'] >= 12: mention = "Assez Bien"
+    elif stats['moyenne'] < 10: mention = "Insuffisant"
+
+    content = f"""
+    <div class="card">
+        <div style="text-align:center; margin-bottom:20px; padding-bottom:15px; border-bottom:3px solid #e94560;">
+            <h1 style="color:#1a1a2e;">🎓 OMEGA CONSULTING</h1>
+            <h2 style="color:#e94560;">BULLETIN DE NOTES - SYSTEME LMD</h2>
+            <p>Année académique 2025-2026</p>
+        </div>
+        <div class="stats">
+            <div class="stat-card"><div class="num">{e['matricule']}</div><div class="label">Matricule</div></div>
+            <div class="stat-card" style="border-left-color:#3498db;"><div class="num">{e['classe_nom']}</div><div class="label">Classe</div></div>
+            <div class="stat-card" style="border-left-color:#9b59b6;"><div class="num">{stats['moyenne']}/20</div><div class="label">Moyenne</div></div>
+            <div class="stat-card" style="border-left-color:#2ecc71;"><div class="num">{rang}/{total}</div><div class="label">Rang</div></div>
+            <div class="stat-card" style="border-left-color:#e67e22;"><div class="num">{mention}</div><div class="label">Mention</div></div>
+        </div>
+        <p><strong>Étudiant :</strong> {e['nom']} {e['prenom']} | <strong>Né(e) le :</strong> {e['date_naissance']} à {e['lieu_naissance'] or '-'}</p>
+        <p><strong>Filière :</strong> {e['filiere_nom']} | <strong>Niveau :</strong> {e['niveau_nom']}</p>
+        <table>
+            <thead><tr><th>Matiere</th><th>Coeff</th><th>Credits</th><th>CC</th><th>TP</th><th>Examen</th><th>Moyenne</th><th>Statut</th></tr></thead>
+            <tbody>
+    """
+    total_points = 0
+    total_coefs = 0
+    for n in notes:
+        badge = "badge-success" if n['note_finale'] >= 10 else "badge-danger"
+        content += f"""
+        <tr>
+            <td>{n['matiere_nom']}</td>
+            <td>{n['coefficient']}</td>
+            <td>{n['credit']}</td>
+            <td>{n['note_cc']}</td>
+            <td>{n['note_tp']}</td>
+            <td>{n['note_examen']}</td>
+            <td><strong>{n['note_finale']}/20</strong></td>
+            <td><span class="badge {badge}">{n['statut']}</span></td>
+        </tr>
+        """
+        total_points += n['note_finale'] * n['coefficient']
+        total_coefs += n['coefficient']
+
+    moyenne_generale = round(total_points / total_coefs, 2) if total_coefs else 0
+
+    content += f"""
+            </tbody>
+            <tfoot>
+                <tr style="background:#f7fafc;">
+                    <td colspan="6"><strong>MOYENNE GENERALE</strong></td>
+                    <td><strong>{moyenne_generale}/20</strong></td>
+                    <td></td>
+                </tr>
+            </tfoot>
+        </table>
+        <div style="display:flex; justify-content:space-between; margin-top:30px;">
+            <div class="stat-card" style="border-left-color:#2ecc71; flex:1;">
+                <div class="num">{stats['validees']}</div><div class="label">Matières validées</div>
+            </div>
+            <div class="stat-card" style="border-left-color:#e74c3c; flex:1; margin-left:10px;">
+                <div class="num">{stats['echecs']}</div><div class="label">Matières échouées</div>
+            </div>
+        </div>
+        <div style="margin-top:30px; text-align:center; padding-top:20px; border-top:2px dashed #cbd5e0;">
+            <button onclick="window.print()" class="btn btn-primary"><i class="fas fa-print"></i> Imprimer</button>
+            <a href="/etudiants" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+        </div>
+    </div>
+    """
+    return render_page(content, active='etudiants')
+
+
+@app.route("/bulletins")
+def bulletins_list():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT e.id, e.matricule, e.nom, e.prenom, c.nom as classe_nom,
+        (SELECT AVG(b.note_finale * m.coefficient) / AVG(m.coefficient)
+        FROM bulletins b JOIN matieres m ON b.matiere_id = m.id
+        WHERE b.etudiant_id = e.id) as moyenne
+        FROM etudiants e JOIN classes c ON e.classe_id = c.id ORDER BY e.nom""")
+    etudiants = c.fetchall()
+    conn.close()
+
+    content = """
+    <div class="card">
+        <div class="card-header"><h2><i class="fas fa-file-alt"></i> Bulletins de Notes</h2></div>
+        <table>
+            <thead><tr><th>Matricule</th><th>Nom</th><th>Classe</th><th>Moyenne</th><th>Action</th></tr></thead>
+            <tbody>
+    """
+    for e in etudiants:
+        badge = "badge-success" if (e['moyenne'] or 0) >= 10 else "badge-danger"
+        content += f"""
+        <tr>
+            <td><strong>{e['matricule']}</strong></td>
+            <td>{e['nom']} {e['prenom']}</td>
+            <td>{e['classe_nom']}</td>
+            <td><span class="badge {badge}">{round(e['moyenne'], 2) if e['moyenne'] else '-'}</span></td>
+            <td><a href="/bulletin/{e['id']}" class="btn btn-primary btn-sm"><i class="fas fa-eye"></i> Voir</a></td>
+        </tr>
+        """
+    content += "</tbody></table></div>"
+    return render_page(content, active='bulletins')
+
+
+# ==================== HEALTHCHECK ====================
+@app.route("/health")
+def health():
+    try:
+        conn = get_db()
+        conn.execute("SELECT 1")
+        conn.close()
+        return {"status": "ok", "db": "connected"}, 200
+    except Exception as ex:
+        return {"status": "error", "message": str(ex)}, 500
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=False)

@@ -1,0 +1,555 @@
+"""
+Omega Stock — Plateforme de gestion de stock professionnelle
+Design vert industriel — Développé par Omega Informatique
+"""
+from flask import Flask, render_template_string, request, redirect, url_for, flash, jsonify
+from werkzeug.middleware.proxy_fix import ProxyFix
+import sqlite3
+import os
+from datetime import datetime, timedelta
+
+app = Flask(__name__)
+app.secret_key = 'omega_stock_2026_secret_key_premium'
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
+DB_PATH = "/app/data/stock.db"
+
+# ==================== AUTH ====================
+try:
+    from auth import (init_auth, log_action, role_required, admin_required,
+                      gestionnaire_required, staff_required, magasinier_required)
+    init_auth(app)
+    AUTH_OK = True
+    print("[AUTH] ✅ Module auth chargé")
+except Exception as e:
+    print(f"[AUTH] ⚠️ {e}")
+    AUTH_OK = False
+    def role_required(*r):
+        def d(f): return f
+        return d
+    def admin_required(f): return f
+    def gestionnaire_required(f): return f
+    def staff_required(f): return f
+    def magasinier_required(f): return f
+    def log_action(*a, **k): pass
+
+try:
+    from flask_login import current_user, login_required
+except ImportError:
+    current_user = None
+    def login_required(f): return f
+
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+# ==================== DESIGN ÉPOUSTOUFLANT ====================
+HTML_BASE = """
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Omega Stock — {{ page_title or 'Gestion de stock' }}</title>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',system-ui,sans-serif}
+body{background:#f0fdf4;color:#064e3b;min-height:100vh}
+
+/* ============ TOP BANNER ============ */
+.top-banner{background:linear-gradient(90deg,#064e3b 0%,#059669 50%,#10b981 100%);color:white;padding:10px 25px;font-size:0.82rem;display:flex;justify-content:space-between;align-items:center;font-weight:600;letter-spacing:0.3px}
+.top-banner i{color:#a7f3d0}
+.top-banner .brand-info{display:flex;align-items:center;gap:20px;flex-wrap:wrap}
+.top-banner strong{color:#a7f3d0;font-weight:800}
+
+/* ============ HEADER ============ */
+.header{background:white;box-shadow:0 4px 24px rgba(5,150,105,0.08);padding:16px 30px;display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #059669;flex-wrap:wrap;gap:15px}
+.header .logo-section{display:flex;align-items:center;gap:15px}
+.logo-icon{width:56px;height:56px;background:linear-gradient(135deg,#059669,#10b981);border-radius:16px;display:flex;justify-content:center;align-items:center;color:white;font-size:1.7rem;box-shadow:0 8px 24px rgba(5,150,105,0.3)}
+.header h1{font-size:1.55rem;color:#064e3b;font-weight:900;line-height:1.05;letter-spacing:-0.5px}
+.header h1 span{color:#10b981}
+.header .subtitle{font-size:0.72rem;color:#64748b;margin-top:4px;letter-spacing:1px;text-transform:uppercase;font-weight:700}
+.user-section{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.user-badge{display:flex;align-items:center;gap:10px;padding:8px 16px;background:#ecfdf5;border-radius:30px;border:1.5px solid #a7f3d0}
+.user-badge .avatar{width:38px;height:38px;background:linear-gradient(135deg,#059669,#10b981);border-radius:50%;display:flex;justify-content:center;align-items:center;color:white;font-weight:800;font-size:0.9rem}
+.user-badge .info{display:flex;flex-direction:column;line-height:1.15}
+.user-badge .name{font-weight:700;font-size:0.85rem;color:#064e3b}
+.user-badge .role{font-size:0.68rem;color:#059669;text-transform:uppercase;font-weight:800;letter-spacing:0.5px}
+.btn-logout{background:linear-gradient(135deg,#dc2626,#ef4444);color:white;padding:9px 16px;border-radius:10px;text-decoration:none;font-size:0.82rem;font-weight:700;transition:0.3s;box-shadow:0 4px 12px rgba(220,38,38,0.25)}
+.btn-logout:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(220,38,38,0.35)}
+
+/* ============ NAV ============ */
+.nav{background:white;padding:0 25px;display:flex;gap:2px;border-bottom:1px solid #a7f3d0;flex-wrap:wrap;box-shadow:0 2px 8px rgba(0,0,0,0.03)}
+.nav a{padding:15px 18px;color:#475569;text-decoration:none;border-bottom:3px solid transparent;transition:0.3s;font-size:0.85rem;display:flex;align-items:center;gap:7px;font-weight:600}
+.nav a:hover{color:#059669;background:#ecfdf5}
+.nav a.active{color:#059669;border-bottom-color:#059669;background:#ecfdf5}
+
+/* ============ CONTAINER ============ */
+.container{max-width:1500px;margin:28px auto;padding:0 25px}
+
+/* ============ PAGE HEADER ============ */
+.page-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:28px;flex-wrap:wrap;gap:15px}
+.page-header h2{font-size:1.7rem;color:#064e3b;font-weight:900;display:flex;align-items:center;gap:12px;letter-spacing:-0.5px}
+.page-header h2 i{color:#10b981}
+.page-header .page-subtitle{color:#64748b;font-size:0.88rem;margin-top:4px}
+
+/* ============ STATS ============ */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:20px;margin-bottom:28px}
+.stat-card{background:white;border-radius:18px;padding:24px;position:relative;overflow:hidden;box-shadow:0 6px 20px rgba(5,150,105,0.06);transition:0.3s;border-left:5px solid #10b981}
+.stat-card:hover{transform:translateY(-5px);box-shadow:0 12px 30px rgba(5,150,105,0.15)}
+.stat-card .stat-icon{position:absolute;right:18px;top:18px;font-size:2.8rem;color:#10b981;opacity:0.12}
+.stat-card .stat-value{font-size:2.2rem;font-weight:900;color:#064e3b;line-height:1;letter-spacing:-1px}
+.stat-card .stat-label{color:#64748b;font-size:0.75rem;text-transform:uppercase;font-weight:800;letter-spacing:1px;margin-top:10px}
+.stat-card.rose{border-left-color:#dc2626}.stat-card.rose .stat-icon{color:#dc2626}
+.stat-card.amber{border-left-color:#f59e0b}.stat-card.amber .stat-icon{color:#f59e0b}
+.stat-card.blue{border-left-color:#0891b2}.stat-card.blue .stat-icon{color:#0891b2}
+.stat-card.purple{border-left-color:#7c3aed}.stat-card.purple .stat-icon{color:#7c3aed}
+
+/* ============ CARDS ============ */
+.card{background:white;border-radius:18px;padding:28px;box-shadow:0 6px 20px rgba(5,150,105,0.06);margin-bottom:22px}
+.card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:12px;padding-bottom:18px;border-bottom:2px solid #ecfdf5}
+.card-header h3{font-size:1.2rem;color:#064e3b;font-weight:800;display:flex;align-items:center;gap:10px}
+.card-header h3 i{color:#10b981}
+
+/* ============ BUTTONS ============ */
+.btn{padding:11px 20px;border:none;border-radius:10px;cursor:pointer;font-weight:700;display:inline-flex;align-items:center;gap:8px;text-decoration:none;transition:0.3s;font-size:0.85rem;letter-spacing:0.3px}
+.btn-primary{background:linear-gradient(135deg,#059669,#10b981);color:white;box-shadow:0 6px 16px rgba(5,150,105,0.3)}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgba(5,150,105,0.4)}
+.btn-success{background:linear-gradient(135deg,#16a34a,#22c55e);color:white}
+.btn-success:hover{transform:translateY(-2px)}
+.btn-warning{background:linear-gradient(135deg,#f59e0b,#fbbf24);color:white}
+.btn-warning:hover{transform:translateY(-2px)}
+.btn-danger{background:linear-gradient(135deg,#dc2626,#ef4444);color:white}
+.btn-danger:hover{transform:translateY(-2px)}
+.btn-info{background:linear-gradient(135deg,#0891b2,#06b6d4);color:white}
+.btn-info:hover{transform:translateY(-2px)}
+.btn-sm{padding:7px 13px;font-size:0.75rem}
+
+/* ============ TABLES ============ */
+.table-wrap{overflow-x:auto;border-radius:12px}
+table{width:100%;border-collapse:collapse;font-size:0.88rem}
+th,td{padding:14px 16px;text-align:left;border-bottom:1px solid #ecfdf5}
+th{background:linear-gradient(180deg,#ecfdf5,#d1fae5);color:#059669;font-size:0.72rem;text-transform:uppercase;font-weight:800;letter-spacing:0.8px}
+tbody tr{transition:0.2s}
+tbody tr:hover{background:#f0fdf4}
+
+/* ============ BADGES ============ */
+.badge{padding:5px 12px;border-radius:20px;font-size:0.7rem;font-weight:800;display:inline-flex;align-items:center;gap:5px;letter-spacing:0.3px}
+.badge-success{background:#d1fae5;color:#065f46}
+.badge-warning{background:#fef3c7;color:#92400e}
+.badge-danger{background:#fee2e2;color:#991b1b}
+.badge-info{background:#dbeafe;color:#1e40af}
+.badge-primary{background:#e0f2fe;color:#075985}
+.badge-role-admin{background:linear-gradient(135deg,#7c3aed,#a855f7);color:white}
+.badge-role-gestionnaire{background:linear-gradient(135deg,#059669,#10b981);color:white}
+.badge-role-magasinier{background:linear-gradient(135deg,#0891b2,#06b6d4);color:white}
+.badge-role-consultation{background:linear-gradient(135deg,#64748b,#94a3b8);color:white}
+
+/* ============ FLASH ============ */
+.flash{padding:15px 20px;border-radius:12px;margin-bottom:18px;display:flex;align-items:center;gap:12px;font-size:0.9rem;font-weight:600}
+.flash-success{background:#d1fae5;color:#065f46;border-left:5px solid #10b981}
+.flash-danger{background:#fee2e2;color:#991b1b;border-left:5px solid #dc2626}
+.flash-warning{background:#fef3c7;color:#92400e;border-left:5px solid #f59e0b}
+.flash-info{background:#dbeafe;color:#1e40af;border-left:5px solid #3b82f6}
+
+/* ============ FORMS ============ */
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.form-group{margin-bottom:16px}
+.form-group label{display:block;font-weight:800;color:#059669;margin-bottom:8px;font-size:0.82rem;text-transform:uppercase;letter-spacing:0.5px}
+.form-group input,.form-group select,.form-group textarea{width:100%;padding:12px 15px;border:2px solid #f1f5f9;border-radius:11px;font-size:0.92rem;background:#f8fafc;transition:0.3s;font-family:inherit}
+.form-group input:focus,.form-group select:focus,.form-group textarea:focus{outline:none;border-color:#10b981;background:white;box-shadow:0 0 0 4px rgba(16,185,129,0.1)}
+.form-full{grid-column:1/-1}
+
+/* ============ FOOTER ============ */
+.footer{background:linear-gradient(135deg,#064e3b,#065f46);color:white;padding:30px;margin-top:60px;text-align:center;font-size:0.85rem}
+.footer strong{color:#a7f3d0;font-weight:800}
+.footer .footer-sub{opacity:0.7;font-size:0.75rem;margin-top:8px}
+
+/* ============ EMPTY ============ */
+.empty{text-align:center;padding:60px 20px;color:#94a3b8}
+.empty i{font-size:4rem;color:#a7f3d0;margin-bottom:18px}
+
+/* ============ HERO ============ */
+.hero{background:linear-gradient(135deg,#064e3b 0%,#059669 50%,#10b981 100%);border-radius:24px;padding:50px;color:white;margin-bottom:30px;position:relative;overflow:hidden;box-shadow:0 15px 40px rgba(5,150,105,0.25)}
+.hero::before{content:'';position:absolute;top:-80px;right:-80px;width:280px;height:280px;background:rgba(255,255,255,0.1);border-radius:50%}
+.hero::after{content:'';position:absolute;bottom:-100px;left:-50px;width:220px;height:220px;background:rgba(255,255,255,0.08);border-radius:50%}
+.hero h1{font-size:2.4rem;font-weight:900;margin-bottom:12px;position:relative;z-index:1;letter-spacing:-1px}
+.hero h1 span{color:#a7f3d0}
+.hero p{font-size:1.05rem;opacity:0.95;position:relative;z-index:1;max-width:600px;line-height:1.5}
+
+/* ============ ALERT BANNER ============ */
+.alert-banner{background:linear-gradient(90deg,#fef3c7,#fde68a);border-left:5px solid #f59e0b;padding:15px 20px;border-radius:12px;margin-bottom:20px;display:flex;align-items:center;gap:12px;font-weight:600;color:#92400e}
+.alert-banner i{font-size:1.3rem}
+
+@media(max-width:768px){
+  .form-grid{grid-template-columns:1fr}
+  .header{flex-direction:column;align-items:flex-start}
+  .stats{grid-template-columns:1fr 1fr}
+  .container{padding:0 15px}
+  .hero{padding:30px 20px}
+  .hero h1{font-size:1.7rem}
+  .top-banner{flex-direction:column;gap:5px;text-align:center}
+}
+</style>
+</head>
+<body>
+
+<!-- TOP BANNER -->
+<div class="top-banner">
+  <div class="brand-info">
+    <span><i class="fas fa-boxes-stacked"></i> <strong>OMEGA STOCK</strong> — Gestion de stock professionnelle</span>
+  </div>
+  <div class="brand-info">
+    <span><i class="fas fa-warehouse"></i> Multi-entrepôts</span>
+    <span><i class="fas fa-barcode"></i> Codes-barres</span>
+    <span><i class="fas fa-chart-line"></i> Valorisation PMP</span>
+  </div>
+</div>
+
+<!-- HEADER -->
+<header class="header">
+  <div class="logo-section">
+    <div class="logo-icon"><i class="fas fa-boxes-stacked"></i></div>
+    <div>
+      <h1>OMEGA <span>STOCK</span></h1>
+      <div class="subtitle"><i class="fas fa-shield-halved"></i> Gestion professionnelle</div>
+    </div>
+  </div>
+  <div class="user-section">
+    {% if current_user and current_user.is_authenticated %}
+    <div class="user-badge">
+      <div class="avatar">{{ current_user.prenom[0] if current_user.prenom else 'U' }}{{ current_user.nom[0] if current_user.nom else '' }}</div>
+      <div class="info">
+        <span class="name">{{ current_user.prenom }} {{ current_user.nom }}</span>
+        <span class="role">{{ current_user.role }}</span>
+      </div>
+    </div>
+    <a href="/logout" class="btn-logout"><i class="fas fa-right-from-bracket"></i> Déconnexion</a>
+    {% endif %}
+  </div>
+</header>
+
+<!-- NAV -->
+<nav class="nav">
+  <a href="/" class="{{ 'active' if active=='dashboard' else '' }}"><i class="fas fa-chart-pie"></i> Dashboard</a>
+  {% if current_user and current_user.is_authenticated %}
+    {% if current_user.role in ['admin','gestionnaire','magasinier','consultation'] %}
+    <a href="/produits" class="{{ 'active' if active=='produits' else '' }}"><i class="fas fa-box"></i> Produits</a>
+    <a href="/stocks" class="{{ 'active' if active=='stocks' else '' }}"><i class="fas fa-cubes"></i> Stocks</a>
+    {% endif %}
+    {% if current_user.role in ['admin','gestionnaire','magasinier'] %}
+    <a href="/mouvements" class="{{ 'active' if active=='mouvements' else '' }}"><i class="fas fa-arrows-rotate"></i> Mouvements</a>
+    <a href="/inventaires" class="{{ 'active' if active=='inventaires' else '' }}"><i class="fas fa-clipboard-check"></i> Inventaires</a>
+    {% endif %}
+    {% if current_user.role in ['admin','gestionnaire'] %}
+    <a href="/commandes" class="{{ 'active' if active=='commandes' else '' }}"><i class="fas fa-shopping-cart"></i> Commandes</a>
+    <a href="/receptions" class="{{ 'active' if active=='receptions' else '' }}"><i class="fas fa-truck-ramp-box"></i> Réceptions</a>
+    <a href="/fournisseurs" class="{{ 'active' if active=='fournisseurs' else '' }}"><i class="fas fa-truck"></i> Fournisseurs</a>
+    {% endif %}
+    {% if current_user.role in ['admin'] %}
+    <a href="/entrepots" class="{{ 'active' if active=='entrepots' else '' }}"><i class="fas fa-warehouse"></i> Entrepôts</a>
+    <a href="/utilisateurs" class="{{ 'active' if active=='utilisateurs' else '' }}"><i class="fas fa-users"></i> Utilisateurs</a>
+    {% endif %}
+    {% if current_user.role in ['admin','gestionnaire','magasinier','consultation'] %}
+    <a href="/magasinier/accueil" class="{{ 'active' if active=='magasinier' else '' }}"><i class="fas fa-bolt"></i> Espace Magasinier</a>
+    <a href="/gestionnaire/accueil" class="{{ 'active' if active=='gestionnaire' else '' }}"><i class="fas fa-chart-pie"></i> Espace Gestionnaire</a>
+    <a href="/rapports" class="{{ 'active' if active=='rapports' else '' }}"><i class="fas fa-chart-line"></i> Rapports</a>
+    {% endif %}
+  {% endif %}
+</nav>
+
+<!-- CONTAINER -->
+<div class="container">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}{% for cat, msg in messages %}
+      <div class="flash flash-{{ cat }}"><i class="fas fa-circle-info"></i> {{ msg }}</div>
+    {% endfor %}{% endif %}
+  {% endwith %}
+
+  {% block content %}{% endblock %}
+</div>
+
+<!-- FOOTER -->
+<footer class="footer">
+  <div>&copy; 2026 <strong>OMEGA STOCK</strong> — Tous droits réservés</div>
+  <div class="footer-sub">
+    <i class="fas fa-code"></i> Développé par <strong>OMEGA INFORMATIQUE</strong> — Solutions digitales professionnelles · Dakar, Sénégal
+  </div>
+</footer>
+
+</body>
+</html>
+"""
+
+
+def render_page(content, active='dashboard', page_title='Omega Stock'):
+    page = HTML_BASE.replace("{% block content %}{% endblock %}", content)
+    return render_template_string(page, active=active, page_title=page_title, current_user=current_user)
+
+
+# ==================== HEALTHCHECK ====================
+@app.route('/health')
+def health():
+    return jsonify(status='ok', service='stock-omega', timestamp=datetime.now().isoformat())
+
+
+# ==================== DASHBOARD ====================
+@app.route('/')
+def index():
+    if not (current_user and current_user.is_authenticated):
+        return redirect('/login')
+
+    conn = get_db()
+    c = conn.cursor()
+
+    # KPIs principaux
+    c.execute("SELECT COUNT(*) FROM produits WHERE actif=1")
+    total_produits = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM entrepots WHERE actif=1")
+    total_entrepots = c.fetchone()[0]
+
+    c.execute("SELECT COUNT(*) FROM emplacements WHERE actif=1")
+    total_emplacements = c.fetchone()[0]
+
+    c.execute("""SELECT COUNT(*) FROM alertes WHERE statut='Active' AND priorite IN ('Haute','Critique')""")
+    alertes_critiques = c.fetchone()[0]
+
+    c.execute("""SELECT COALESCE(SUM(stock_actuel * pmp), 0) FROM produits WHERE actif=1""")
+    valeur_stock = c.fetchone()[0]
+
+    c.execute("""SELECT COUNT(*) FROM produits WHERE actif=1 AND stock_actuel <= stock_min""")
+    produits_stock_bas = c.fetchone()[0]
+
+    # Mouvements du jour
+    c.execute("""SELECT COUNT(*) FROM mouvements WHERE date(date_mouvement) = date('now')""")
+    mvt_jour = c.fetchone()[0]
+
+    # Alertes actives
+    c.execute("""SELECT a.*, p.nom as produit_nom, p.sku FROM alertes a
+                 LEFT JOIN produits p ON a.produit_id = p.id
+                 WHERE a.statut='Active'
+                 ORDER BY CASE a.priorite WHEN 'Critique' THEN 1 WHEN 'Haute' THEN 2 WHEN 'Normale' THEN 3 ELSE 4 END,
+                 a.date_alerte DESC LIMIT 10""")
+    alertes = c.fetchall()
+
+    # Derniers mouvements
+    c.execute("""SELECT m.*, p.nom as produit_nom, p.sku, p.unite
+                 FROM mouvements m
+                 LEFT JOIN produits p ON m.produit_id = p.id
+                 ORDER BY m.date_mouvement DESC LIMIT 8""")
+    derniers_mvts = c.fetchall()
+
+    # Top produits par valeur de stock
+    c.execute("""SELECT sku, nom, stock_actuel, pmp,
+                        (stock_actuel * pmp) as valeur
+                 FROM produits WHERE actif=1
+                 ORDER BY valeur DESC LIMIT 5""")
+    top_produits = c.fetchall()
+
+    # Lots proches de péremption (30 jours)
+    c.execute("""SELECT l.*, p.nom as produit_nom
+                 FROM lots l JOIN produits p ON l.produit_id = p.id
+                 WHERE l.statut='En stock' AND l.date_peremption IS NOT NULL
+                   AND date(l.date_peremption) <= date('now', '+30 days')
+                 ORDER BY l.date_peremption ASC LIMIT 5""")
+    lots_peremption = c.fetchall()
+
+    conn.close()
+
+    role = current_user.role
+    role_badge_class = f"badge-role-{role}"
+
+    content = f"""
+    <div class="hero">
+      <h1>Bienvenue <span>{current_user.prenom}</span> 📦</h1>
+      <p>Tableau de bord temps réel — Vue consolidée de votre inventaire multi-entrepôts</p>
+    </div>
+
+    {f'<div class="alert-banner"><i class="fas fa-exclamation-triangle"></i> <strong>{alertes_critiques} alerte(s) critique(s)</strong> nécessitent votre attention</div>' if alertes_critiques > 0 else ''}
+
+    <div class="stats">
+      <div class="stat-card">
+        <i class="fas fa-box stat-icon"></i>
+        <div class="stat-value">{total_produits}</div>
+        <div class="stat-label">Produits actifs</div>
+      </div>
+      <div class="stat-card blue">
+        <i class="fas fa-warehouse stat-icon"></i>
+        <div class="stat-value">{total_entrepots}</div>
+        <div class="stat-label">Entrepôts</div>
+      </div>
+      <div class="stat-card purple">
+        <i class="fas fa-cubes stat-icon"></i>
+        <div class="stat-value">{total_emplacements}</div>
+        <div class="stat-label">Emplacements</div>
+      </div>
+      <div class="stat-card amber">
+        <i class="fas fa-money-bill-wave stat-icon"></i>
+        <div class="stat-value">{valeur_stock:,.0f}</div>
+        <div class="stat-label">Valeur stock (FCFA)</div>
+      </div>
+      <div class="stat-card rose">
+        <i class="fas fa-exclamation-triangle stat-icon"></i>
+        <div class="stat-value">{produits_stock_bas}</div>
+        <div class="stat-label">Stock bas</div>
+      </div>
+      <div class="stat-card">
+        <i class="fas fa-arrows-rotate stat-icon"></i>
+        <div class="stat-value">{mvt_jour}</div>
+        <div class="stat-label">Mouvements du jour</div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:20px">
+      <div>
+        <div class="card">
+          <div class="card-header">
+            <h3><i class="fas fa-clock-rotate-left"></i> Derniers mouvements</h3>
+            <a href="/mouvements" class="btn btn-primary btn-sm"><i class="fas fa-arrow-right"></i> Voir tout</a>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>N°</th><th>Type</th><th>Produit</th><th>Qté</th><th>Date</th></tr></thead>
+              <tbody>
+        """
+    for m in derniers_mvts:
+        type_badge = 'badge-success' if m['type_mouvement'] == 'Entrée' else ('badge-danger' if m['type_mouvement'] == 'Sortie' else 'badge-info')
+        signe = '+' if m['type_mouvement'] == 'Entrée' else ('-' if m['type_mouvement'] == 'Sortie' else '')
+        content += f"""<tr>
+          <td><strong>{m['numero']}</strong></td>
+          <td><span class="badge {type_badge}">{m['type_mouvement']}</span></td>
+          <td>{m['produit_nom'][:40] if m['produit_nom'] else '-'}<br><small style="color:#94a3b8">{m['sku'] or ''}</small></td>
+          <td><strong>{signe}{m['quantite']:.0f} {m['unite'] or ''}</strong></td>
+          <td>{m['date_mouvement'][:16]}</td>
+        </tr>"""
+    if not derniers_mvts:
+        content += '<tr><td colspan="5" class="empty"><i class="fas fa-inbox"></i><br>Aucun mouvement</td></tr>'
+
+    content += """
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="card">
+          <div class="card-header">
+            <h3><i class="fas fa-bell"></i> Alertes actives</h3>
+            <a href="/alertes" class="btn btn-primary btn-sm"><i class="fas fa-arrow-right"></i></a>
+          </div>
+    """
+    if alertes:
+        for a in alertes:
+            priorite_color = '#dc2626' if a['priorite'] == 'Critique' else ('#f59e0b' if a['priorite'] == 'Haute' else '#0891b2')
+            content += f"""
+            <div style="padding:12px;border-left:4px solid {priorite_color};background:#f8fafc;border-radius:8px;margin-bottom:10px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                <strong style="font-size:0.85rem;color:#064e3b">{a['type_alerte']}</strong>
+                <span class="badge" style="background:{priorite_color}20;color:{priorite_color};font-size:0.65rem">{a['priorite']}</span>
+              </div>
+              <div style="font-size:0.8rem;color:#64748b">{a['message'][:80]}</div>
+            </div>
+            """
+    else:
+        content += '<div class="empty" style="padding:30px"><i class="fas fa-check-circle" style="color:#10b981"></i><br>Aucune alerte active</div>'
+
+    content += """
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3><i class="fas fa-fire"></i> Top 5 valeur stock</h3>
+          </div>
+    """
+    for p in top_produits:
+        content += f"""
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px dashed #ecfdf5">
+          <div style="flex:1">
+            <div style="font-weight:700;font-size:0.85rem">{p['nom'][:35]}</div>
+            <small style="color:#94a3b8">{p['sku']} · {p['stock_actuel']:.0f} unités</small>
+          </div>
+          <div style="font-weight:900;color:#059669">{p['valeur']:,.0f}</div>
+        </div>
+        """
+    if not top_produits:
+        content += '<div class="empty" style="padding:20px">Aucun produit</div>'
+
+    content += """
+        </div>
+      </div>
+    </div>
+    """
+
+    # Lots proches péremption
+    if lots_peremption:
+        content += """
+        <div class="card" style="border-left:5px solid #f59e0b">
+          <div class="card-header">
+            <h3 style="color:#92400e"><i class="fas fa-hourglass-half"></i> Lots proches de péremption (30 jours)</h3>
+            <a href="/lots" class="btn btn-warning btn-sm"><i class="fas fa-arrow-right"></i> Voir tout</a>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Lot</th><th>Produit</th><th>Quantité</th><th>Péremption</th><th>Jours restants</th></tr></thead>
+              <tbody>
+        """
+        today = datetime.now().date()
+        for l in lots_peremption:
+            try:
+                peremption = datetime.fromisoformat(l['date_peremption']).date()
+                jours = (peremption - today).days
+                color = '#dc2626' if jours <= 7 else ('#f59e0b' if jours <= 15 else '#0891b2')
+            except Exception:
+                jours = '?'
+                color = '#64748b'
+
+            content += f"""<tr>
+              <td><strong>{l['numero_lot']}</strong></td>
+              <td>{l['produit_nom'][:40]}</td>
+              <td><strong>{l['quantite_actuelle']:.0f}</strong></td>
+              <td>{l['date_peremption']}</td>
+              <td><span class="badge" style="background:{color}20;color:{color}">{jours} jours</span></td>
+            </tr>"""
+        content += "</tbody></table></div></div>"
+
+    return render_page(content, active='dashboard', page_title='Dashboard')
+
+
+
+# ==================== ENREGISTREMENT DES ROUTES ====================
+try:
+    from crud import register_crud_routes
+    register_crud_routes(app, render_page)
+    print("[MAIN] ✅ Routes CRUD enregistrées")
+except Exception as e:
+    import traceback
+    traceback.print_exc()
+    print(f"[MAIN] ⚠️ CRUD non chargé: {e}")
+
+try:
+    from stock_logic import register_stock_routes
+    register_stock_routes(app, render_page)
+    print("[MAIN] ✅ Routes stock_logic enregistrées")
+except Exception as e:
+    import traceback
+    traceback.print_exc()
+    print(f"[MAIN] ⚠️ Stock_logic non chargé: {e}")
+
+try:
+    from portail import register_portail_routes
+    register_portail_routes(app, render_page)
+    print("[MAIN] ✅ Routes portail enregistrées")
+except Exception as e:
+    import traceback
+    traceback.print_exc()
+    print(f"[MAIN] ⚠️ Portail non chargé: {e}")
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8000, debug=False)

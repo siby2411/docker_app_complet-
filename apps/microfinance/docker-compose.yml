@@ -1,0 +1,48 @@
+
+  # ========================================
+  # 🏦 MICROFINANCE 2.0 (SFD & Coopératives)
+  # Port : 9017
+  # ========================================
+  microfinance:
+    build:
+      context: ./apps/microfinance
+      dockerfile: Dockerfile
+    image: docker2-microfinance:latest
+    container_name: docker2_microfinance
+    environment:
+      - GUNICORN_WORKERS=1
+      - GUNICORN_TIMEOUT=180
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "2"
+    mem_limit: 250m
+    ports:
+      - "9017:8000"
+    volumes:
+      - ./data/microfinance:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  cloudflared-microfinance:
+    image: cloudflare/cloudflared:latest
+    container_name: docker2_cloudflared_microfinance
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+    mem_limit: 50m
+    command: tunnel --no-autoupdate --url http://microfinance:8000
+    depends_on:
+      - microfinance
+    networks:
+      - default

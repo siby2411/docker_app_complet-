@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Modifier' if papier else 'Nouveau' }} papier{% endblock %}
+{% block page_title %}{{ '✏️ Modifier' if papier else '➕ Nouveau' }} papier{% endblock %}
+{% block content %}
+<form method="POST" enctype="multipart/form-data" class="card-premium">
+  <div class="row g-3">
+    <div class="col-md-6"><label class="form-label">Véhicule *</label>
+      <select name="vehicule_id" class="form-select" required>
+        <option value="">— Choisir —</option>
+        {% for v in vehicules %}<option value="{{ v.id }}" {% if (papier and papier.vehicule_id==v.id) or (not papier and vehicule_id==v.id) %}selected{% endif %}>{{ v.code }} — {{ v.marque_nom }} {{ v.modele_nom }} ({{ v.immatriculation }})</option>{% endfor %}
+      </select>
+    </div>
+    <div class="col-md-3"><label class="form-label">Type *</label>
+      <select name="type" class="form-select" required>
+        {% for t in ['carte_grise','assurance','visite_technique','vignette','patente'] %}
+        <option value="{{ t }}" {% if papier and papier.type==t %}selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-3"><label class="form-label">Numéro</label><input type="text" name="numero" class="form-control" value="{{ papier.numero if papier else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Date émission</label><input type="date" name="date_emission" class="form-control" value="{{ papier.date_emission if papier else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Date expiration *</label><input type="date" name="date_expiration" class="form-control" required value="{{ papier.date_expiration if papier else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Compagnie</label><input type="text" name="compagnie" class="form-control" value="{{ papier.compagnie if papier else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Montant (FCFA)</label><input type="number" name="montant" class="form-control" value="{{ papier.montant if papier else 0 }}"></div>
+    <div class="col-md-6"><label class="form-label">Fichier (PDF ou image)</label><input type="file" name="fichier" class="form-control" accept=".pdf,image/*">
+      {% if papier and papier.fichier_path %}<small class="text-success">Fichier actuel : {{ papier.fichier_path }}</small>{% endif %}
+    </div>
+  </div>
+  <div class="mt-4 d-flex gap-2">
+    <button class="btn btn-accent"><i class="bi bi-check-lg"></i> Enregistrer</button>
+    <a href="{{ url_for('papiers_list') }}" class="btn btn-light">Annuler</a>
+  </div>
+</form>
+{% endblock %}

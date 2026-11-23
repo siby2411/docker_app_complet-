@@ -1,0 +1,1496 @@
+"""
+Module Caisse + Comptabilité + Statistiques E-Commerce
+POS (Point of Sale), Factures A4 + Ticket 80mm, États financiers, Stats
+"""
+from flask import (render_template_string, request, redirect, flash,
+                   jsonify, Response)
+import sqlite3
+from datetime import datetime, timedelta
+import io
+
+DB_PATH = "/app/data/ecommerce.db"
+
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=30000")
+    return conn
+
+
+def gen_numero_facture(type_fac='FAC'):
+    conn = get_db()
+    c = conn.cursor()
+    year = datetime.now().year
+    c.execute("SELECT COUNT(*) FROM factures WHERE type_facture=?", (type_fac,))
+    n = c.fetchone()[0] + 1
+    conn.close()
+    return f"{type_fac}-{year}-{n:04d}"
+
+
+def get_param(key, default=''):
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT valeur FROM parametres_facturation WHERE cle=?", (key,))
+        row = c.fetchone()
+        conn.close()
+        return row['valeur'] if row else default
+    except Exception:
+        return default
+
+
+try:
+    from auth import (role_required, admin_required, vendeur_required,
+                      staff_required, client_required, log_action)
+    from flask_login import current_user
+except ImportError:
+    def role_required(*r):
+        def d(f): return f
+        return d
+    def admin_required(f): return f
+    def vendeur_required(f): return f
+    def staff_required(f): return f
+    def client_required(f): return f
+    def log_action(*a, **k): pass
+    current_user = None
+
+
+def register_caisse_routes(app, render_page):
+    """Enregistre les routes caisse + facturation + compta + stats"""
+
+    # ==================== PAGE CAISSE (POS) ====================
+    @app.route('/caisse')
+    @vendeur_required
+    def caisse():
+        content = """
+        <div class="page-header">
+          <div>
+            <h2><i class="fas fa-cash-register"></i> Caisse — Vente Rapide</h2>
+            <div class="page-subtitle">Point de vente en présentiel</div>
+          </div>
+          <a href="/caisse/historique" class="btn btn-info"><i class="fas fa-history"></i> Historique</a>
+        </div>
+
+        <div style="display:grid;grid-template-columns:2fr 1fr;gap:20px">
+          <div class="card">
+            <div class="card-header"><h3><i class="fas fa-search"></i> Ajouter un produit</h3></div>
+            <div style="display:flex;gap:10px;margin-bottom:15px">
+              <input type="text" id="searchInput" placeholder="Scanner ou taper nom/SKU..." 
+                     style="flex:1;padding:15px;border:2px solid #f1f5f9;border-radius:12px;font-size:1rem;font-weight:600"
+                     onkeyup="filterProduits()" onfocus="this.select()" autofocus>
+            </div>
+            <div id="listeProduits" style="max-height:500px;overflow-y:auto">
+              <div style="color:#94a3b8;text-align:center;padding:40px">
+                <i class="fas fa-search" style="font-size:3rem;margin-bottom:15px;color:#fed7aa"></i>
+                <p>Tapez le nom d'un produit pour commencer</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" style="position:sticky;top:20px">
+            <div class="card-header"><h3><i class="fas fa-shopping-basket"></i> Panier caisse</h3></div>
+            <div id="panierContent" style="min-height:200px;max-height:400px;overflow-y:auto">
+              <div style="color:#94a3b8;text-align:center;padding:30px">
+                <i class="fas fa-shopping-basket" style="font-size:2.5rem;color:#fed7aa"></i>
+                <p style="margin-top:10px;font-size:0.85rem">Panier vide</p>
+              </div>
+            </div>
+            <div id="panierTotal" style="margin-top:15px;padding-top:15px;border-top:2px solid #ff6b35;display:none">
+              <div style="display:flex;justify-content:space-between;margin-bottom:8px;font-size:0.9rem">
+                <span>Sous-total</span><strong id="sousTotal">0 FCFA</strong>
+              </div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:15px;font-size:0.9rem">
+                <span>TVA (18%)</span><strong id="tvaMontant">0 FCFA</strong>
+              </div>
+              <div style="display:flex;justify-content:space-between;padding:12px 0;border-top:2px dashed #fed7aa;font-size:1.3rem">
+                <span style="font-weight:900">TOTAL</span>
+                <strong id="totalFinal" style="color:#ff6b35">0 FCFA</strong>
+              </div>
+            </div>
+            <div style="display:flex;gap:10px;margin-top:15px">
+              <button onclick="validerVente()" id="btnValider" class="btn btn-success" 
+                      style="flex:1;justify-content:center;padding:15px;display:none">
+                <i class="fas fa-check"></i> Valider vente
+              </button>
+              <button onclick="viderPanier()" id="btnVider" class="btn btn-danger" 
+                      style="display:none;padding:15px" title="Vider">
+                <i class="fas fa-trash"></i>
+              </button>
+            </div>
+            <div style="margin-top:10px;font-size:0.7rem;color:#94a3b8;text-align:center">
+              💡 Astuce : Utilisez un lecteur de code-barres pour scanner directement
+            </div>
+          </div>
+        </div>
+
+        <script>
+        let panier = [];
+
+        async function searchProduits(q) {
+          if (!q || q.length < 1) {
+            document.getElementById('listeProduits').innerHTML = `
+              <div style="color:#94a3b8;text-align:center;padding:40px">
+                <i class="fas fa-search" style="font-size:3rem;margin-bottom:15px;color:#fed7aa"></i>
+                <p>Tapez le nom d'un produit pour commencer</p>
+              </div>
+            `;
+            return;
+          }
+          const res = await fetch('/api/caisse/recherche?q=' + encodeURIComponent(q));
+          const data = await res.json();
+          let html = '';
+          if (data.produits.length === 0) {
+            html = '<div style="color:#94a3b8;text-align:center;padding:30px"><i class="fas fa-search"></i><p>Aucun produit trouvé</p></div>';
+          } else {
+            for (const p of data.produits) {
+              const prix = p.prix_promo || p.prix_vente;
+              html += `
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;border:1px solid #f1f5f9;border-radius:10px;margin-bottom:8px;cursor:pointer;transition:0.2s" 
+                     onmouseover="this.style.background='#fff9f3'" onmouseout="this.style.background='white'"
+                     onclick='ajouterAuPanier(${JSON.stringify(p).replace(/'/g, "&#39;")})'>
+                  <div style="flex:1">
+                    <div style="font-weight:800;color:#1a1a2e">${p.nom}</div>
+                    <small style="color:#94a3b8">SKU: ${p.sku} · Stock: ${p.stock}</small>
+                  </div>
+                  <div style="text-align:right">
+                    <div style="font-weight:900;color:#ff6b35;font-size:1.05rem">${prix.toLocaleString()} FCFA</div>
+                    <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();ajouterAuPanier(${JSON.stringify(p).replace(/'/g, "&#39;")})">
+                      <i class="fas fa-plus"></i> Ajouter
+                    </button>
+                  </div>
+                </div>
+              `;
+            }
+          }
+          document.getElementById('listeProduits').innerHTML = html;
+        }
+
+        let searchTimeout;
+        document.getElementById('searchInput').addEventListener('keyup', function(e) {
+          clearTimeout(searchTimeout);
+          searchTimeout = setTimeout(() => searchProduits(this.value), 250);
+        });
+
+        function ajouterAuPanier(produit) {
+          const prix = produit.prix_promo || produit.prix_vente;
+          const existant = panier.find(x => x.id === produit.id);
+          if (existant) {
+            if (existant.qte < produit.stock) {
+              existant.qte++;
+            } else {
+              alert('Stock maximum atteint');
+              return;
+            }
+          } else {
+            panier.push({
+              id: produit.id,
+              nom: produit.nom,
+              sku: produit.sku,
+              prix: prix,
+              qte: 1,
+              stock: produit.stock
+            });
+          }
+          afficherPanier();
+        }
+
+        function afficherPanier() {
+          const cont = document.getElementById('panierContent');
+          if (panier.length === 0) {
+            cont.innerHTML = `<div style="color:#94a3b8;text-align:center;padding:30px">
+              <i class="fas fa-shopping-basket" style="font-size:2.5rem;color:#fed7aa"></i>
+              <p style="margin-top:10px;font-size:0.85rem">Panier vide</p>
+            </div>`;
+            document.getElementById('panierTotal').style.display = 'none';
+            document.getElementById('btnValider').style.display = 'none';
+            document.getElementById('btnVider').style.display = 'none';
+            return;
+          }
+          let html = '';
+          let sousTotal = 0;
+          for (const item of panier) {
+            const total = item.prix * item.qte;
+            sousTotal += total;
+            html += `
+              <div style="padding:10px;border-bottom:1px solid #f1f5f9">
+                <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+                  <div style="font-weight:700;font-size:0.85rem;flex:1">${item.nom}</div>
+                  <button onclick="supprimerItem(${item.id})" style="background:none;border:none;color:#dc2626;cursor:pointer;font-size:1rem">
+                    <i class="fas fa-times"></i>
+                  </button>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <div style="display:flex;gap:5px;align-items:center">
+                    <button onclick="modifierQte(${item.id}, -1)" style="width:28px;height:28px;border:1px solid #f1f5f9;background:#f8fafc;border-radius:6px;cursor:pointer;font-weight:900">−</button>
+                    <input type="number" value="${item.qte}" min="1" max="${item.stock}" 
+                           onchange="setQte(${item.id}, this.value)"
+                           style="width:50px;padding:4px;text-align:center;border:1px solid #f1f5f9;border-radius:6px;font-weight:700">
+                    <button onclick="modifierQte(${item.id}, 1)" style="width:28px;height:28px;border:1px solid #f1f5f9;background:#f8fafc;border-radius:6px;cursor:pointer;font-weight:900">+</button>
+                  </div>
+                  <div style="font-weight:800;color:#ff6b35;font-size:0.9rem">${total.toLocaleString()} FCFA</div>
+                </div>
+              </div>
+            `;
+          }
+          cont.innerHTML = html;
+          
+          const tva = sousTotal * 18 / 118;
+          const ht = sousTotal - tva;
+          document.getElementById('sousTotal').textContent = ht.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' FCFA';
+          document.getElementById('tvaMontant').textContent = tva.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' FCFA';
+          document.getElementById('totalFinal').textContent = sousTotal.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + ' FCFA';
+          document.getElementById('panierTotal').style.display = 'block';
+          document.getElementById('btnValider').style.display = 'flex';
+          document.getElementById('btnVider').style.display = 'flex';
+        }
+
+        function modifierQte(id, delta) {
+          const item = panier.find(x => x.id === id);
+          if (!item) return;
+          const nouvelleQte = item.qte + delta;
+          if (nouvelleQte < 1) return;
+          if (nouvelleQte > item.stock) {
+            alert('Stock maximum : ' + item.stock);
+            return;
+          }
+          item.qte = nouvelleQte;
+          afficherPanier();
+        }
+
+        function setQte(id, q) {
+          const item = panier.find(x => x.id === id);
+          if (!item) return;
+          const qte = parseInt(q) || 1;
+          if (qte < 1 || qte > item.stock) {
+            alert('Quantité invalide. Max : ' + item.stock);
+            afficherPanier();
+            return;
+          }
+          item.qte = qte;
+          afficherPanier();
+        }
+
+        function supprimerItem(id) {
+          panier = panier.filter(x => x.id !== id);
+          afficherPanier();
+        }
+
+        function viderPanier() {
+          if (confirm('Vider le panier ?')) {
+            panier = [];
+            afficherPanier();
+          }
+        }
+
+        async function validerVente() {
+          if (panier.length === 0) return;
+          const modePaiement = prompt('Mode de paiement (Wave/Orange Money/Espèces/Carte) :', 'Espèces');
+          if (!modePaiement) return;
+
+          const res = await fetch('/api/caisse/valider', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              items: panier.map(x => ({id: x.id, qte: x.qte, prix: x.prix})),
+              mode_paiement: modePaiement
+            })
+          });
+          const data = await res.json();
+          if (data.success) {
+            window.location.href = '/caisse/ticket/' + data.facture_id;
+            panier = [];
+          } else {
+            alert('Erreur : ' + data.error);
+          }
+        }
+
+        function filterProduits() {
+          // Raccourci clavier
+        }
+        </script>
+        """
+        return render_page(content, active='caisse', page_title='Caisse POS')
+
+    # ==================== API RECHERCHE PRODUIT ====================
+    @app.route('/api/caisse/recherche')
+    @vendeur_required
+    def api_caisse_recherche():
+        q = request.args.get('q', '').strip()
+        if not q:
+            return jsonify({'produits': []})
+
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""SELECT id, sku, nom, prix_vente, prix_promo, stock
+                     FROM produits
+                     WHERE actif=1 AND stock > 0
+                     AND (nom LIKE ? OR sku LIKE ?)
+                     ORDER BY nom LIMIT 20""",
+                  (f'%{q}%', f'%{q}%'))
+        rows = c.fetchall()
+        conn.close()
+
+        return jsonify({
+            'produits': [{
+                'id': r['id'],
+                'sku': r['sku'],
+                'nom': r['nom'],
+                'prix_vente': r['prix_vente'],
+                'prix_promo': r['prix_promo'],
+                'stock': r['stock']
+            } for r in rows]
+        })
+
+    # ==================== API VALIDER VENTE ====================
+    @app.route('/api/caisse/valider', methods=['POST'])
+    @vendeur_required
+    def api_caisse_valider():
+        try:
+            data = request.get_json()
+            items = data.get('items', [])
+            mode_paiement = data.get('mode_paiement', 'Espèces')
+
+            if not items:
+                return jsonify({'success': False, 'error': 'Panier vide'})
+
+            conn = get_db()
+            c = conn.cursor()
+
+            # Calculer totaux
+            sous_total = sum(item['qte'] * item['prix'] for item in items)
+            tva = sous_total * 18 / 118
+            total_ht = sous_total - tva
+
+            # Créer facture
+            numero = gen_numero_facture('FAC')
+            c.execute("""INSERT INTO factures
+                (numero, date_facture, sous_total, tva, total, montant_paye,
+                 mode_paiement, statut, type_facture)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'Payé', 'FAC')""",
+                (numero, datetime.now().isoformat(), total_ht, tva, sous_total,
+                 sous_total, mode_paiement))
+            facture_id = c.lastrowid
+
+            # Lignes
+            for item in items:
+                c.execute("""SELECT sku, nom FROM produits WHERE id=?""", (item['id'],))
+                p = c.fetchone()
+
+                c.execute("""INSERT INTO lignes_facture
+                    (facture_id, produit_id, designation, quantite, prix_unitaire,
+                     tva_ligne, total_ligne)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (facture_id, item['id'], p['nom'], item['qte'], item['prix'],
+                     item['prix'] * item['qte'] * 18/118,
+                     item['qte'] * item['prix']))
+
+                # Décrémenter stock
+                c.execute("""UPDATE produits SET stock = stock - ?, nb_ventes = nb_ventes + ?
+                             WHERE id=?""", (item['qte'], item['qte'], item['id']))
+
+            # Mouvement caisse
+            c.execute("""INSERT INTO mouvements_caisse
+                (date_mouvement, type_mouvement, montant, mode_paiement, facture_id,
+                 user_id, motif)
+                VALUES (?, 'ENTREE', ?, ?, ?, ?, 'Vente POS')""",
+                (datetime.now().isoformat(), sous_total, mode_paiement, facture_id,
+                 current_user.id if current_user else None))
+
+            # Journal comptable (double écriture simplifiée)
+            c.execute("""INSERT INTO journal_comptable
+                (date_ecriture, numero_piece, libelle, compte, debit, credit, user_id)
+                VALUES (?, ?, ?, '571', ?, 0, ?)""",
+                (datetime.now().isoformat(), numero, f'Vente caisse {numero}',
+                 sous_total, current_user.id if current_user else None))
+            c.execute("""INSERT INTO journal_comptable
+                (date_ecriture, numero_piece, libelle, compte, debit, credit, user_id)
+                VALUES (?, ?, ?, '701', 0, ?, ?)""",
+                (datetime.now().isoformat(), numero, f'Vente caisse {numero}',
+                 total_ht, current_user.id if current_user else None))
+            c.execute("""INSERT INTO journal_comptable
+                (date_ecriture, numero_piece, libelle, compte, debit, credit, user_id)
+                VALUES (?, ?, ?, '443', 0, ?, ?)""",
+                (datetime.now().isoformat(), numero, f'TVA {numero}',
+                 tva, current_user.id if current_user else None))
+
+            conn.commit()
+            conn.close()
+
+            if current_user:
+                log_action(current_user.id, 'VENTE_CAISSE', numero)
+
+            return jsonify({'success': True, 'facture_id': facture_id, 'numero': numero})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return jsonify({'success': False, 'error': str(e)})
+
+    # ==================== TICKET 80mm ====================
+    @app.route('/caisse/ticket/<int:fid>')
+    @vendeur_required
+    def caisse_ticket(fid):
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT * FROM factures WHERE id=?", (fid,))
+        facture = c.fetchone()
+        if not facture:
+            conn.close()
+            flash("Facture introuvable", "danger")
+            return redirect('/caisse')
+
+        c.execute("SELECT * FROM lignes_facture WHERE facture_id=?", (fid,))
+        lignes = c.fetchall()
+        conn.close()
+
+        ent_nom = get_param('entreprise_nom', 'OMEGA SHOP')
+        ent_tel = get_param('entreprise_telephone', '+221 33 800 00 00')
+        ent_adr = get_param('entreprise_adresse', 'Dakar, Sénégal')
+        pied = get_param('pied_facture', 'Merci !')
+
+        content = f"""
+        <style>
+        .ticket-80 {{
+          width: 80mm;
+          max-width: 320px;
+          margin: 20px auto;
+          background: white;
+          padding: 15px 10px;
+          font-family: 'Courier New', monospace;
+          font-size: 12px;
+          border: 1px solid #ccc;
+        }}
+        .ticket-80 hr {{ border: none; border-top: 1px dashed #000; margin: 8px 0; }}
+        .ticket-80 .center {{ text-align: center; }}
+        .ticket-80 .bold {{ font-weight: bold; }}
+        .ticket-80 .row {{ display: flex; justify-content: space-between; font-size: 11px; }}
+        .ticket-80 h2 {{ font-size: 16px; margin: 0 0 4px; letter-spacing: 2px; }}
+        @media print {{
+          body * {{ visibility: hidden; }}
+          .ticket-80, .ticket-80 * {{ visibility: visible; }}
+          .ticket-80 {{ position: absolute; left: 0; top: 0; border: none; }}
+          .no-print {{ display: none !important; }}
+        }}
+        </style>
+
+        <div class="no-print" style="text-align:center;margin-bottom:15px">
+          <button onclick="window.print()" class="btn btn-primary">
+            <i class="fas fa-print"></i> Imprimer le ticket
+          </button>
+          <a href="/caisse" class="btn btn-info">
+            <i class="fas fa-arrow-left"></i> Retour caisse
+          </a>
+        </div>
+
+        <div class="ticket-80">
+          <div class="center">
+            <h2>{ent_nom}</h2>
+            <div style="font-size:10px">{ent_adr}</div>
+            <div style="font-size:10px">Tél: {ent_tel}</div>
+          </div>
+          <hr>
+          <div class="center bold">{facture['type_facture']} N° {facture['numero']}</div>
+          <div class="center" style="font-size:10px">{facture['date_facture'][:19]}</div>
+          <hr>
+          <div style="font-size:11px">
+        """
+
+        for l in lignes:
+            content += f"""
+            <div class="bold" style="margin-top:5px">{l['designation'][:35]}</div>
+            <div class="row">
+              <span>{l['quantite']} x {l['prix_unitaire']:,.0f}</span>
+              <span class="bold">{l['total_ligne']:,.0f}</span>
+            </div>
+            """
+
+        content += f"""
+          </div>
+          <hr>
+          <div class="row"><span>Total HT</span><span>{facture['sous_total']:,.0f}</span></div>
+          <div class="row"><span>TVA (18%)</span><span>{facture['tva']:,.0f}</span></div>
+          <hr>
+          <div class="row bold" style="font-size:14px">
+            <span>TOTAL</span>
+            <span>{facture['total']:,.0f} FCFA</span>
+          </div>
+          <div class="row"><span>Payé ({facture['mode_paiement'] or '-'})</span><span>{facture['montant_paye']:,.0f}</span></div>
+          <hr>
+          <div class="center" style="font-size:10px">{pied}</div>
+          <div class="center bold" style="font-size:10px;margin-top:8px">MERCI DE VOTRE VISITE</div>
+          <div class="center" style="font-size:9px;margin-top:4px">Omega Informatique · Dakar</div>
+        </div>
+        """
+        return render_page(content, active='caisse', page_title=f'Vente {facture["numero"]}')
+
+    # ==================== HISTORIQUE CAISSE ====================
+    @app.route('/caisse/historique')
+    @vendeur_required
+    def caisse_historique():
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""SELECT * FROM factures WHERE type_facture='FAC'
+                     ORDER BY date_facture DESC LIMIT 100""")
+        rows = c.fetchall()
+        conn.close()
+
+        today = datetime.now().date().isoformat()
+        total_jour = sum(r['total'] for r in rows if r['date_facture'][:10] == today)
+
+        content = f"""
+        <div class="page-header">
+          <div>
+            <h2><i class="fas fa-history"></i> Historique caisse</h2>
+            <div class="page-subtitle">{len(rows)} ventes enregistrées</div>
+          </div>
+          <a href="/caisse" class="btn btn-primary"><i class="fas fa-cash-register"></i> Nouvelle vente</a>
+        </div>
+
+        <div class="stats">
+          <div class="stat-card">
+            <i class="fas fa-coins stat-icon"></i>
+            <div class="stat-value">{total_jour:,.0f}</div>
+            <div class="stat-label">CA aujourd'hui (FCFA)</div>
+          </div>
+          <div class="stat-card green">
+            <i class="fas fa-receipt stat-icon"></i>
+            <div class="stat-value">{len([r for r in rows if r['date_facture'][:10] == today])}</div>
+            <div class="stat-label">Ventes aujourd'hui</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>N°</th><th>Date</th><th>Total</th><th>Mode</th><th>Statut</th><th>Actions</th></tr></thead>
+              <tbody>
+        """
+        for f in rows:
+            badge = 'badge-success' if f['statut'] == 'Payé' else 'badge-warning'
+            content += f"""
+            <tr>
+              <td><strong>{f['numero']}</strong></td>
+              <td>{f['date_facture'][:19]}</td>
+              <td><strong style="color:#ff6b35">{f['total']:,.0f}</strong> FCFA</td>
+              <td>{f['mode_paiement'] or '-'}</td>
+              <td><span class="badge {badge}">{f['statut']}</span></td>
+              <td>
+                <a href="/caisse/ticket/{f['id']}" class="btn btn-info btn-sm" title="Ticket"><i class="fas fa-receipt"></i></a>
+                <a href="/factures/{f['id']}" class="btn btn-primary btn-sm" title="Facture A4"><i class="fas fa-file-invoice"></i></a>
+              </td>
+            </tr>
+            """
+        if not rows:
+            content += '<tr><td colspan="6" class="empty"><i class="fas fa-receipt"></i><br>Aucune vente</td></tr>'
+        content += "</tbody></table></div></div>"
+        return render_page(content, active='caisse', page_title='Historique caisse')
+
+
+    # ==================== FACTURES A4 ====================
+    @app.route('/factures')
+    @vendeur_required
+    def factures_liste():
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""SELECT * FROM factures ORDER BY date_facture DESC LIMIT 200""")
+        rows = c.fetchall()
+        conn.close()
+
+        content = """
+        <div class="page-header">
+          <div>
+            <h2><i class="fas fa-file-invoice"></i> Factures</h2>
+            <div class="page-subtitle">Toutes les factures émises</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>N°</th><th>Type</th><th>Date</th><th>Total</th><th>Payé</th><th>Mode</th><th>Statut</th><th>Actions</th></tr></thead>
+              <tbody>
+        """
+        for f in rows:
+            badge = 'badge-success' if f['statut'] == 'Payé' else ('badge-warning' if f['statut'] == 'Partiel' else 'badge-danger')
+            content += f"""
+            <tr>
+              <td><strong>{f['numero']}</strong></td>
+              <td><span class="badge badge-info">{f['type_facture']}</span></td>
+              <td>{f['date_facture'][:10]}</td>
+              <td><strong style="color:#ff6b35">{f['total']:,.0f}</strong> FCFA</td>
+              <td>{f['montant_paye']:,.0f} FCFA</td>
+              <td>{f['mode_paiement'] or '-'}</td>
+              <td><span class="badge {badge}">{f['statut']}</span></td>
+              <td>
+                <a href="/factures/{f['id']}" class="btn btn-primary btn-sm"><i class="fas fa-eye"></i> A4</a>
+                <a href="/caisse/ticket/{f['id']}" class="btn btn-info btn-sm"><i class="fas fa-receipt"></i> Ticket</a>
+              </td>
+            </tr>
+            """
+        if not rows:
+            content += '<tr><td colspan="8" class="empty"><i class="fas fa-file-invoice"></i><br>Aucune facture</td></tr>'
+        content += "</tbody></table></div></div>"
+        return render_page(content, active='factures', page_title='Factures')
+
+    @app.route('/factures/<int:fid>')
+    @vendeur_required
+    def facture_detail(fid):
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT * FROM factures WHERE id=?", (fid,))
+        f = c.fetchone()
+        if not f:
+            conn.close()
+            flash("Facture introuvable", "danger")
+            return redirect('/factures')
+
+        c.execute("SELECT * FROM lignes_facture WHERE facture_id=?", (fid,))
+        lignes = c.fetchall()
+
+        # Client
+        client = None
+        if f['client_id']:
+            c.execute("SELECT * FROM clients WHERE id=?", (f['client_id'],))
+            client = c.fetchone()
+        conn.close()
+
+        ent_nom = get_param('entreprise_nom', 'OMEGA SHOP')
+        ent_adr = get_param('entreprise_adresse', 'Dakar, Sénégal')
+        ent_tel = get_param('entreprise_telephone', '+221 33 800 00 00')
+        ent_email = get_param('entreprise_email', 'contact@omega-shop.sn')
+        ent_nif = get_param('entreprise_nif', 'SN-123456789')
+        ent_rc = get_param('entreprise_rc', 'RC-DK-2026-001')
+        pied = get_param('pied_facture', 'Merci de votre confiance !')
+
+        content = f"""
+        <style>
+        .facture-a4 {{
+          background: white; max-width: 800px; margin: 20px auto;
+          padding: 40px; box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+          border-radius: 8px; color: #1a1a2e;
+        }}
+        .facture-a4 .header {{ display: flex; justify-content: space-between; padding-bottom: 25px; border-bottom: 3px solid #ff6b35; margin-bottom: 30px; }}
+        .facture-a4 h1 {{ font-size: 2rem; color: #ff6b35; margin: 0; letter-spacing: -0.5px; }}
+        .facture-a4 h1 span {{ color: #1a1a2e; }}
+        .facture-a4 .subtitle {{ color: #64748b; font-size: 0.85rem; margin-top: 5px; }}
+        .facture-a4 .info {{ text-align: right; font-size: 0.85rem; line-height: 1.7; }}
+        .facture-a4 .facture-title {{ font-size: 1.8rem; font-weight: 900; color: #1a1a2e; letter-spacing: 2px; }}
+        .facture-a4 table {{ width: 100%; border-collapse: collapse; margin: 30px 0; }}
+        .facture-a4 th {{ background: #fff4e6; color: #ff6b35; padding: 12px; text-align: left; font-size: 0.8rem; text-transform: uppercase; font-weight: 800; }}
+        .facture-a4 td {{ padding: 12px; border-bottom: 1px solid #f1f5f9; font-size: 0.9rem; }}
+        .facture-a4 .totaux {{ float: right; width: 350px; }}
+        .facture-a4 .totaux-row {{ display: flex; justify-content: space-between; padding: 8px 0; font-size: 0.9rem; }}
+        .facture-a4 .totaux-total {{ padding: 15px 0; border-top: 2px solid #ff6b35; font-size: 1.3rem; font-weight: 900; color: #ff6b35; }}
+        @media print {{
+          body * {{ visibility: hidden; }}
+          .facture-a4, .facture-a4 * {{ visibility: visible; }}
+          .facture-a4 {{ position: absolute; left: 0; top: 0; box-shadow: none; }}
+          .no-print {{ display: none !important; }}
+        }}
+        </style>
+
+        <div class="no-print" style="text-align:center;margin-bottom:15px;display:flex;justify-content:center;gap:10px">
+          <button onclick="window.print()" class="btn btn-primary"><i class="fas fa-print"></i> Imprimer</button>
+          <a href="/factures" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+        </div>
+
+        <div class="facture-a4">
+          <div class="header">
+            <div>
+              <h1>{ent_nom}</h1>
+              <div class="subtitle">
+                {ent_adr}<br>
+                Tél : {ent_tel} · Email : {ent_email}<br>
+                NIF : {ent_nif} · RC : {ent_rc}
+              </div>
+            </div>
+            <div class="info">
+              <div class="facture-title">FACTURE</div>
+              <div style="margin-top:10px"><strong>N° :</strong> {f['numero']}</div>
+              <div><strong>Date :</strong> {f['date_facture'][:10]}</div>
+              <div><strong>Statut :</strong> {f['statut']}</div>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-bottom:30px">
+            <div>
+              <div style="font-weight:800;color:#ff6b35;text-transform:uppercase;font-size:0.75rem;letter-spacing:1px;margin-bottom:10px">Émis à</div>
+              {f'''
+              <div><strong>{client["nom"]} {client["prenom"]}</strong></div>
+              <div>{client["adresse"] or ""}</div>
+              <div>{client["ville"] or ""}</div>
+              <div>Tél : {client["telephone"]}</div>
+              {f'<div>Email : {client["email"]}</div>' if client["email"] else ''}
+              ''' if client else '<div><strong>Client de passage</strong></div>'}
+            </div>
+            <div style="text-align:right">
+              <div style="font-weight:800;color:#ff6b35;text-transform:uppercase;font-size:0.75rem;letter-spacing:1px;margin-bottom:10px">Mode de paiement</div>
+              <div><strong>{f['mode_paiement'] or 'Non précisé'}</strong></div>
+              <div>Payé : {f['montant_paye']:,.0f} FCFA</div>
+            </div>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th style="width:50%">Désignation</th>
+                <th style="text-align:center">Qté</th>
+                <th style="text-align:right">P.U.</th>
+                <th style="text-align:right">Total HT</th>
+              </tr>
+            </thead>
+            <tbody>
+        """
+
+        for l in lignes:
+            ht_ligne = l['total_ligne'] - l['tva_ligne']
+            content += f"""
+            <tr>
+              <td>{l['designation']}</td>
+              <td style="text-align:center">{l['quantite']}</td>
+              <td style="text-align:right">{l['prix_unitaire']:,.0f}</td>
+              <td style="text-align:right"><strong>{ht_ligne:,.0f} FCFA</strong></td>
+            </tr>
+            """
+
+        content += f"""
+            </tbody>
+          </table>
+
+          <div class="totaux">
+            <div class="totaux-row">
+              <span>Sous-total HT</span>
+              <strong>{f['sous_total']:,.0f} FCFA</strong>
+            </div>
+            <div class="totaux-row">
+              <span>TVA (18%)</span>
+              <strong>{f['tva']:,.0f} FCFA</strong>
+            </div>
+            <div class="totaux-row totaux-total">
+              <span>TOTAL TTC</span>
+              <span>{f['total']:,.0f} FCFA</span>
+            </div>
+          </div>
+          <div style="clear:both"></div>
+
+          <div style="margin-top:60px;padding-top:25px;border-top:2px solid #f1f5f9;text-align:center;color:#64748b;font-size:0.85rem">
+            <p>{pied}</p>
+            <p style="margin-top:8px;font-weight:700;color:#ff6b35">Merci de votre confiance !</p>
+            <p style="margin-top:15px;font-size:0.75rem">Facture générée électroniquement · Omega Informatique</p>
+          </div>
+        </div>
+        """
+        return render_page(content, active='factures', page_title=f'Facture {f["numero"]}')
+
+
+    # ==================== ÉTATS FINANCIERS ====================
+    @app.route('/etats-financiers')
+    @admin_required
+    def etats_financiers():
+        conn = get_db()
+        c = conn.cursor()
+
+        # CA du jour
+        c.execute("""SELECT COALESCE(SUM(total), 0) FROM factures
+                     WHERE date(date_facture) = date('now')""")
+        ca_jour = c.fetchone()[0]
+
+        # CA semaine
+        c.execute("""SELECT COALESCE(SUM(total), 0) FROM factures
+                     WHERE date_facture >= date('now', '-7 days')""")
+        ca_semaine = c.fetchone()[0]
+
+        # CA mois
+        c.execute("""SELECT COALESCE(SUM(total), 0) FROM factures
+                     WHERE strftime('%Y-%m', date_facture) = strftime('%Y-%m', 'now')""")
+        ca_mois = c.fetchone()[0]
+
+        # CA année
+        c.execute("""SELECT COALESCE(SUM(total), 0) FROM factures
+                     WHERE strftime('%Y', date_facture) = strftime('%Y', 'now')""")
+        ca_annee = c.fetchone()[0]
+
+        # TVA collectée mois
+        c.execute("""SELECT COALESCE(SUM(tva), 0) FROM factures
+                     WHERE strftime('%Y-%m', date_facture) = strftime('%Y-%m', 'now')""")
+        tva_mois = c.fetchone()[0]
+
+        # Calcul des bénéfices (marge sur ventes mois)
+        c.execute("""SELECT COALESCE(SUM(lf.quantite * (lf.prix_unitaire - COALESCE(p.prix_achat, 0))), 0)
+                     FROM lignes_facture lf
+                     JOIN factures f ON lf.facture_id = f.id
+                     LEFT JOIN produits p ON lf.produit_id = p.id
+                     WHERE strftime('%Y-%m', f.date_facture) = strftime('%Y-%m', 'now')""")
+        marge_mois = c.fetchone()[0]
+
+        # CA par mois (6 derniers)
+        c.execute("""SELECT strftime('%Y-%m', date_facture) as mois,
+                            COUNT(*) as nb,
+                            COALESCE(SUM(total), 0) as total,
+                            COALESCE(SUM(tva), 0) as tva
+                     FROM factures
+                     WHERE date_facture >= date('now', '-6 months')
+                     GROUP BY mois ORDER BY mois DESC""")
+        ca_par_mois = c.fetchall()
+
+        # CA par mode paiement
+        c.execute("""SELECT mode_paiement, COUNT(*) as nb, COALESCE(SUM(total), 0) as total
+                     FROM factures
+                     WHERE mode_paiement IS NOT NULL
+                     GROUP BY mode_paiement
+                     ORDER BY total DESC""")
+        par_mode = c.fetchall()
+
+        conn.close()
+
+        content = f"""
+        <div class="page-header">
+          <div>
+            <h2><i class="fas fa-chart-line"></i> États financiers</h2>
+            <div class="page-subtitle">Vue comptable temps réel</div>
+          </div>
+          <div style="display:flex;gap:10px">
+            <a href="/etats-financiers/journal" class="btn btn-info"><i class="fas fa-book"></i> Journal</a>
+            <a href="/etats-financiers/rapport-z" class="btn btn-primary"><i class="fas fa-receipt"></i> Rapport Z</a>
+          </div>
+        </div>
+
+        <div class="stats">
+          <div class="stat-card">
+            <i class="fas fa-calendar-day stat-icon"></i>
+            <div class="stat-value">{ca_jour:,.0f}</div>
+            <div class="stat-label">CA du jour (FCFA)</div>
+          </div>
+          <div class="stat-card gold">
+            <i class="fas fa-calendar-week stat-icon"></i>
+            <div class="stat-value">{ca_semaine:,.0f}</div>
+            <div class="stat-label">CA 7 jours (FCFA)</div>
+          </div>
+          <div class="stat-card green">
+            <i class="fas fa-calendar-month stat-icon"></i>
+            <div class="stat-value">{ca_mois:,.0f}</div>
+            <div class="stat-label">CA du mois (FCFA)</div>
+          </div>
+          <div class="stat-card purple">
+            <i class="fas fa-calendar stat-icon"></i>
+            <div class="stat-value">{ca_annee:,.0f}</div>
+            <div class="stat-label">CA annuel (FCFA)</div>
+          </div>
+        </div>
+
+        <div class="stats">
+          <div class="stat-card blue">
+            <i class="fas fa-percent stat-icon"></i>
+            <div class="stat-value">{tva_mois:,.0f}</div>
+            <div class="stat-label">TVA collectée ce mois</div>
+          </div>
+          <div class="stat-card green">
+            <i class="fas fa-chart-pie stat-icon"></i>
+            <div class="stat-value">{marge_mois:,.0f}</div>
+            <div class="stat-label">Marge brute ce mois</div>
+          </div>
+          <div class="stat-card gold">
+            <i class="fas fa-percentage stat-icon"></i>
+            <div class="stat-value">{(marge_mois / ca_mois * 100) if ca_mois > 0 else 0:.1f}%</div>
+            <div class="stat-label">Taux de marge</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><h3><i class="fas fa-chart-column"></i> CA par mois (6 derniers)</h3></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Mois</th><th>Nb factures</th><th>CA TTC</th><th>Dont TVA</th></tr></thead>
+              <tbody>
+        """
+        for m in ca_par_mois:
+            content += f"""
+            <tr>
+              <td><strong>{m['mois']}</strong></td>
+              <td>{m['nb']}</td>
+              <td><strong style="color:#ff6b35">{m['total']:,.0f}</strong> FCFA</td>
+              <td>{m['tva']:,.0f} FCFA</td>
+            </tr>
+            """
+        if not ca_par_mois:
+            content += '<tr><td colspan="4" class="empty">Aucune donnée</td></tr>'
+
+        content += """
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><h3><i class="fas fa-wallet"></i> Répartition par mode de paiement</h3></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Mode</th><th>Nb ventes</th><th>Total</th><th>%</th></tr></thead>
+              <tbody>
+        """
+        for m in par_mode:
+            pct = (m['total'] / ca_annee * 100) if ca_annee > 0 else 0
+            content += f"""
+            <tr>
+              <td><strong>{m['mode_paiement']}</strong></td>
+              <td>{m['nb']}</td>
+              <td><strong>{m['total']:,.0f}</strong> FCFA</td>
+              <td>{pct:.1f}%</td>
+            </tr>
+            """
+        if not par_mode:
+            content += '<tr><td colspan="4" class="empty">Aucune donnée</td></tr>'
+        content += "</tbody></table></div></div>"
+        return render_page(content, active='etats', page_title='États financiers')
+
+
+    # ==================== JOURNAL COMPTABLE ====================
+    @app.route('/etats-financiers/journal')
+    @admin_required
+    def journal_comptable():
+        conn = get_db()
+        c = conn.cursor()
+
+        date_debut = request.args.get('debut', datetime.now().date().isoformat())
+        date_fin = request.args.get('fin', datetime.now().date().isoformat())
+
+        c.execute("""SELECT * FROM journal_comptable
+                     WHERE date(date_ecriture) BETWEEN ? AND ?
+                     ORDER BY date_ecriture DESC""",
+                  (date_debut, date_fin))
+        ecritures = c.fetchall()
+
+        # Totaux
+        c.execute("""SELECT COALESCE(SUM(debit), 0) as d, COALESCE(SUM(credit), 0) as cr
+                     FROM journal_comptable
+                     WHERE date(date_ecriture) BETWEEN ? AND ?""",
+                  (date_debut, date_fin))
+        totaux = c.fetchone()
+        conn.close()
+
+        content = f"""
+        <div class="page-header">
+          <h2><i class="fas fa-book"></i> Journal comptable</h2>
+          <a href="/etats-financiers" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+        </div>
+
+        <div class="card">
+          <form method="GET" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:20px">
+            <label>Du :</label>
+            <input type="date" name="debut" value="{date_debut}" style="padding:10px;border:2px solid #f1f5f9;border-radius:8px">
+            <label>Au :</label>
+            <input type="date" name="fin" value="{date_fin}" style="padding:10px;border:2px solid #f1f5f9;border-radius:8px">
+            <button type="submit" class="btn btn-primary btn-sm"><i class="fas fa-search"></i> Filtrer</button>
+          </form>
+
+          <div class="stats">
+            <div class="stat-card">
+              <i class="fas fa-arrow-up stat-icon"></i>
+              <div class="stat-value">{totaux['d']:,.0f}</div>
+              <div class="stat-label">Total Débit</div>
+            </div>
+            <div class="stat-card green">
+              <i class="fas fa-arrow-down stat-icon"></i>
+              <div class="stat-value">{totaux['cr']:,.0f}</div>
+              <div class="stat-label">Total Crédit</div>
+            </div>
+            <div class="stat-card gold">
+              <i class="fas fa-balance-scale stat-icon"></i>
+              <div class="stat-value">{totaux['d'] - totaux['cr']:,.0f}</div>
+              <div class="stat-label">Équilibre</div>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Date</th><th>Pièce</th><th>Libellé</th><th>Compte</th><th style="text-align:right">Débit</th><th style="text-align:right">Crédit</th></tr></thead>
+              <tbody>
+        """
+        for e in ecritures:
+            content += f"""
+            <tr>
+              <td>{e['date_ecriture'][:10]}</td>
+              <td><strong>{e['numero_piece'] or '-'}</strong></td>
+              <td>{e['libelle']}</td>
+              <td><span class="badge badge-info">{e['compte']}</span></td>
+              <td style="text-align:right;color:#10b981"><strong>{e['debit']:,.0f}</strong></td>
+              <td style="text-align:right;color:#dc2626"><strong>{e['credit']:,.0f}</strong></td>
+            </tr>
+            """
+        if not ecritures:
+            content += '<tr><td colspan="6" class="empty"><i class="fas fa-book"></i><br>Aucune écriture</td></tr>'
+        content += "</tbody></table></div></div>"
+        return render_page(content, active='etats', page_title='Journal comptable')
+
+
+    # ==================== RAPPORT Z ====================
+    @app.route('/etats-financiers/rapport-z')
+    @admin_required
+    def rapport_z():
+        date_str = request.args.get('date', datetime.now().date().isoformat())
+
+        conn = get_db()
+        c = conn.cursor()
+
+        c.execute("""SELECT * FROM factures
+                     WHERE date(date_facture) = ?
+                     ORDER BY date_facture""", (date_str,))
+        factures = c.fetchall()
+
+        c.execute("""SELECT
+                        COUNT(*) as nb,
+                        COALESCE(SUM(total), 0) as total,
+                        COALESCE(SUM(tva), 0) as tva,
+                        COALESCE(SUM(montant_paye), 0) as paye
+                     FROM factures WHERE date(date_facture) = ?""", (date_str,))
+        totaux = c.fetchone()
+
+        c.execute("""SELECT mode_paiement, COUNT(*) as nb,
+                            COALESCE(SUM(total), 0) as total
+                     FROM factures
+                     WHERE date(date_facture) = ?
+                       AND mode_paiement IS NOT NULL
+                     GROUP BY mode_paiement ORDER BY total DESC""", (date_str,))
+        par_mode = c.fetchall()
+
+        c.execute("""SELECT COUNT(*) FROM commandes WHERE date(date_commande) = ?""", (date_str,))
+        nb_commandes = c.fetchone()[0]
+
+        conn.close()
+
+        content = f"""
+        <style>
+        @media print {{
+          body * {{ visibility: hidden; }}
+          .print-area, .print-area * {{ visibility: visible; }}
+          .print-area {{ position: absolute; left: 0; top: 0; }}
+          .no-print {{ display: none !important; }}
+        }}
+        </style>
+
+        <div class="page-header no-print">
+          <h2><i class="fas fa-receipt"></i> Rapport Z — {date_str}</h2>
+          <div style="display:flex;gap:10px">
+            <form method="GET" style="display:flex;gap:8px">
+              <input type="date" name="date" value="{date_str}" style="padding:10px;border:2px solid #f1f5f9;border-radius:8px">
+              <button type="submit" class="btn btn-primary btn-sm"><i class="fas fa-search"></i></button>
+            </form>
+            <button onclick="window.print()" class="btn btn-info btn-sm"><i class="fas fa-print"></i> Imprimer</button>
+            <a href="/etats-financiers" class="btn btn-info btn-sm"><i class="fas fa-arrow-left"></i> Retour</a>
+          </div>
+        </div>
+
+        <div class="print-area">
+        <div class="card">
+          <div style="text-align:center;padding:25px;border-bottom:3px solid #ff6b35;margin-bottom:25px">
+            <h1 style="color:#ff6b35;font-size:2rem;letter-spacing:-1px">OMEGA SHOP</h1>
+            <p style="color:#64748b;margin-top:5px">RAPPORT DE CAISSE JOURNALIER (Z)</p>
+            <p style="color:#1a1a2e;font-weight:800;font-size:1.2rem;margin-top:10px">Date : {date_str}</p>
+          </div>
+
+          <div class="stats">
+            <div class="stat-card">
+              <i class="fas fa-receipt stat-icon"></i>
+              <div class="stat-value">{totaux['nb']}</div>
+              <div class="stat-label">Factures</div>
+            </div>
+            <div class="stat-card gold">
+              <i class="fas fa-coins stat-icon"></i>
+              <div class="stat-value">{totaux['total']:,.0f}</div>
+              <div class="stat-label">CA TTC (FCFA)</div>
+            </div>
+            <div class="stat-card blue">
+              <i class="fas fa-percent stat-icon"></i>
+              <div class="stat-value">{totaux['tva']:,.0f}</div>
+              <div class="stat-label">TVA collectée</div>
+            </div>
+            <div class="stat-card green">
+              <i class="fas fa-check-circle stat-icon"></i>
+              <div class="stat-value">{totaux['paye']:,.0f}</div>
+              <div class="stat-label">Encaissé</div>
+            </div>
+          </div>
+
+          <h3 style="margin:30px 0 15px;color:#ff6b35;border-left:4px solid #ff6b35;padding-left:15px">
+            <i class="fas fa-wallet"></i> Répartition par mode de paiement
+          </h3>
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr style="background:#fff4e6">
+              <th style="padding:12px;text-align:left;color:#ff6b35">Mode</th>
+              <th style="padding:12px;text-align:right;color:#ff6b35">Nb</th>
+              <th style="padding:12px;text-align:right;color:#ff6b35">Total</th>
+            </tr></thead>
+            <tbody>
+        """
+        for m in par_mode:
+            content += f"""
+            <tr style="border-bottom:1px solid #f1f5f9">
+              <td style="padding:12px"><strong>{m['mode_paiement']}</strong></td>
+              <td style="padding:12px;text-align:right">{m['nb']}</td>
+              <td style="padding:12px;text-align:right"><strong>{m['total']:,.0f} FCFA</strong></td>
+            </tr>
+            """
+        if not par_mode:
+            content += '<tr><td colspan="3" style="padding:15px;text-align:center;color:#94a3b8">Aucun paiement</td></tr>'
+
+        content += f"""
+            <tr style="background:#fff4e6;font-weight:900">
+              <td style="padding:15px">TOTAL</td>
+              <td style="padding:15px;text-align:right">{totaux['nb']}</td>
+              <td style="padding:15px;text-align:right;color:#ff6b35;font-size:1.2rem">{totaux['total']:,.0f} FCFA</td>
+            </tr>
+            </tbody>
+          </table>
+
+          <h3 style="margin:30px 0 15px;color:#ff6b35;border-left:4px solid #ff6b35;padding-left:15px">
+            <i class="fas fa-list"></i> Détail des ventes ({len(factures)})
+          </h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Heure</th><th>N°</th><th>Mode</th><th style="text-align:right">Total</th></tr></thead>
+              <tbody>
+        """
+        for f in factures:
+            content += f"""
+            <tr>
+              <td>{f['date_facture'][11:19]}</td>
+              <td><strong>{f['numero']}</strong></td>
+              <td>{f['mode_paiement'] or '-'}</td>
+              <td style="text-align:right"><strong>{f['total']:,.0f} FCFA</strong></td>
+            </tr>
+            """
+        if not factures:
+            content += '<tr><td colspan="4" class="empty">Aucune vente ce jour</td></tr>'
+
+        content += f"""
+            </tbody>
+          </table>
+          </div>
+
+          <div style="margin-top:40px;padding-top:25px;border-top:2px dashed #cbd5e0;text-align:center;color:#64748b;font-size:0.9rem">
+            <p>Édité le {datetime.now().strftime('%d/%m/%Y à %H:%M')}</p>
+            <p style="margin-top:10px"><strong>OMEGA INFORMATIQUE</strong> — Dakar, Sénégal</p>
+          </div>
+        </div>
+        </div>
+        """
+        return render_page(content, active='etats', page_title=f'Rapport Z {date_str}')
+
+
+    # ==================== STATISTIQUES ====================
+    @app.route('/statistiques')
+    @admin_required
+    def statistiques():
+        conn = get_db()
+        c = conn.cursor()
+
+        # Top 10 produits par quantité
+        c.execute("""SELECT p.sku, p.nom, p.prix_vente,
+                            COALESCE(SUM(lc.quantite), 0) as qte_vendue,
+                            COALESCE(SUM(lc.total_ligne), 0) as ca
+                     FROM produits p
+                     LEFT JOIN lignes_commande lc ON lc.produit_id = p.id
+                     GROUP BY p.id
+                     HAVING qte_vendue > 0
+                     ORDER BY qte_vendue DESC LIMIT 10""")
+        top_qte = c.fetchall()
+
+        # Top 10 par CA
+        c.execute("""SELECT p.sku, p.nom, p.prix_vente,
+                            COALESCE(SUM(lc.quantite), 0) as qte_vendue,
+                            COALESCE(SUM(lc.total_ligne), 0) as ca
+                     FROM produits p
+                     LEFT JOIN lignes_commande lc ON lc.produit_id = p.id
+                     GROUP BY p.id
+                     HAVING ca > 0
+                     ORDER BY ca DESC LIMIT 10""")
+        top_ca = c.fetchall()
+
+        # Ventes par catégorie
+        c.execute("""SELECT cat.nom as cat_nom,
+                            COUNT(DISTINCT p.id) as nb_produits,
+                            COALESCE(SUM(lc.quantite), 0) as qte_vendue,
+                            COALESCE(SUM(lc.total_ligne), 0) as ca
+                     FROM categories cat
+                     LEFT JOIN produits p ON p.categorie_id = cat.id
+                     LEFT JOIN lignes_commande lc ON lc.produit_id = p.id
+                     GROUP BY cat.id
+                     ORDER BY ca DESC""")
+        par_categorie = c.fetchall()
+
+        # Clients VIP
+        c.execute("""SELECT nom, prenom, code, telephone, total_achats, nb_commandes, points_fidelite
+                     FROM clients
+                     WHERE nb_commandes > 0
+                     ORDER BY total_achats DESC LIMIT 10""")
+        clients_vip = c.fetchall()
+
+        # Panier moyen
+        c.execute("""SELECT COALESCE(AVG(total), 0) FROM commandes WHERE statut != 'Annulée'""")
+        panier_moyen = c.fetchone()[0]
+
+        # Nb clients actifs
+        c.execute("SELECT COUNT(*) FROM clients WHERE actif=1")
+        nb_clients = c.fetchone()[0]
+
+        conn.close()
+
+        content = f"""
+        <div class="page-header">
+          <div>
+            <h2><i class="fas fa-chart-bar"></i> Statistiques & Analytics</h2>
+            <div class="page-subtitle">Analyse des performances</div>
+          </div>
+          <div style="display:flex;gap:10px">
+            <a href="/statistiques/export/produits" class="btn btn-gold"><i class="fas fa-file-excel"></i> Export Excel</a>
+          </div>
+        </div>
+
+        <div class="stats">
+          <div class="stat-card">
+            <i class="fas fa-shopping-cart stat-icon"></i>
+            <div class="stat-value">{panier_moyen:,.0f}</div>
+            <div class="stat-label">Panier moyen (FCFA)</div>
+          </div>
+          <div class="stat-card green">
+            <i class="fas fa-users stat-icon"></i>
+            <div class="stat-value">{nb_clients}</div>
+            <div class="stat-label">Clients actifs</div>
+          </div>
+          <div class="stat-card gold">
+            <i class="fas fa-star stat-icon"></i>
+            <div class="stat-value">{clients_vip[0]['total_achats']:,.0f if clients_vip else 0}</div>
+            <div class="stat-label">Meilleur client (FCFA)</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><h3><i class="fas fa-fire"></i> Top 10 produits (quantité)</h3></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>#</th><th>SKU</th><th>Produit</th><th style="text-align:right">Qté vendue</th><th style="text-align:right">CA (FCFA)</th><th>Performance</th></tr></thead>
+              <tbody>
+        """
+        max_qte = max([p['qte_vendue'] for p in top_qte], default=1)
+        for i, p in enumerate(top_qte, 1):
+            pct = int(p['qte_vendue'] / max_qte * 100)
+            medal = '🥇' if i == 1 else ('🥈' if i == 2 else ('🥉' if i == 3 else ''))
+            content += f"""
+            <tr>
+              <td><strong>{medal} {i}</strong></td>
+              <td>{p['sku']}</td>
+              <td>{p['nom'][:45]}</td>
+              <td style="text-align:right"><strong style="color:#10b981">{p['qte_vendue']}</strong></td>
+              <td style="text-align:right"><strong>{p['ca']:,.0f}</strong></td>
+              <td>
+                <div style="background:#f1f5f9;border-radius:6px;height:16px;width:100%;overflow:hidden">
+                  <div style="background:linear-gradient(90deg,#ff6b35,#f7931e);height:100%;width:{pct}%"></div>
+                </div>
+              </td>
+            </tr>
+            """
+        if not top_qte:
+            content += '<tr><td colspan="6" class="empty">Aucune vente</td></tr>'
+
+        content += """
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><h3><i class="fas fa-trophy"></i> Top 10 produits (CA)</h3></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>#</th><th>SKU</th><th>Produit</th><th style="text-align:right">CA (FCFA)</th><th style="text-align:right">Qté</th></tr></thead>
+              <tbody>
+        """
+        for i, p in enumerate(top_ca, 1):
+            medal = '🥇' if i == 1 else ('🥈' if i == 2 else ('🥉' if i == 3 else ''))
+            content += f"""
+            <tr>
+              <td><strong>{medal} {i}</strong></td>
+              <td>{p['sku']}</td>
+              <td>{p['nom'][:45]}</td>
+              <td style="text-align:right"><strong style="color:#ff6b35">{p['ca']:,.0f}</strong></td>
+              <td style="text-align:right">{p['qte_vendue']}</td>
+            </tr>
+            """
+        if not top_ca:
+            content += '<tr><td colspan="5" class="empty">Aucune vente</td></tr>'
+
+        content += """
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><h3><i class="fas fa-tags"></i> Ventes par catégorie</h3></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Catégorie</th><th style="text-align:right">Nb produits</th><th style="text-align:right">Qté vendue</th><th style="text-align:right">CA (FCFA)</th></tr></thead>
+              <tbody>
+        """
+        for cat in par_categorie:
+            content += f"""
+            <tr>
+              <td><strong>{cat['cat_nom']}</strong></td>
+              <td style="text-align:right">{cat['nb_produits']}</td>
+              <td style="text-align:right"><strong>{cat['qte_vendue']}</strong></td>
+              <td style="text-align:right"><strong style="color:#ff6b35">{cat['ca']:,.0f}</strong></td>
+            </tr>
+            """
+        if not par_categorie:
+            content += '<tr><td colspan="4" class="empty">Aucune donnée</td></tr>'
+
+        content += """
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><h3><i class="fas fa-crown"></i> Clients VIP (Top 10)</h3></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>#</th><th>Client</th><th>Code</th><th>Téléphone</th><th style="text-align:right">Achats (FCFA)</th><th style="text-align:right">Commandes</th><th style="text-align:right">Points</th></tr></thead>
+              <tbody>
+        """
+        for i, cl in enumerate(clients_vip, 1):
+            medal = '👑' if i == 1 else ('⭐' if i <= 3 else '')
+            content += f"""
+            <tr>
+              <td><strong>{medal} {i}</strong></td>
+              <td><strong>{cl['nom']} {cl['prenom']}</strong></td>
+              <td>{cl['code']}</td>
+              <td>{cl['telephone']}</td>
+              <td style="text-align:right"><strong style="color:#10b981">{cl['total_achats']:,.0f}</strong></td>
+              <td style="text-align:right">{cl['nb_commandes']}</td>
+              <td style="text-align:right"><span class="badge badge-gold">{cl['points_fidelite']}</span></td>
+            </tr>
+            """
+        if not clients_vip:
+            content += '<tr><td colspan="7" class="empty">Aucun client</td></tr>'
+        content += "</tbody></table></div></div>"
+        return render_page(content, active='statistiques', page_title='Statistiques')
+
+
+    # ==================== EXPORT EXCEL ====================
+    @app.route('/statistiques/export/produits')
+    @admin_required
+    def export_produits_excel():
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill, Alignment
+        except ImportError:
+            flash("openpyxl non disponible", "danger")
+            return redirect('/statistiques')
+
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""SELECT p.sku, p.nom, cat.nom as cat_nom, m.nom as marque_nom,
+                            p.prix_achat, p.prix_vente, p.stock, p.nb_ventes,
+                            (p.prix_vente - p.prix_achat) as marge
+                     FROM produits p
+                     LEFT JOIN categories cat ON p.categorie_id = cat.id
+                     LEFT JOIN marques m ON p.marque_id = m.id
+                     WHERE p.actif=1
+                     ORDER BY p.nb_ventes DESC""")
+        rows = c.fetchall()
+        conn.close()
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Produits"
+
+        # Header
+        headers = ['SKU', 'Produit', 'Catégorie', 'Marque', 'Prix achat', 'Prix vente', 'Marge', 'Stock', 'Vendus']
+        ws.append(headers)
+
+        # Style header
+        header_font = Font(bold=True, color="FFFFFF", size=12)
+        header_fill = PatternFill(start_color="FF6B35", end_color="FF6B35", fill_type="solid")
+        for cell in ws[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center")
+
+        # Data
+        for r in rows:
+            ws.append([
+                r['sku'], r['nom'], r['cat_nom'] or '', r['marque_nom'] or '',
+                r['prix_achat'], r['prix_vente'], r['marge'], r['stock'], r['nb_ventes']
+            ])
+
+        # Ajuster les colonnes
+        widths = [15, 45, 18, 18, 12, 12, 12, 10, 10]
+        for i, w in enumerate(widths, 1):
+            ws.column_dimensions[chr(64 + i)].width = w
+
+        # Sauvegarder en mémoire
+        buffer = io.BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+
+        filename = f"omega_shop_produits_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        return Response(
+            buffer.read(),
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={'Content-Disposition': f'attachment; filename={filename}'}
+        )
+
+    @app.route('/statistiques/export/ventes')
+    @admin_required
+    def export_ventes_excel():
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill, Alignment
+        except ImportError:
+            flash("openpyxl non disponible", "danger")
+            return redirect('/statistiques')
+
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""SELECT numero, date_facture, type_facture, sous_total,
+                            tva, total, montant_paye, mode_paiement, statut
+                     FROM factures ORDER BY date_facture DESC""")
+        rows = c.fetchall()
+        conn.close()
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Ventes"
+
+        headers = ['N°', 'Date', 'Type', 'HT', 'TVA', 'Total TTC', 'Payé', 'Mode', 'Statut']
+        ws.append(headers)
+
+        header_font = Font(bold=True, color="FFFFFF", size=12)
+        header_fill = PatternFill(start_color="FF6B35", end_color="FF6B35", fill_type="solid")
+        for cell in ws[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center")
+
+        for r in rows:
+            ws.append([
+                r['numero'], r['date_facture'][:19], r['type_facture'],
+                r['sous_total'], r['tva'], r['total'],
+                r['montant_paye'], r['mode_paiement'] or '', r['statut']
+            ])
+
+        widths = [18, 22, 10, 14, 12, 14, 14, 18, 12]
+        for i, w in enumerate(widths, 1):
+            ws.column_dimensions[chr(64 + i)].width = w
+
+        buffer = io.BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+
+        filename = f"omega_shop_ventes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        return Response(
+            buffer.read(),
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={'Content-Disposition': f'attachment; filename={filename}'}
+        )
+
+    print("[CAISSE] ✅ Routes caisse + factures + compta + stats enregistrées")

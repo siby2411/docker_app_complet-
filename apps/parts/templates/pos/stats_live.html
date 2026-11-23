@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+{% block title %}Stats POS Live{% endblock %}
+{% block page_title %}📊 Ventes en temps réel{% endblock %}
+
+{% block content %}
+
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="kpi-card">
+            <div class="icon bg-success-grad"><i class="bi bi-cash-stack"></i></div>
+            <div>
+                <div class="kpi-val" id="stat-ca-jour">0</div>
+                <div class="kpi-lbl">CA Aujourd'hui</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="kpi-card">
+            <div class="icon bg-accent-grad"><i class="bi bi-receipt"></i></div>
+            <div>
+                <div class="kpi-val" id="stat-ventes-jour">0</div>
+                <div class="kpi-lbl">Ventes</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="kpi-card">
+            <div class="icon bg-primary-grad"><i class="bi bi-cart"></i></div>
+            <div>
+                <div class="kpi-val" id="stat-panier-moyen">0</div>
+                <div class="kpi-lbl">Panier moyen</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="kpi-card">
+            <div class="icon bg-gold-grad"><i class="bi bi-box-seam"></i></div>
+            <div>
+                <div class="kpi-val" id="stat-pieces-vendues">0</div>
+                <div class="kpi-lbl">Pièces vendues</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-lg-8">
+        <div class="card-premium">
+            <h5>📈 Évolution horaire (dernières 24h)</h5>
+            <canvas id="chartHourly" height="80"></canvas>
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="card-premium">
+            <h5>💳 Modes de paiement</h5>
+            <canvas id="chartModes" height="180"></canvas>
+        </div>
+    </div>
+</div>
+
+<div class="row g-3">
+    <div class="col-lg-6">
+        <div class="card-premium">
+            <h5>🔥 Top 10 pièces du jour</h5>
+            <div id="top-pieces-list">
+                <p class="text-muted">Chargement...</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-6">
+        <div class="card-premium">
+            <h5>👥 Ventes par vendeur</h5>
+            <div id="top-vendeurs-list">
+                <p class="text-muted">Chargement...</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="text-center mt-4">
+    <button class="btn btn-accent" onclick="refreshStats()">
+        <i class="bi bi-arrow-clockwise"></i> Actualiser
+    </button>
+    <span class="text-muted ms-3" id="last-update"></span>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let chartHourly, chartModes;
+
+async function loadStats() {
+    try {
+        const r = await fetch('/pos/api/stats-live');
+        const data = await r.json();
+
+        // KPI
+        document.getElementById('stat-ca-jour').textContent = fmtMoney(data.ca_jour);
+        document.getElementById('stat-ventes-jour').textContent = data.nb_ventes_jour;
+        document.getElementById('stat-panier-moyen').textContent = fmtMoney(data.panier_moyen);
+        document.getElementById('stat-pieces-vendues').textContent = data.pieces_vendues;
+
+        // Chart hourly
+        const hours = data.hourly.map(h => h.heure + 'h');
+        const caHourly = data.hourly.map(h => h.ca);
+
+        if (chartHourly) chartHourly.destroy();
+        chartHourly = new Chart(document.getElementById('chartHourly'), {
+            type: 'line',
+            data: {
+                labels: hours,
+                datasets: [{
+                    label: 'CA (FCFA)',
+                    data: caHourly,
+                    borderColor: '#ff6b35',
+                    backgroundColor: 'rgba(255,107,53,.15)',
+                    fill: true,
+                    tension: .4,
+                    borderWidth: 3,
+                    pointRadius: 4,
+                    pointBackgroundColor: '#ff6b35'
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { display: false } },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: { callback: v => v >= 1000 ? (v/1000).toFixed(0)+'K' : v }
+                    }
+                }
+            }
+        });
+
+        // Chart modes
+        if (chartModes) chartModes.destroy();
+        chartModes = new Chart(document.getElementById('chartModes'), {
+            type: 'doughnut',
+            data: {
+                labels: data.modes.map(m => m.mode),
+                datasets: [{
+                    data: data.modes.map(m => m.ca),
+                    backgroundColor: ['#ff6b35', '#0a2540', '#f4b400', '#06d6a0', '#118ab2']
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { position: 'bottom' } },
+                cutout: '65%'
+            }
+        });
+
+        // Top pièces
+        const topPiecesHtml = data.top_pieces.map((p, i) => `
+            <div class="d-flex justify-content-between align-items-center mb-2 pb-2" style="border-bottom:1px solid #f0f4f8">
+                <div class="d-flex align-items-center gap-2">
+                    <div style="width:24px;height:24px;background:linear-gradient(135deg,#ff6b35,#f4b400);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">${i+1}</div>
+                    <div>
+                        <div style="font-weight:600;font-size:13px">${p.nom.substring(0, 45)}</div>
+                        <div class="text-muted" style="font-size:11px">${p.sku}</div>
+                    </div>
+                </div>
+                <div class="text-end">
+                    <div style="font-weight:800;color:#ff6b35">${p.qte}</div>
+                    <div class="text-muted" style="font-size:11px">${fmtMoney(p.ca)}</div>
+                </div>
+            </div>
+        `).join('');
+        document.getElementById('top-pieces-list').innerHTML = topPiecesHtml || '<p class="text-muted">Aucune vente</p>';
+
+        // Top vendeurs
+        const topVendeursHtml = data.top_vendeurs.map((v, i) => `
+            <div class="d-flex justify-content-between align-items-center mb-2 pb-2" style="border-bottom:1px solid #f0f4f8">
+                <div class="d-flex align-items-center gap-2">
+                    <div style="width:24px;height:24px;background:linear-gradient(135deg,#0a2540,#1a3a5c);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">${i+1}</div>
+                    <div style="font-weight:600;font-size:13px">${v.nom}</div>
+                </div>
+                <div class="text-end">
+                    <div style="font-weight:800;color:#06d6a0">${fmtMoney(v.ca)}</div>
+                    <div class="text-muted" style="font-size:11px">${v.nb} ventes</div>
+                </div>
+            </div>
+        `).join('');
+        document.getElementById('top-vendeurs-list').innerHTML = topVendeursHtml || '<p class="text-muted">Aucune vente</p>';
+
+        // Timestamp
+        document.getElementById('last-update').textContent = 'Dernière mise à jour : ' + new Date().toLocaleTimeString('fr-FR');
+
+    } catch (e) {
+        console.error('Erreur stats:', e);
+    }
+}
+
+function fmtMoney(v) {
+    return Math.round(v || 0).toLocaleString('fr-FR').replace(/\s/g, ' ') + ' FCFA';
+}
+
+function refreshStats() {
+    loadStats();
+}
+
+// Charger au démarrage + auto-refresh toutes les 30 secondes
+loadStats();
+setInterval(loadStats, 30000);
+</script>
+{% endblock %}

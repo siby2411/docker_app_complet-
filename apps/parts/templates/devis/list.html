@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Devis{% endblock %}
+{% block page_title %}📄 Devis{% endblock %}
+{% block content %}
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-file-earmark-text"></i></div><div><div class="kpi-val">{{ kpi.total }}</div><div class="kpi-lbl">Total</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-gold-grad"><i class="bi bi-hourglass"></i></div><div><div class="kpi-val">{{ kpi.en_attente }}</div><div class="kpi-lbl">En attente</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-check"></i></div><div><div class="kpi-val">{{ kpi.acceptes }}</div><div class="kpi-lbl">Acceptés</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-cash-stack"></i></div><div><div class="kpi-val">{{ kpi.montant_total|money_short }}</div><div class="kpi-lbl">En attente FCFA</div></div></div></div>
+</div>
+
+<div class="card-premium">
+  <div class="d-flex justify-content-between mb-3">
+    <h5 class="mb-0">Devis</h5>
+    <a href="{{ url_for('devis_new') }}" class="btn btn-accent"><i class="bi bi-plus-lg"></i> Nouveau devis</a>
+  </div>
+  <form method="GET" class="row g-2 mb-3">
+    <div class="col-md-4"><input type="search" name="q" class="form-control" placeholder="N° ou client…" value="{{ q }}"></div>
+    <div class="col-md-3"><select name="statut" class="form-select" onchange="this.form.submit()">
+      <option value="">Tous statuts</option>
+      {% for s in ['en_attente','accepte','refuse','expire'] %}<option value="{{ s }}" {% if statut==s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select></div>
+  </form>
+  <div class="table-responsive">
+    <table class="table table-omega">
+      <thead><tr><th>N°</th><th>Date</th><th>Client</th><th>Validité</th><th class="text-center">Lignes</th><th class="text-end">Montant</th><th>Statut</th><th></th></tr></thead>
+      <tbody>
+        {% for d in devis %}
+        <tr>
+          <td><a href="{{ url_for('devis_detail', did=d.id) }}"><code style="font-size:11px">{{ d.numero }}</code></a></td>
+          <td><small>{{ d.date_devis|dte }}</small></td>
+          <td>{% if d.client_nom %}<strong>{{ d.client_prenom or '' }} {{ d.client_nom }}</strong>{% else %}<span class="text-muted">—</span>{% endif %}</td>
+          <td><small>{{ d.date_validite|dte }}</small></td>
+          <td class="text-center">{{ d.nb_lignes }}</td>
+          <td class="text-end fw-bold">{{ d.montant_total|money }}</td>
+          <td><span class="badge-statut badge-{{ d.statut }}">{{ d.statut }}</span></td>
+          <td><a href="{{ url_for('devis_detail', did=d.id) }}" class="btn btn-sm btn-light"><i class="bi bi-eye"></i></a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" class="text-center text-muted py-4">Aucun devis</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

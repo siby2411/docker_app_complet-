@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ p.nom[:30] }} · OMEGA PARTS</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+<style>
+body { background:#f5f7fa; padding-bottom:70px; font-family:'Segoe UI',sans-serif; }
+.topnav { background:#0a2540; color:#fff; padding:12px 16px; display:flex; align-items:center; gap:10px; }
+.topnav a { color:#fff; text-decoration:none; }
+.topnav h2 { font-size:15px; margin:0; flex:1; }
+.hero-img { width:100%; height:280px; object-fit:cover; background:#f5f7fa; }
+.placeholder { width:100%; height:280px; background:#f5f7fa; display:flex; align-items:center; justify-content:center; color:#cbd5e1; font-size:80px; }
+.info-block { background:#fff; padding:16px; margin-bottom:10px; }
+.price { font-size:28px; font-weight:900; color:#ff6b35; }
+.spec-row { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #f0f4f8; font-size:13px; }
+.cta-bar { position:fixed; bottom:0; left:0; right:0; background:#fff; padding:12px 16px; display:flex; gap:10px; border-top:1px solid #eee; z-index:100; }
+.btn-cta { flex:1; padding:14px; border-radius:12px; border:none; font-weight:700; text-decoration:none; text-align:center; font-size:14px; }
+.btn-wa { background:#25D366; color:#fff; }
+.btn-call { background:linear-gradient(135deg,#ff6b35,#ff8e5e); color:#fff; }
+</style>
+</head>
+<body>
+<div class="topnav">
+  <a href="{{ url_for('mobile_catalogue') }}"><i class="bi bi-arrow-left"></i></a>
+  <h2>{{ p.nom[:30] }}</h2>
+</div>
+
+{% if photos %}
+<div id="carousel" class="carousel slide" data-bs-ride="carousel">
+  <div class="carousel-inner">
+    {% for ph in photos %}
+    <div class="carousel-item {% if loop.first %}active{% endif %}">
+      <img src="{{ url_for('uploaded_file', subpath='parts', filename=ph.chemin) }}" class="hero-img">
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% elif p.photo_principale %}
+<img src="{{ url_for('uploaded_file', subpath='parts', filename=p.photo_principale) }}" class="hero-img">
+{% else %}
+<div class="placeholder">🔧</div>
+{% endif %}
+
+<div class="info-block">
+  <h5 style="color:#0a2540">{{ p.nom }}</h5>
+  <div class="text-muted small mb-2">SKU: {{ p.sku }}{% if p.code_oem %} · OEM: {{ p.code_oem }}{% endif %}</div>
+  <div class="price">{{ p.prix_vente_detail|money }}</div>
+  <div class="mt-2">
+    {% if p.stock_total > 0 %}
+    <span style="background:#d4f7ec;color:#067a52;padding:4px 12px;border-radius:12px;font-size:12px">✓ En stock ({{ p.stock_total }})</span>
+    {% else %}
+    <span style="background:#fce4e8;color:#b12a4b;padding:4px 12px;border-radius:12px;font-size:12px">Rupture</span>
+    {% endif %}
+  </div>
+</div>
+
+<div class="info-block">
+  <h6 style="color:#0a2540;margin-bottom:12px">Détails</h6>
+  <div class="spec-row"><span>Marque</span><strong>{{ p.marque_piece or '—' }}</strong></div>
+  <div class="spec-row"><span>Qualité</span><strong>{{ p.qualite }}</strong></div>
+  <div class="spec-row"><span>Garantie</span><strong>{{ p.garantie_mois or 0 }} mois</strong></div>
+  <div class="spec-row"><span>Pays origine</span><strong>{{ p.pays_origine or '—' }}</strong></div>
+</div>
+
+{% if compat %}
+<div class="info-block">
+  <h6 style="color:#0a2540">✅ Compatible avec</h6>
+  {% for c in compat %}
+  <div class="d-flex justify-content-between mb-1" style="font-size:13px">
+    <span><strong>{{ c.marque_nom }}</strong> {{ c.modele_nom or '(Tous modèles)' }}</span>
+    <span class="text-muted">{% if c.annee_debut %}{{ c.annee_debut }}{% if c.annee_fin %}-{{ c.annee_fin }}{% endif %}{% endif %}</span>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if p.description %}
+<div class="info-block">
+  <h6 style="color:#0a2540">📝 Description</h6>
+  <p style="font-size:13px">{{ p.description }}</p>
+</div>
+{% endif %}
+
+<div class="cta-bar">
+  <a href="tel:+221338210000" class="btn-cta btn-wa"><i class="bi bi-telephone"></i> Appeler</a>
+  <a href="https://wa.me/221338210000?text=Bonjour,%20je%20suis%20intéressé%20par%20{{ p.nom }}%20({{ p.sku }})" target="_blank" class="btn-cta btn-wa"><i class="bi bi-whatsapp"></i> WhatsApp</a>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

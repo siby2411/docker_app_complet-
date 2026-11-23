@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OMEGA PARTS · Catalogue</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+<style>
+body { background:#f5f7fa; padding-bottom:70px; font-family:'Segoe UI',sans-serif; }
+.hero { background:linear-gradient(135deg,#0a2540,#1a1a2e); color:#fff; padding:40px 20px 60px; border-radius:0 0 30px 30px; }
+.hero h1 { font-size:26px; font-weight:900; letter-spacing:1px; }
+.hero p { color:#b8c4d4; font-size:13px; }
+.search-box { margin-top:-30px; padding:0 16px; }
+.search-box input { border-radius:24px; padding:14px 20px; border:none; box-shadow:0 6px 20px rgba(0,0,0,.1); }
+.section-title { font-size:15px; font-weight:700; color:#0a2540; margin:24px 16px 12px; display:flex; justify-content:space-between; align-items:center; }
+.category-chip { display:inline-block; padding:8px 14px; background:#fff; border-radius:20px; margin:4px; font-size:12px; text-decoration:none; color:#0a2540; border:1px solid #e0e6ed; }
+.piece-card { background:#fff; border-radius:14px; overflow:hidden; margin:0 16px 12px; box-shadow:0 2px 12px rgba(10,37,64,.06); display:flex; }
+.piece-card img, .piece-card .placeholder { width:110px; height:110px; flex-shrink:0; object-fit:cover; }
+.piece-card .placeholder { background:#f5f7fa; display:flex; align-items:center; justify-content:center; color:#cbd5e1; font-size:32px; }
+.piece-card .info { padding:12px; flex:1; }
+.price { font-size:16px; font-weight:800; color:#ff6b35; }
+.bottom-nav { position:fixed; bottom:0; left:0; right:0; background:#fff; display:flex; justify-content:space-around; padding:10px 0; border-top:1px solid #eee; z-index:100; }
+.bottom-nav a { color:#8896aa; text-decoration:none; font-size:11px; text-align:center; flex:1; }
+.bottom-nav a.active, .bottom-nav a:hover { color:#ff6b35; }
+.bottom-nav i { font-size:22px; display:block; margin-bottom:2px; }
+</style>
+</head>
+<body>
+<div class="hero">
+  <h1>🔧 OMEGA PARTS</h1>
+  <p>Pièces Détachées Automobile — CEDEAO</p>
+  <div class="d-flex gap-3 mt-3 flex-wrap">
+    <span style="background:rgba(255,255,255,.15);padding:4px 12px;border-radius:20px;font-size:11px">📦 {{ kpi.total_pieces }} pièces</span>
+    <span style="background:rgba(255,255,255,.15);padding:4px 12px;border-radius:20px;font-size:11px">📂 {{ kpi.total_categories }} catégories</span>
+    <span style="background:rgba(255,255,255,.15);padding:4px 12px;border-radius:20px;font-size:11px">🏷️ {{ kpi.total_marques }} marques</span>
+  </div>
+</div>
+
+<div class="search-box">
+  <form action="{{ url_for('mobile_catalogue') }}" method="GET">
+    <input type="search" name="q" placeholder="Rechercher une pièce..." class="form-control" style="padding-left:44px" autofocus>
+  </form>
+</div>
+
+<div class="section-title">📂 Catégories</div>
+<div style="padding:0 16px">
+  {% for c in categories %}
+  <a href="{{ url_for('mobile_catalogue') }}?categorie_id={{ c.id }}" class="category-chip">{{ c.icone }} {{ c.nom }} ({{ c.nb }})</a>
+  {% endfor %}
+</div>
+
+<div class="section-title">🏷️ Marques</div>
+<div style="padding:0 16px">
+  {% for m in marques %}
+  <a href="{{ url_for('mobile_catalogue') }}?marque={{ m.nom }}" class="category-chip">{{ m.nom }} ({{ m.nb }})</a>
+  {% endfor %}
+</div>
+
+<div class="section-title">🆕 Nouveautés</div>
+{% for p in top_pieces %}
+<a href="{{ url_for('mobile_piece', pid=p.id) }}" class="text-decoration-none">
+  <div class="piece-card">
+    {% if p.photo_principale %}
+    <img src="{{ url_for('uploaded_file', subpath='parts', filename=p.photo_principale) }}">
+    {% else %}
+    <div class="placeholder">🔧</div>
+    {% endif %}
+    <div class="info">
+      <div style="font-weight:700;color:#0a2540;font-size:13px">{{ p.nom[:50] }}</div>
+      <div class="text-muted" style="font-size:11px">{{ p.sku }}{% if p.code_oem %} · OEM: {{ p.code_oem }}{% endif %}</div>
+      {% if p.marque_piece %}<div class="text-muted" style="font-size:11px">{{ p.marque_piece }}</div>{% endif %}
+      <div class="price mt-1">{{ p.prix_vente_detail|money }}</div>
+    </div>
+  </div>
+</a>
+{% endfor %}
+
+<nav class="bottom-nav">
+  <a href="{{ url_for('mobile_home') }}" class="active"><i class="bi bi-house-door-fill"></i>Accueil</a>
+  <a href="{{ url_for('mobile_catalogue') }}"><i class="bi bi-grid"></i>Catalogue</a>
+</nav>
+</body>
+</html>

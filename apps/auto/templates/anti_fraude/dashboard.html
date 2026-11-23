@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Anti-fraude{% endblock %}
+{% block page_title %}🛡️ Tableau anti-fraude{% endblock %}
+{% block content %}
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-danger-grad"><i class="bi bi-x-octagon"></i></div><div><div class="kpi-val">{{ kpi.expires }}</div><div class="kpi-lbl">Papiers expirés</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-gold-grad"><i class="bi bi-copy"></i></div><div><div class="kpi-val">{{ kpi.doublons_immat }}</div><div class="kpi-lbl">Doublons immat.</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-shield-exclamation"></i></div><div><div class="kpi-val">{{ kpi.doublons_vin }}</div><div class="kpi-lbl">Doublons VIN</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-info-grad"><i class="bi bi-file-earmark-x"></i></div><div><div class="kpi-val">{{ kpi.locs_suspectes }}</div><div class="kpi-lbl">Locations suspectes</div></div></div></div>
+</div>
+
+<div class="card-premium mb-3">
+  <h5>🔍 Vérifier un QR code</h5>
+  <a href="{{ url_for('papier_verifier') }}" class="btn btn-accent"><i class="bi bi-shield-check"></i> Vérifier manuellement</a>
+  <a href="{{ url_for('papier_scan') }}" class="btn btn-primary-omega"><i class="bi bi-qr-code-scan"></i> Scanner avec caméra</a>
+</div>
+
+<div class="card-premium mb-3" style="border-left:4px solid #ef476f">
+  <h5 class="text-danger">❌ Papiers expirés ({{ expires|length }})</h5>
+  <table class="table table-omega table-sm mb-0">
+    <thead><tr><th>Véhicule</th><th>Type</th><th>Numéro</th><th>Expiration</th><th></th></tr></thead>
+    <tbody>
+      {% for p in expires %}
+      <tr>
+        <td>{{ p.veh_code }} — {{ p.immatriculation }}</td>
+        <td>{{ p.type }}</td>
+        <td>{{ p.numero or '—' }}</td>
+        <td class="text-danger">{{ p.date_expiration|dte }}</td>
+        <td><a href="{{ url_for('papier_edit', pid=p.id) }}" class="btn btn-sm btn-light">Renouveler</a></td>
+      </tr>
+      {% else %}<tr><td colspan="5" class="text-muted text-center py-2">Aucun</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if doublons_immat %}
+<div class="card-premium mb-3" style="border-left:4px solid #f4b400">
+  <h5 class="text-warning">⚠️ Doublons d'immatriculation</h5>
+  <table class="table table-omega table-sm mb-0">
+    <thead><tr><th>Immatriculation</th><th>Nb occurrences</th></tr></thead>
+    <tbody>
+      {% for d in doublons_immat %}
+      <tr><td>{{ d.immatriculation }}</td><td>{{ d.nb }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if doublons_vin %}
+<div class="card-premium mb-3" style="border-left:4px solid #f4b400">
+  <h5 class="text-warning">⚠️ Doublons VIN/Châssis</h5>
+  <table class="table table-omega table-sm mb-0">
+    <thead><tr><th>VIN</th><th>Nb occurrences</th></tr></thead>
+    <tbody>
+      {% for d in doublons_vin %}
+      <tr><td>{{ d.vin_chassis }}</td><td>{{ d.nb }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<div class="card-premium" style="border-left:4px solid #118ab2">
+  <h5>📋 Locations sans contrat/notes ({{ locs_suspectes|length }})</h5>
+  <table class="table table-omega table-sm mb-0">
+    <thead><tr><th>Numéro</th><th>Client</th><th>Véhicule</th><th>Période</th></tr></thead>
+    <tbody>
+      {% for l in locs_suspectes %}
+      <tr>
+        <td><a href="{{ url_for('location_detail', loc_id=l.id) }}">{{ l.numero }}</a></td>
+        <td>{{ l.client_prenom or '' }} {{ l.client_nom or '—' }}</td>
+        <td>{{ l.veh_code }}</td>
+        <td>{{ l.date_debut|dte }} → {{ l.date_fin_prevue|dte }}</td>
+      </tr>
+      {% else %}<tr><td colspan="4" class="text-muted text-center py-2">Aucune</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

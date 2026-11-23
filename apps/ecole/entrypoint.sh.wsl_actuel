@@ -1,0 +1,68 @@
+#!/bin/bash
+set -e
+
+echo "🚀 [ENTRYPOINT] Démarrage du conteneur ecole..."
+mkdir -p /app/data
+
+echo "🚀 [ENTRYPOINT] Initialisation de la base..."
+python -c "
+import sys
+sys.path.insert(0, '/app')
+try:
+    from init_db import init_db
+    init_db()
+    print('[INIT] ✅ Base de données prête')
+except Exception as e:
+    import traceback
+    traceback.print_exc()
+    print(f'[INIT] ❌ {e}')
+    sys.exit(1)
+"
+
+if [ -f /app/init_db_v2.py ]; then
+    echo "🚀 [ENTRYPOINT] Migration v2..."
+    python -c "
+import sys
+sys.path.insert(0, '/app')
+try:
+    from init_db_v2 import migrate
+    migrate()
+    print('[MIGRATE v2] ✅ Migration terminée')
+except Exception as e:
+    import traceback
+    traceback.print_exc()
+    print(f'[MIGRATE v2] ⚠️ {e} (on continue)')
+"
+fi
+
+if [ -f /app/init_db_v3.py ]; then
+    echo "🚀 [ENTRYPOINT] Migration v3..."
+    python -c "
+import sys
+sys.path.insert(0, '/app')
+try:
+    from init_db_v3 import migrate as migrate_v3
+    migrate_v3()
+    print('[MIGRATE v3] ✅ Migration terminée')
+except Exception as e:
+    print(f'[MIGRATE v3] ⚠️ {e} (on continue)')
+" || true
+fi
+
+WORKERS=${GUNICORN_WORKERS:-2}
+TIMEOUT=${GUNICORN_TIMEOUT:-120}
+
+echo "🚀 [ENTRYPOINT] Lancement de Gunicorn (${WORKERS} workers)..."
+exec gunicorn \
+    --bind 0.0.0.0:8000 \
+    --workers "$WORKERS" \
+    --worker-class sync \
+    --timeout "$TIMEOUT" \
+    --graceful-timeout 30 \
+    --keep-alive 5 \
+    --max-requests 1000 \
+    --max-requests-jitter 100 \
+    --access-logfile - \
+    --error-logfile - \
+    --log-level info \
+    "main:app"

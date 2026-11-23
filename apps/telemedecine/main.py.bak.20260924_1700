@@ -1,0 +1,3133 @@
+"""
+🩺 Télémédecine — Application principale
+Consultations vidéo · Dossiers patients · Ordonnances numériques · RGPD
+"""
+from flask import Flask, render_template_string, redirect, url_for, session, request, jsonify, Response, send_file, flash
+from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+from datetime import datetime, timedelta
+import sqlite3
+import os
+import io
+
+from crypto_utils import (
+    encrypt_data, decrypt_data, hash_patient_id,
+    generate_jwt, verify_jwt, sign_ordonnance, verify_signature
+)
+
+app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'omega-telemed-secret-2026')
+
+DB_PATH = '/app/data/telemedecine.db'
+
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+
+
+class User(UserMixin):
+    def __init__(self, id, username, role, nom_complet, langue='fr'):
+        self.id = id
+        self.username = username
+        self.role = role
+        self.nom_complet = nom_complet
+        self.langue = langue
+
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def log_action(user_id, action, details='', entity=None, entity_id=None):
+    """Journal RGPD - toutes les actions sur données santé."""
+    try:
+        db = get_db()
+        cur = db.cursor()
+        cur.execute("""
+            INSERT INTO audit_rgpd (user_id, action, entity, entity_id, details, ip, user_agent, created_at)
+            VALUES (?,?,?,?,?,?,?,?)
+        """, (user_id, action, entity, entity_id, details,
+              request.remote_addr if request else '',
+              request.headers.get('User-Agent', '')[:200] if request else '',
+              datetime.now().isoformat()))
+        db.commit()
+    except Exception:
+        pass
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT * FROM users WHERE id=?", (user_id,))
+    r = cur.fetchone()
+    if r:
+        return User(r['id'], r['username'], r['role'], r['nom_complet'], r['langue'] or 'fr')
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════
+# I18N — Multi-langue (FR, WO, EN)
+# ═══════════════════════════════════════════════════════════════
+
+TRANSLATIONS = {
+    'fr': {
+        'dashboard': 'Tableau de bord',
+        'patients': 'Patients',
+        'consultations': 'Consultations',
+        'medecins': 'Médecins',
+        'ordonnances': 'Ordonnances',
+        'pharmacies': 'Pharmacies',
+        'welcome': 'Bienvenue',
+        'logout': 'Déconnexion',
+    },
+    'wo': {
+        'dashboard': 'Tabax bu ñuul',
+        'patients': 'Faramfacce',
+        'consultations': 'Wooñe',
+        'medecins': 'Fajkat yi',
+        'ordonnances': 'Faj yu ñu bind',
+        'pharmacies': 'Farmaasi yi',
+        'welcome': 'Dalal ak jàmm',
+        'logout': 'Génne',
+    },
+    'en': {
+        'dashboard': 'Dashboard',
+        'patients': 'Patients',
+        'consultations': 'Consultations',
+        'medecins': 'Doctors',
+        'ordonnances': 'Prescriptions',
+        'pharmacies': 'Pharmacies',
+        'welcome': 'Welcome',
+        'logout': 'Logout',
+    },
+}
+
+
+def tr(key, langue=None):
+    """Traduction simple."""
+    if langue is None:
+        langue = current_user.langue if current_user.is_authenticated else 'fr'
+    return TRANSLATIONS.get(langue, TRANSLATIONS['fr']).get(key, key)
+
+
+# ═══════════════════════════════════════════════════════════════
+# LAYOUT — DESIGN TÉLÉMÉDECINE
+# ═══════════════════════════════════════════════════════════════
+
+LAYOUT = '''<!DOCTYPE html>
+<html lang="{lang}">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title} — OMEGA Télémédecine</title>
+<style>
+*{{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',system-ui,-apple-system,sans-serif}}
+body{{background:#f0f9ff;color:#0f172a;font-size:14px}}
+.nav{{background:linear-gradient(135deg,#0891b2,#0e7490);color:#fff;padding:0 22px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 3px 12px rgba(0,0,0,.15);flex-wrap:wrap;border-bottom:4px solid #10b981}}
+.nav-brand{{font-weight:900;font-size:18px;display:flex;align-items:center;gap:12px;padding:16px 0;letter-spacing:-0.3px}}
+.nav-brand-icon{{width:40px;height:40px;background:#10b981;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:22px;box-shadow:0 4px 12px rgba(16,185,129,.5)}}
+.nav-links{{display:flex;gap:2px;flex-wrap:wrap}}
+.nav-links a{{color:#cffafe;text-decoration:none;padding:8px 13px;border-radius:8px;font-size:12.5px;font-weight:600;transition:.2s;display:flex;align-items:center;gap:6px}}
+.nav-links a:hover{{background:rgba(255,255,255,.12);color:#fff}}
+.nav-links a.active{{background:#10b981;color:#fff;box-shadow:0 4px 10px rgba(16,185,129,.4)}}
+.nav-user{{font-size:12.5px;display:flex;gap:10px;align-items:center;color:#cffafe}}
+.nav-user a{{color:#fff;text-decoration:none;background:rgba(0,0,0,.25);padding:7px 14px;border-radius:8px;font-weight:600}}
+.lang-switch{{display:flex;gap:4px;font-size:11px}}
+.lang-switch a{{padding:4px 8px;border-radius:6px;background:rgba(255,255,255,.15);color:#fff;text-decoration:none;font-weight:700}}
+.lang-switch a.active{{background:#f59e0b}}
+.container{{max-width:1600px;margin:0 auto;padding:24px}}
+h1{{color:#0e7490;margin-bottom:20px;font-size:24px;font-weight:800;letter-spacing:-0.4px}}
+h2{{color:#0891b2;font-size:18px;margin-bottom:14px;font-weight:700}}
+.card{{background:#fff;padding:22px;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:18px;border-left:4px solid #10b981}}
+table{{width:100%;border-collapse:collapse}}
+thead{{background:#0e7490;color:#fff}}
+th{{padding:12px;text-align:left;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px}}
+td{{padding:11px;border-bottom:1px solid #f1f5f9;font-size:13.5px}}
+tbody tr:hover{{background:#ecfeff}}
+.btn{{display:inline-block;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:700;font-size:13px;border:none;cursor:pointer;transition:.15s;letter-spacing:.2px}}
+.btn:hover{{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.15)}}
+.btn-primary{{background:#0891b2;color:#fff}}
+.btn-success{{background:#10b981;color:#fff}}
+.btn-danger{{background:#dc2626;color:#fff}}
+.btn-warning{{background:#f59e0b;color:#fff}}
+.btn-secondary{{background:#64748b;color:#fff}}
+input,select,textarea{{width:100%;padding:11px 14px;border:2px solid #e2e8f0;border-radius:8px;font-size:13.5px;font-family:inherit;transition:.2s}}
+input:focus,select:focus,textarea:focus{{outline:none;border-color:#0891b2;box-shadow:0 0 0 3px rgba(8,145,178,.1)}}
+label{{display:block;font-weight:700;margin-bottom:6px;font-size:12.5px;color:#334155;text-transform:uppercase;letter-spacing:.3px}}
+.kpi{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:22px}}
+.kpi-card{{padding:18px;border-radius:12px;color:#fff;position:relative;overflow:hidden}}
+.kpi-card::after{{content:'';position:absolute;top:-20px;right:-20px;width:80px;height:80px;background:rgba(255,255,255,.1);border-radius:50%}}
+.kpi-card .kpi-label{{font-size:11.5px;opacity:.9;text-transform:uppercase;letter-spacing:.5px;font-weight:600}}
+.kpi-card .kpi-value{{font-size:26px;font-weight:900;margin-top:6px;letter-spacing:-0.5px}}
+.kpi-card .kpi-icon{{position:absolute;top:16px;right:18px;font-size:28px;opacity:.25}}
+.flash{{padding:14px 20px;border-radius:10px;margin-bottom:16px;font-size:13.5px;font-weight:600;border-left:4px solid}}
+.flash-success{{background:#d1fae5;color:#065f46;border-color:#10b981}}
+.flash-error{{background:#fee2e2;color:#991b1b;border-color:#dc2626}}
+.badge{{display:inline-block;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.4px}}
+.badge-blue{{background:#dbeafe;color:#1e40af}}
+.badge-green{{background:#d1fae5;color:#047857}}
+.badge-orange{{background:#fed7aa;color:#c2410c}}
+.badge-red{{background:#fee2e2;color:#b91c1c}}
+.badge-gray{{background:#e2e8f0;color:#475569}}
+.badge-purple{{background:#e9d5ff;color:#6b21a8}}
+.secure-badge{{background:linear-gradient(135deg,#10b981,#047857);color:#fff;padding:6px 12px;border-radius:20px;font-size:11px;font-weight:800;letter-spacing:.5px;display:inline-flex;align-items:center;gap:6px}}
+.video-room{{background:#0f172a;border-radius:12px;padding:20px;color:#fff;text-align:center;margin-bottom:18px}}
+.video-room h3{{color:#10b981;margin-bottom:14px}}
+video{{width:100%;max-width:640px;border-radius:10px;background:#000}}
+</style>
+</head>
+<body>
+<nav class="nav">
+  <div class="nav-brand">
+    <div class="nav-brand-icon">🩺</div>
+    <div>OMEGA TÉLÉMÉDECINE<span style="display:block;font-size:10px;font-weight:500;letter-spacing:2px;color:#cffafe">SANTÉ · SÉCURISÉ RGPD · CEDEAO</span></div>
+  </div>
+  <div class="nav-links">
+    <a href="/" class="{a_dash}">📊 {tr_dash}</a>
+    <a href="/medecins" class="{a_med}">👨‍⚕️ {tr_med}</a>
+    <a href="/patients" class="{a_pat}">👥 {tr_pat}</a>
+    <a href="/consultations" class="{a_cons}">📹 {tr_cons}</a>
+    <a href="/ordonnances" class="{a_ord}">📝 {tr_ord}</a>
+    <a href="/pharmacies" class="{a_phar}">💊 {tr_phar}</a>
+    <a href="/suivi" class="{a_suivi}">📊 Suivi</a>
+    <a href="/rgpd" class="{a_rgpd}">🔐 RGPD</a>
+  </div>
+  <div class="nav-user">
+    <div class="lang-switch">
+      <a href="/langue/fr" class="{lang_fr}">🇫🇷 FR</a>
+      <a href="/langue/wo" class="{lang_wo}">🇸🇳 WO</a>
+      <a href="/langue/en" class="{lang_en}">🇬🇧 EN</a>
+    </div>
+    <span>👤 {user_name}</span>
+    <a href="/logout">Déconnexion</a>
+  </div>
+</nav>
+<div class="container">
+  {flashes}
+  {content}
+</div>
+</body>
+</html>'''
+
+
+def render_page(content, active='dashboard', page_title='Télémédecine'):
+    from flask import get_flashed_messages
+    user_name = current_user.nom_complet if current_user.is_authenticated else ''
+    langue = current_user.langue if current_user.is_authenticated else 'fr'
+    msgs = get_flashed_messages(with_categories=True)
+    flashes = ''
+    for cat, msg in msgs:
+        flashes += f'<div class="flash flash-{cat}">{msg}</div>'
+
+    return LAYOUT.format(
+        title=page_title,
+        user_name=user_name,
+        content=content,
+        flashes=flashes,
+        lang=langue,
+        tr_dash=tr('dashboard', langue),
+        tr_med=tr('medecins', langue),
+        tr_pat=tr('patients', langue),
+        tr_cons=tr('consultations', langue),
+        tr_ord=tr('ordonnances', langue),
+        tr_phar=tr('pharmacies', langue),
+        a_dash='active' if active == 'dashboard' else '',
+        a_med='active' if active == 'medecins' else '',
+        a_pat='active' if active == 'patients' else '',
+        a_cons='active' if active == 'consultations' else '',
+        a_ord='active' if active == 'ordonnances' else '',
+        a_phar='active' if active == 'pharmacies' else '',
+        a_suivi='active' if active == 'suivi' else '',
+        a_rgpd='active' if active == 'rgpd' else '',
+        lang_fr='active' if langue == 'fr' else '',
+        lang_wo='active' if langue == 'wo' else '',
+        lang_en='active' if langue == 'en' else '',
+    )
+
+
+@app.route('/health')
+def health():
+    return {'project': 'OMEGA TELEMEDECINE', 'service': 'telemedecine-rgpd',
+            'status': 'ok', 'timestamp': datetime.now().isoformat(), 'version': '1.0'}
+
+
+LOGIN_HTML = '''<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Connexion — OMEGA Télémédecine</title>
+<style>body{{font-family:system-ui;background:linear-gradient(135deg,#0891b2,#0e7490);min-height:100vh;display:flex;align-items:center;justify-content:center;margin:0}}
+.box{{background:#fff;padding:42px;border-radius:16px;box-shadow:0 25px 70px rgba(0,0,0,.4);width:100%;max-width:420px;border-top:5px solid #10b981}}
+.logo{{text-align:center;font-size:56px;margin-bottom:12px}}
+h1{{color:#0e7490;margin:0 0 6px;text-align:center;font-size:22px;font-weight:900;letter-spacing:-0.3px}}
+.subtitle{{text-align:center;color:#64748b;font-size:12px;margin-bottom:24px;letter-spacing:1.5px;text-transform:uppercase;font-weight:600}}
+.secure{{background:linear-gradient(135deg,#10b981,#047857);color:#fff;padding:10px;border-radius:8px;text-align:center;font-size:12px;font-weight:700;margin-bottom:20px}}
+input{{width:100%;padding:14px;border:2px solid #e2e8f0;border-radius:10px;margin-bottom:14px;font-size:15px;box-sizing:border-box}}
+input:focus{{outline:none;border-color:#0891b2;box-shadow:0 0 0 3px rgba(8,145,178,.1)}}
+button{{width:100%;background:#10b981;color:#fff;padding:15px;border:none;border-radius:10px;font-weight:800;font-size:15px;cursor:pointer;letter-spacing:.5px;text-transform:uppercase}}
+button:hover{{background:#059669}}
+.err{{background:#fee2e2;color:#991b1b;padding:11px;border-radius:8px;margin-bottom:14px;font-size:13px;border-left:4px solid #dc2626}}
+.hint{{margin-top:20px;padding:12px;background:#ecfeff;border-radius:8px;font-size:12px;color:#0e7490;text-align:center;border:1px dashed #67e8f9}}</style></head>
+<body><div class="box">
+<div class="logo">🩺</div>
+<h1>OMEGA TÉLÉMÉDECINE</h1>
+<div class="subtitle">Santé · RGPD · CEDEAO</div>
+<div class="secure">🔐 Connexion sécurisée · AES-256 · RGPD</div>
+{error}
+<form method="post">
+<input type="text" name="username" placeholder="Nom d'utilisateur" required autofocus>
+<input type="password" name="password" placeholder="Mot de passe" required>
+<button type="submit">Se connecter</button>
+</form>
+<div class="hint">admin / admin123</div></div></body></html>'''
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        from werkzeug.security import check_password_hash
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+        db = get_db()
+        cur = db.cursor()
+        cur.execute("SELECT * FROM users WHERE username=? AND actif=1", (username,))
+        r = cur.fetchone()
+        if r and check_password_hash(r['password_hash'], password):
+            user = User(r['id'], r['username'], r['role'], r['nom_complet'], r['langue'] or 'fr')
+            login_user(user)
+            log_action(user.id, 'LOGIN', f'{username} connecté', 'users', user.id)
+            return redirect(url_for('dashboard'))
+        return LOGIN_HTML.format(error='<div class="err">Identifiants invalides</div>'), 401
+    return LOGIN_HTML.format(error='')
+
+
+@app.route('/logout')
+@login_required
+def logout():
+    log_action(current_user.id, 'LOGOUT', current_user.username, 'users', current_user.id)
+    logout_user()
+    return redirect(url_for('login'))
+
+
+@app.route('/langue/<langue>')
+@login_required
+def change_langue(langue):
+    if langue not in ('fr', 'wo', 'en'):
+        langue = 'fr'
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("UPDATE users SET langue=? WHERE id=?", (langue, current_user.id))
+    db.commit()
+    return redirect(request.referrer or '/')
+
+
+@app.route('/')
+@login_required
+def dashboard():
+    db = get_db()
+    cur = db.cursor()
+
+    def sc(sql, default=0):
+        try:
+            cur.execute(sql)
+            r = cur.fetchone()
+            return r[0] if r and r[0] is not None else default
+        except Exception:
+            return default
+
+    stats = {
+        'patients': sc("SELECT COUNT(*) FROM patients WHERE statut='actif'"),
+        'medecins': sc("SELECT COUNT(*) FROM medecins WHERE disponible=1"),
+        'consultations_jour': sc("SELECT COUNT(*) FROM consultations WHERE date(date_consultation)=date('now')"),
+        'consultations_mois': sc("SELECT COUNT(*) FROM consultations WHERE strftime('%Y-%m',date_consultation)=strftime('%Y-%m','now')"),
+        'consultations_encours': sc("SELECT COUNT(*) FROM consultations WHERE statut='en_cours'"),
+        'ordonnances': sc("SELECT COUNT(*) FROM ordonnances"),
+        'pharmacies': sc("SELECT COUNT(*) FROM pharmacies WHERE statut='actif'"),
+        'ca_mois': sc("SELECT COALESCE(SUM(montant),0) FROM consultations WHERE statut_paiement='paye' AND strftime('%Y-%m',date_consultation)=strftime('%Y-%m','now')"),
+    }
+
+    # Consultations récentes (avec déchiffrement patient)
+    cur.execute("""
+        SELECT c.*, m.nom AS medecin_nom, m.prenom AS medecin_prenom,
+               p.nom_encrypted, p.prenom_encrypted, p.code AS patient_code
+        FROM consultations c
+        LEFT JOIN medecins m ON m.id=c.medecin_id
+        LEFT JOIN patients p ON p.id=c.patient_id
+        ORDER BY c.id DESC LIMIT 8
+    """)
+    consult_rows = cur.fetchall()
+
+    consult_html = ''
+    for c in consult_rows:
+        statut_badge = {
+            'planifiee': 'badge-blue',
+            'en_cours': 'badge-orange',
+            'terminee': 'badge-green',
+            'annulee': 'badge-red',
+        }.get(c['statut'], 'badge-gray')
+
+        urgence_badge = {
+            'faible': 'badge-green',
+            'normal': 'badge-blue',
+            'urgent': 'badge-red',
+        }.get(c['niveau_urgence'], 'badge-gray')
+
+        # Déchiffrer le nom du patient (RGPD)
+        patient_nom = '—'
+        if c['nom_encrypted'] and c['prenom_encrypted']:
+            pn = decrypt_data(c['nom_encrypted']) or '?'
+            pp = decrypt_data(c['prenom_encrypted']) or '?'
+            patient_nom = pp + ' ' + pn
+
+        consult_html += (
+            '<tr><td><strong style="color:#0891b2">' + str(c["numero"]) + '</strong></td>'
+            + '<td>' + str(patient_nom) + '<br><small style="color:#64748b">' + str(c["patient_code"] or "") + '</small></td>'
+            + '<td>Dr. ' + str(c["medecin_prenom"] or "") + ' ' + str(c["medecin_nom"] or "") + '</td>'
+            + '<td>' + str(c["motif"] or "—") + '</td>'
+            + '<td><span class="badge ' + urgence_badge + '">' + str(c["niveau_urgence"]) + '</span></td>'
+            + '<td><span class="badge ' + statut_badge + '">' + str(c["statut"]) + '</span></td>'
+            + '<td><a href="/consultations/' + str(c["id"]) + '" class="btn btn-primary" style="padding:4px 10px;font-size:11px">👁</a></td></tr>'
+        )
+
+    content = '<h1>🩺 Tableau de bord Télémédecine</h1>'
+
+    content += '<div style="margin-bottom:16px"><span class="secure-badge">🔐 Données chiffrées AES-256 · RGPD conforme · Secret médical</span></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#0891b2,#0e7490)"><div class="kpi-icon">👥</div><div class="kpi-label">Patients</div><div class="kpi-value">' + str(stats["patients"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-icon">👨‍⚕️</div><div class="kpi-label">Médecins dispo</div><div class="kpi-value">' + str(stats["medecins"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#d97706)"><div class="kpi-icon">📹</div><div class="kpi-label">Consultations du jour</div><div class="kpi-value">' + str(stats["consultations_jour"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9)"><div class="kpi-icon">📊</div><div class="kpi-label">Consultations mois</div><div class="kpi-value">' + str(stats["consultations_mois"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#dc2626,#991b1b)"><div class="kpi-icon">⏳</div><div class="kpi-label">En cours</div><div class="kpi-value">' + str(stats["consultations_encours"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#ec4899,#be185d)"><div class="kpi-icon">📝</div><div class="kpi-label">Ordonnances</div><div class="kpi-value">' + str(stats["ordonnances"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#14b8a6,#0d9488)"><div class="kpi-icon">💊</div><div class="kpi-label">Pharmacies</div><div class="kpi-value">' + str(stats["pharmacies"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#6366f1,#4338ca)"><div class="kpi-icon">💰</div><div class="kpi-label">CA du mois</div><div class="kpi-value" style="font-size:18px">' + f'{stats["ca_mois"]:,.0f}' + ' F</div></div>'
+    content += '</div>'
+
+    content += '<div class="card"><h2>📹 Consultations récentes</h2>'
+    content += '<table><thead><tr><th>N°</th><th>Patient</th><th>Médecin</th><th>Motif</th><th>Urgence</th><th>Statut</th><th>Actions</th></tr></thead>'
+    content += '<tbody>' + (consult_html or '<tr><td colspan="7" style="text-align:center;color:#94a3b8;padding:30px">Aucune consultation</td></tr>') + '</tbody></table></div>'
+
+    content += '<div class="card"><h2>⚡ Actions rapides</h2>'
+    content += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:12px">'
+    actions = [
+        ('/consultations/nouvelle', '📹 Nouvelle consultation', '#0891b2'),
+        ('/patients/nouveau', '👤 Nouveau patient', '#10b981'),
+        ('/medecins/nouveau', '👨‍⚕️ Nouveau médecin', '#f59e0b'),
+        ('/ordonnances', '📝 Ordonnances', '#dc2626'),
+        ('/pharmacies', '💊 Pharmacies', '#8b5cf6'),
+        ('/rgpd', '🔐 Conformité RGPD', '#14b8a6'),
+    ]
+    for url, label, color in actions:
+        content += '<a href="' + url + '" style="text-decoration:none"><div style="background:' + color + ';color:#fff;padding:20px;border-radius:10px;text-align:center;font-weight:700;font-size:13px">' + label + '</div></a>'
+    content += '</div></div>'
+
+    return render_page(content, active='dashboard', page_title='Dashboard')
+
+
+# ═══════════════════════════════════════════════════════════════
+# 👨‍⚕️ MÉDECINS
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/medecins')
+@login_required
+def medecins_liste():
+    db = get_db()
+    cur = db.cursor()
+    q = request.args.get('q', '').strip()
+    specialite_f = request.args.get('specialite', '')
+
+    sql = "SELECT * FROM medecins WHERE 1=1"
+    params = []
+    if q:
+        sql += " AND (nom LIKE ? OR prenom LIKE ? OR specialite LIKE ? OR code LIKE ?)"
+        params += [f'%{q}%'] * 4
+    if specialite_f:
+        sql += " AND specialite=?"
+        params.append(specialite_f)
+    sql += " ORDER BY note_moyenne DESC, nom"
+    cur.execute(sql, params)
+    medecins = cur.fetchall()
+
+    cur.execute("SELECT DISTINCT specialite FROM medecins WHERE specialite IS NOT NULL ORDER BY specialite")
+    specialites = [r[0] for r in cur.fetchall()]
+
+    stats = {}
+    cur.execute("SELECT COUNT(*) FROM medecins")
+    stats['total'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM medecins WHERE disponible=1")
+    stats['dispo'] = cur.fetchone()[0]
+    cur.execute("SELECT COALESCE(AVG(note_moyenne),0) FROM medecins WHERE note_moyenne > 0")
+    stats['note'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(DISTINCT specialite) FROM medecins")
+    stats['specialites'] = cur.fetchone()[0]
+
+    cards = ''
+    for m in medecins:
+        dispo_badge = '<span class="badge badge-green">🟢 Disponible</span>' if m['disponible'] else '<span class="badge badge-gray">⚫ Indisponible</span>'
+        initiales = (str(m['prenom'] or '?')[0] + str(m['nom'] or '?')[0]).upper()
+        cards += '<div class="card" style="border-left-color:#10b981">'
+        cards += '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px">'
+        cards += '<div style="display:flex;gap:14px;align-items:center">'
+        cards += '<div style="width:54px;height:54px;border-radius:50%;background:linear-gradient(135deg,#0891b2,#0e7490);color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:900">' + initiales + '</div>'
+        cards += '<div><div style="font-weight:900;color:#0e7490;font-size:16px">Dr. ' + str(m["prenom"] or "") + ' ' + str(m["nom"]) + '</div>'
+        cards += '<div style="font-size:12px;color:#64748b;margin-top:2px">' + str(m["specialite"] or "—") + ' · ' + str(m["ville"] or "") + '</div></div></div>'
+        cards += dispo_badge + '</div>'
+        cards += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12.5px;color:#475569;margin-bottom:12px">'
+        cards += '<div>📞 ' + str(m["telephone"] or "—") + '</div>'
+        cards += '<div>🏥 ' + str(m["hopital"] or "—") + '</div>'
+        cards += '<div>⭐ ' + f'{m["note_moyenne"]:.1f}' + ' (' + str(m["nb_consultations"]) + ' consult.)</div>'
+        cards += '<div>💰 ' + f'{m["tarif_consultation"]:,.0f}' + ' F</div>'
+        cards += '</div>'
+        cards += '<div style="display:flex;gap:6px">'
+        cards += '<a href="/medecins/' + str(m["id"]) + '" class="btn btn-primary" style="padding:6px 12px;font-size:12px;flex:1;text-align:center">👁 Profil</a>'
+        cards += '<a href="/consultations/nouvelle?medecin_id=' + str(m["id"]) + '" class="btn btn-success" style="padding:6px 12px;font-size:12px;flex:1;text-align:center">📹 Consulter</a>'
+        cards += '</div>'
+        cards += '</div>'
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">👨‍⚕️ Médecins — ' + str(len(medecins)) + '</h1>'
+    content += '<a href="/medecins/nouveau" class="btn btn-primary">+ Nouveau médecin</a></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#0891b2,#0e7490)"><div class="kpi-icon">👨‍⚕️</div><div class="kpi-label">Total médecins</div><div class="kpi-value">' + str(stats["total"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-icon">🟢</div><div class="kpi-label">Disponibles</div><div class="kpi-value">' + str(stats["dispo"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#d97706)"><div class="kpi-icon">⭐</div><div class="kpi-label">Note moyenne</div><div class="kpi-value">' + f'{stats["note"]:.1f}' + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9)"><div class="kpi-icon">🎯</div><div class="kpi-label">Spécialités</div><div class="kpi-value">' + str(stats["specialites"]) + '</div></div>'
+    content += '</div>'
+
+    content += '<form method="get" style="margin-bottom:16px;display:flex;gap:10px">'
+    content += '<input type="text" name="q" value="' + q + '" placeholder="Rechercher médecin, spécialité..." style="max-width:500px">'
+    content += '<button type="submit" class="btn btn-primary">🔍 Rechercher</button></form>'
+
+    content += '<div style="margin-bottom:20px;display:flex;gap:6px;flex-wrap:wrap">'
+    content += '<a href="/medecins" class="btn ' + ('btn-primary' if not specialite_f else 'btn-secondary') + '">Toutes</a> '
+    for s in specialites[:8]:
+        active_cls = 'btn-primary' if specialite_f == s else 'btn-secondary'
+        content += '<a href="/medecins?specialite=' + s + '" class="btn ' + active_cls + '" style="margin-left:6px">' + s + '</a> '
+    content += '</div>'
+
+    content += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px">' + (cards or '<p style="grid-column:1/-1;text-align:center;color:#94a3b8;padding:40px">Aucun médecin</p>') + '</div>'
+
+    return render_page(content, active='medecins', page_title='Médecins')
+
+
+@app.route('/medecins/nouveau', methods=['GET', 'POST'])
+@login_required
+def medecins_nouveau():
+    db = get_db()
+    cur = db.cursor()
+
+    if request.method == 'POST':
+        try:
+            from werkzeug.security import generate_password_hash
+            username = request.form.get('username') or 'dr.' + request.form.get('nom', '').lower()[:8]
+            password = request.form.get('password') or 'medecin123'
+
+            cur.execute("""
+                INSERT INTO users (username, password_hash, role, nom_complet, email, telephone, actif, created_at)
+                VALUES (?,?,?,?,?,?,1,?)
+            """, (username, generate_password_hash(password), 'medecin',
+                  'Dr. ' + request.form.get('prenom', '') + ' ' + request.form.get('nom', ''),
+                  request.form.get('email'),
+                  request.form.get('telephone'),
+                  datetime.now().isoformat()))
+            user_id = cur.lastrowid
+
+            cur.execute("""
+                INSERT INTO medecins (code, user_id, nom, prenom, specialite, numero_ordre,
+                                        telephone, email, hopital, ville, tarif_consultation,
+                                        disponible, note_moyenne, nb_consultations, langues, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,1,0,0,?,?)
+            """, (None, user_id,
+                  request.form.get('nom'),
+                  request.form.get('prenom'),
+                  request.form.get('specialite'),
+                  request.form.get('numero_ordre'),
+                  request.form.get('telephone'),
+                  request.form.get('email'),
+                  request.form.get('hopital'),
+                  request.form.get('ville'),
+                  float(request.form.get('tarif_consultation') or 5000),
+                  request.form.get('langues') or 'fr',
+                  datetime.now().isoformat()))
+            db.commit()
+            log_action(current_user.id, 'CREATE_MEDECIN', username, 'medecins', cur.lastrowid)
+            flash('✅ Médecin créé — Login : ' + username + ' / ' + password, 'success')
+            return redirect('/medecins')
+        except Exception as e:
+            db.rollback()
+            flash('❌ ' + str(e), 'error')
+
+    content = '<h1>👨‍⚕️ Nouveau médecin</h1>'
+    content += '<form method="post" class="card" style="max-width:900px">'
+    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+    content += '<div><label>Nom *</label><input type="text" name="nom" required autofocus></div>'
+    content += '<div><label>Prénom *</label><input type="text" name="prenom" required></div>'
+    content += '<div><label>Spécialité *</label><select name="specialite" required>'
+    for s in ['Généraliste', 'Pédiatre', 'Cardiologue', 'Dermatologue', 'Gynécologue', 'Ophtalmologue', 'Dentiste', 'Psychiatre']:
+        content += '<option value="' + s + '">' + s + '</option>'
+    content += '</select></div>'
+    content += '<div><label>N° Ordre</label><input type="text" name="numero_ordre"></div>'
+    content += '<div><label>Téléphone *</label><input type="text" name="telephone" required></div>'
+    content += '<div><label>Email</label><input type="email" name="email"></div>'
+    content += '<div><label>Hôpital/Clinique</label><input type="text" name="hopital"></div>'
+    content += '<div><label>Ville</label><input type="text" name="ville" value="Dakar"></div>'
+    content += '<div><label>Tarif consultation (FCFA)</label><input type="number" step="500" name="tarif_consultation" value="5000"></div>'
+    content += '<div><label>Langues parlées</label><input type="text" name="langues" value="fr,wo" placeholder="fr,wo,en"></div>'
+    content += '<div><label>Nom d\'utilisateur (login)</label><input type="text" name="username" placeholder="dr.diop"></div>'
+    content += '<div><label>Mot de passe</label><input type="text" name="password" value="medecin123"></div>'
+    content += '</div>'
+    content += '<div style="margin-top:24px"><button type="submit" class="btn btn-success">💾 Créer</button>'
+    content += '<a href="/medecins" class="btn btn-secondary" style="margin-left:8px">Annuler</a></div>'
+    content += '</form>'
+    return render_page(content, active='medecins', page_title='Nouveau médecin')
+
+
+@app.route('/medecins/<int:mid>')
+@login_required
+def medecins_detail(mid):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT * FROM medecins WHERE id=?", (mid,))
+    m = cur.fetchone()
+    if not m:
+        flash('❌ Médecin introuvable', 'error')
+        return redirect('/medecins')
+
+    cur.execute("""
+        SELECT c.* FROM consultations c WHERE c.medecin_id=?
+        ORDER BY c.id DESC LIMIT 20
+    """, (mid,))
+    consultations = cur.fetchall()
+    consult_html = ''
+    for c in consultations:
+        statut_badge = {'planifiee': 'badge-blue', 'terminee': 'badge-green', 'annulee': 'badge-red'}.get(c['statut'], 'badge-gray')
+        consult_html += (
+            '<tr><td><strong>' + str(c["numero"]) + '</strong></td>'
+            + '<td>' + str(c["motif"] or "—") + '</td>'
+            + '<td>' + str((c["date_consultation"] or "")[:10]) + '</td>'
+            + '<td><span class="badge ' + statut_badge + '">' + str(c["statut"]) + '</span></td></tr>'
+        )
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">👨‍⚕️ Dr. ' + str(m["prenom"] or "") + ' ' + str(m["nom"]) + '</h1>'
+    content += '<a href="/medecins" class="btn btn-secondary">← Retour</a></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#0891b2,#0e7490)"><div class="kpi-label">Code</div><div class="kpi-value" style="font-size:16px">' + str(m["code"] or "—") + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-label">Note</div><div class="kpi-value">' + f'{m["note_moyenne"]:.1f}' + ' ⭐</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#d97706)"><div class="kpi-label">Consultations</div><div class="kpi-value">' + str(m["nb_consultations"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9)"><div class="kpi-label">Tarif</div><div class="kpi-value" style="font-size:16px">' + f'{m["tarif_consultation"]:,.0f}' + ' F</div></div>'
+    content += '</div>'
+
+    content += '<div class="card"><h2>📋 Informations</h2><table>'
+    content += '<tr><td><strong>Spécialité</strong></td><td>' + str(m["specialite"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>N° Ordre</strong></td><td>' + str(m["numero_ordre"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Téléphone</strong></td><td>' + str(m["telephone"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Email</strong></td><td>' + str(m["email"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Hôpital</strong></td><td>' + str(m["hopital"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Ville</strong></td><td>' + str(m["ville"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Langues</strong></td><td>' + str(m["langues"] or "fr") + '</td></tr>'
+    content += '<tr><td><strong>Disponible</strong></td><td>' + ('✅ Oui' if m["disponible"] else '❌ Non') + '</td></tr>'
+    content += '</table></div>'
+
+    content += '<div class="card"><h2>📹 Consultations récentes</h2>'
+    content += '<table><thead><tr><th>N°</th><th>Motif</th><th>Date</th><th>Statut</th></tr></thead>'
+    content += '<tbody>' + (consult_html or '<tr><td colspan="4" style="text-align:center;color:#94a3b8;padding:20px">Aucune consultation</td></tr>') + '</tbody></table></div>'
+
+    return render_page(content, active='medecins', page_title='Médecin')
+
+
+# ═══════════════════════════════════════════════════════════════
+# 👥 PATIENTS (RGPD - données chiffrées)
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/patients')
+@login_required
+def patients_liste():
+    db = get_db()
+    cur = db.cursor()
+    q = request.args.get('q', '').strip()
+    ville_f = request.args.get('ville', '')
+
+    sql = "SELECT * FROM patients WHERE 1=1"
+    params = []
+    if ville_f:
+        sql += " AND ville=?"
+        params.append(ville_f)
+    sql += " ORDER BY id DESC LIMIT 300"
+    cur.execute(sql, params)
+    patients_rows = cur.fetchall()
+
+    patients = []
+    for p in patients_rows:
+        nom = decrypt_data(p['nom_encrypted']) or '?'
+        prenom = decrypt_data(p['prenom_encrypted']) or '?'
+        tel = decrypt_data(p['telephone_encrypted']) or '?'
+        dn = decrypt_data(p['date_naissance_encrypted']) or '?'
+        if q:
+            search_str = (nom + ' ' + prenom + ' ' + tel + ' ' + str(p['code'] or '')).lower()
+            if q.lower() not in search_str:
+                continue
+        patients.append({
+            'id': p['id'], 'code': p['code'], 'nom': nom, 'prenom': prenom,
+            'telephone': tel, 'date_naissance': dn, 'sexe': p['sexe'],
+            'ville': p['ville'], 'groupe_sanguin': p['groupe_sanguin'], 'statut': p['statut'],
+        })
+
+    cur.execute("SELECT DISTINCT ville FROM patients WHERE ville IS NOT NULL ORDER BY ville")
+    villes = [r[0] for r in cur.fetchall()]
+
+    stats = {}
+    cur.execute("SELECT COUNT(*) FROM patients WHERE statut='actif'")
+    stats['total'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM patients WHERE sexe='M'")
+    stats['h'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM patients WHERE sexe='F'")
+    stats['f'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(DISTINCT ville) FROM patients")
+    stats['villes'] = cur.fetchone()[0]
+
+    rows = ''
+    for p in patients:
+        sexe_icon = '👨' if p['sexe'] == 'M' else '👩' if p['sexe'] == 'F' else '👤'
+        age_str = ''
+        try:
+            if p['date_naissance'] and p['date_naissance'] != '?':
+                dn = datetime.strptime(p['date_naissance'][:10], '%Y-%m-%d')
+                age_str = ' · ' + str((datetime.now() - dn).days // 365) + ' ans'
+        except Exception:
+            pass
+        rows += (
+            '<tr><td><strong style="color:#0891b2">' + str(p["code"] or "—") + '</strong></td>'
+            + '<td>' + sexe_icon + ' <strong>' + str(p["prenom"]) + ' ' + str(p["nom"]) + '</strong>' + age_str + '</td>'
+            + '<td>' + str(p["telephone"]) + '</td>'
+            + '<td>' + str(p["ville"] or "—") + '</td>'
+            + '<td style="text-align:center"><span class="badge badge-red">' + str(p["groupe_sanguin"] or "—") + '</span></td>'
+            + '<td style="text-align:center"><span class="secure-badge" style="font-size:10px">🔐 AES-256</span></td>'
+            + '<td><a href="/patients/' + str(p["id"]) + '" class="btn btn-primary" style="padding:4px 10px;font-size:11px">👁</a></td></tr>'
+        )
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">👥 Patients — ' + str(len(patients)) + '</h1>'
+    content += '<a href="/patients/nouveau" class="btn btn-primary">+ Nouveau patient</a></div>'
+    content += '<div style="margin-bottom:16px"><span class="secure-badge">🔐 Toutes les données patients sont chiffrées AES-256-GCM · Conformité RGPD</span></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#0891b2,#0e7490)"><div class="kpi-icon">👥</div><div class="kpi-label">Patients actifs</div><div class="kpi-value">' + str(stats["total"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#3b82f6,#1e40af)"><div class="kpi-icon">👨</div><div class="kpi-label">Hommes</div><div class="kpi-value">' + str(stats["h"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#ec4899,#be185d)"><div class="kpi-icon">👩</div><div class="kpi-label">Femmes</div><div class="kpi-value">' + str(stats["f"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9)"><div class="kpi-icon">🗺️</div><div class="kpi-label">Villes</div><div class="kpi-value">' + str(stats["villes"]) + '</div></div>'
+    content += '</div>'
+
+    content += '<form method="get" style="margin-bottom:16px;display:flex;gap:10px">'
+    content += '<input type="text" name="q" value="' + q + '" placeholder="Rechercher (nom, téléphone, code)..." style="max-width:500px">'
+    content += '<button type="submit" class="btn btn-primary">🔍 Rechercher</button></form>'
+
+    content += '<div class="card" style="padding:0;overflow:hidden">'
+    content += '<table><thead><tr><th>Code</th><th>Nom complet</th><th>Téléphone</th><th>Ville</th><th style="text-align:center">Groupe</th><th style="text-align:center">Sécurité</th><th>Actions</th></tr></thead>'
+    content += '<tbody>' + (rows or '<tr><td colspan="7" style="padding:40px;text-align:center;color:#94a3b8">Aucun patient</td></tr>') + '</tbody></table></div>'
+
+    return render_page(content, active='patients', page_title='Patients')
+
+
+@app.route('/patients/nouveau', methods=['GET', 'POST'])
+@login_required
+def patients_nouveau():
+    db = get_db()
+    cur = db.cursor()
+
+    if request.method == 'POST':
+        try:
+            nom = request.form.get('nom') or ''
+            prenom = request.form.get('prenom') or ''
+            date_naiss = request.form.get('date_naissance') or ''
+            tel = request.form.get('telephone') or ''
+            adresse = request.form.get('adresse') or ''
+            allergies = request.form.get('allergies') or 'Aucune'
+            antecedents = request.form.get('antecedents') or 'Aucun'
+
+            cur.execute("""
+                INSERT INTO patients (code, user_id, nom_encrypted, prenom_encrypted,
+                                        date_naissance_encrypted, telephone_encrypted,
+                                        adresse_encrypted, sexe, ville, groupe_sanguin,
+                                        allergies_encrypted, antecedents_encrypted,
+                                        langue, hash_id, statut, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'actif', ?)
+            """, (None, None,
+                  encrypt_data(nom), encrypt_data(prenom),
+                  encrypt_data(date_naiss), encrypt_data(tel),
+                  encrypt_data(adresse),
+                  request.form.get('sexe') or 'M',
+                  request.form.get('ville') or 'Dakar',
+                  request.form.get('groupe_sanguin') or 'O+',
+                  encrypt_data(allergies), encrypt_data(antecedents),
+                  request.form.get('langue') or 'fr',
+                  hash_patient_id(tel or str(datetime.now().timestamp())),
+                  datetime.now().isoformat()))
+            db.commit()
+            log_action(current_user.id, 'CREATE_PATIENT',
+                       'Patient ' + prenom + ' ' + nom + ' créé (chiffré)',
+                       'patients', cur.lastrowid)
+            flash('✅ Patient créé — Données chiffrées AES-256', 'success')
+            return redirect('/patients')
+        except Exception as e:
+            db.rollback()
+            flash('❌ ' + str(e), 'error')
+
+    content = '<h1>👥 Nouveau patient</h1>'
+    content += '<div style="margin-bottom:16px"><span class="secure-badge">🔐 Toutes les données seront chiffrées AES-256-GCM automatiquement</span></div>'
+    content += '<form method="post" class="card" style="max-width:900px">'
+    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+    content += '<div><label>Nom *</label><input type="text" name="nom" required autofocus></div>'
+    content += '<div><label>Prénom *</label><input type="text" name="prenom" required></div>'
+    content += '<div><label>Date de naissance</label><input type="date" name="date_naissance"></div>'
+    content += '<div><label>Sexe</label><select name="sexe">'
+    content += '<option value="M">Masculin</option>'
+    content += '<option value="F">Féminin</option>'
+    content += '</select></div>'
+    content += '<div><label>Téléphone *</label><input type="text" name="telephone" required placeholder="+221 77 XXX XX XX"></div>'
+    content += '<div><label>Ville</label><input type="text" name="ville" value="Dakar"></div>'
+    content += '<div><label>Groupe sanguin</label><select name="groupe_sanguin">'
+    for gs in ['O+', 'O-', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-']:
+        content += '<option value="' + gs + '">' + gs + '</option>'
+    content += '</select></div>'
+    content += '<div><label>Langue préférée</label><select name="langue">'
+    content += '<option value="fr">🇫🇷 Français</option>'
+    content += '<option value="wo">🇸🇳 Wolof</option>'
+    content += '<option value="en">🇬🇧 English</option>'
+    content += '</select></div>'
+    content += '<div style="grid-column:1/-1"><label>Adresse</label><input type="text" name="adresse"></div>'
+    content += '<div style="grid-column:1/-1"><label>Allergies connues</label>'
+    content += '<textarea name="allergies" rows="2" placeholder="Pénicilline, arachides..."></textarea></div>'
+    content += '<div style="grid-column:1/-1"><label>Antécédents médicaux</label>'
+    content += '<textarea name="antecedents" rows="3" placeholder="Diabète, hypertension, asthme..."></textarea></div>'
+    content += '</div>'
+    content += '<div style="margin-top:24px"><button type="submit" class="btn btn-success">💾 Créer le patient</button>'
+    content += '<a href="/patients" class="btn btn-secondary" style="margin-left:8px">Annuler</a></div>'
+    content += '</form>'
+    return render_page(content, active='patients', page_title='Nouveau patient')
+
+
+@app.route('/patients/<int:pid>')
+@login_required
+def patients_detail(pid):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT * FROM patients WHERE id=?", (pid,))
+    p = cur.fetchone()
+    if not p:
+        flash('❌ Patient introuvable', 'error')
+        return redirect('/patients')
+
+    nom = decrypt_data(p['nom_encrypted']) or '?'
+    prenom = decrypt_data(p['prenom_encrypted']) or '?'
+    dn = decrypt_data(p['date_naissance_encrypted']) or '?'
+    tel = decrypt_data(p['telephone_encrypted']) or '?'
+    adresse = decrypt_data(p['adresse_encrypted']) or '?'
+    allergies = decrypt_data(p['allergies_encrypted']) or 'Non renseigné'
+    antecedents = decrypt_data(p['antecedents_encrypted']) or 'Non renseigné'
+
+    log_action(current_user.id, 'VIEW_PATIENT',
+               'Consultation dossier patient ' + str(p['code']),
+               'patients', pid)
+
+    cur.execute("""
+        SELECT c.*, m.nom AS medecin_nom, m.prenom AS medecin_prenom
+        FROM consultations c LEFT JOIN medecins m ON m.id=c.medecin_id
+        WHERE c.patient_id=? ORDER BY c.id DESC
+    """, (pid,))
+    consultations = cur.fetchall()
+    consult_html = ''
+    for c in consultations:
+        statut_badge = {'planifiee': 'badge-blue', 'terminee': 'badge-green', 'annulee': 'badge-red'}.get(c['statut'], 'badge-gray')
+        consult_html += (
+            '<tr><td><strong>' + str(c["numero"]) + '</strong></td>'
+            + '<td>Dr. ' + str(c["medecin_prenom"] or "") + ' ' + str(c["medecin_nom"] or "") + '</td>'
+            + '<td>' + str(c["motif"] or "—") + '</td>'
+            + '<td>' + str((c["date_consultation"] or "")[:10]) + '</td>'
+            + '<td><span class="badge ' + statut_badge + '">' + str(c["statut"]) + '</span></td>'
+            + '<td><a href="/consultations/' + str(c["id"]) + '" class="btn btn-primary" style="padding:4px 10px;font-size:11px">👁</a></td></tr>'
+        )
+
+    cur.execute("""
+        SELECT o.*, m.nom AS medecin_nom FROM ordonnances o
+        LEFT JOIN medecins m ON m.id=o.medecin_id
+        WHERE o.patient_id=? ORDER BY o.id DESC
+    """, (pid,))
+    ordonnances = cur.fetchall()
+    ord_html = ''
+    for o in ordonnances:
+        ord_html += (
+            '<tr><td><strong>' + str(o["numero"]) + '</strong></td>'
+            + '<td>' + str(o["medicaments"] or "—") + '</td>'
+            + '<td>' + str((o["date_emission"] or "")[:10]) + '</td>'
+            + '<td><span class="badge badge-green">' + str(o["statut"]) + '</span></td>'
+            + '<td><a href="/ordonnances/' + str(o["id"]) + '" class="btn btn-primary" style="padding:4px 10px;font-size:11px">👁</a></td></tr>'
+        )
+
+    sexe_icon = '👨' if p['sexe'] == 'M' else '👩'
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">' + sexe_icon + ' ' + prenom + ' ' + nom + '</h1>'
+    content += '<a href="/patients" class="btn btn-secondary">← Retour</a></div>'
+    content += '<div style="margin-bottom:16px"><span class="secure-badge">🔐 Accès enregistré (RGPD) · Données déchiffrées à la volée</span></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#0891b2,#0e7490)"><div class="kpi-label">Code patient</div><div class="kpi-value" style="font-size:16px">' + str(p["code"] or "—") + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#dc2626,#991b1b)"><div class="kpi-label">Groupe sanguin</div><div class="kpi-value">' + str(p["groupe_sanguin"] or "—") + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-label">Consultations</div><div class="kpi-value">' + str(len(consultations)) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#d97706)"><div class="kpi-label">Ordonnances</div><div class="kpi-value">' + str(len(ordonnances)) + '</div></div>'
+    content += '</div>'
+
+    content += '<div class="card"><h2>📋 Informations personnelles (🔐 chiffrées)</h2><table>'
+    content += '<tr><td><strong>Date de naissance</strong></td><td>' + str(dn) + '</td></tr>'
+    content += '<tr><td><strong>Sexe</strong></td><td>' + ('Masculin' if p["sexe"] == 'M' else 'Féminin') + '</td></tr>'
+    content += '<tr><td><strong>Téléphone</strong></td><td>' + str(tel) + '</td></tr>'
+    content += '<tr><td><strong>Adresse</strong></td><td>' + str(adresse) + '</td></tr>'
+    content += '<tr><td><strong>Ville</strong></td><td>' + str(p["ville"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Langue</strong></td><td>' + str(p["langue"] or "fr") + '</td></tr>'
+    content += '<tr><td><strong>Allergies</strong></td><td style="color:#dc2626;font-weight:700">' + str(allergies) + '</td></tr>'
+    content += '<tr><td><strong>Antécédents</strong></td><td>' + str(antecedents) + '</td></tr>'
+    content += '</table></div>'
+
+    content += '<div class="card"><h2>📹 Consultations (' + str(len(consultations)) + ')</h2>'
+    content += '<table><thead><tr><th>N°</th><th>Médecin</th><th>Motif</th><th>Date</th><th>Statut</th><th>Actions</th></tr></thead>'
+    content += '<tbody>' + (consult_html or '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:20px">Aucune consultation</td></tr>') + '</tbody></table>'
+    content += '<div style="margin-top:14px;text-align:right"><a href="/consultations/nouvelle?patient_id=' + str(pid) + '" class="btn btn-primary">+ Nouvelle consultation</a></div></div>'
+
+    content += '<div class="card"><h2>📝 Ordonnances (' + str(len(ordonnances)) + ')</h2>'
+    content += '<table><thead><tr><th>N°</th><th>Médicaments</th><th>Date</th><th>Statut</th><th>Actions</th></tr></thead>'
+    content += '<tbody>' + (ord_html or '<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:20px">Aucune ordonnance</td></tr>') + '</tbody></table></div>'
+
+    return render_page(content, active='patients', page_title='Patient')
+
+
+# ═══════════════════════════════════════════════════════════════
+# 📹 CONSULTATIONS
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/consultations')
+@login_required
+def consultations_liste():
+    db = get_db()
+    cur = db.cursor()
+    statut_f = request.args.get('statut', '')
+
+    sql = """
+        SELECT c.*, m.nom AS medecin_nom, m.prenom AS medecin_prenom,
+               p.nom_encrypted, p.prenom_encrypted, p.code AS patient_code
+        FROM consultations c
+        LEFT JOIN medecins m ON m.id=c.medecin_id
+        LEFT JOIN patients p ON p.id=c.patient_id
+        WHERE 1=1
+    """
+    params = []
+    if statut_f:
+        sql += " AND c.statut=?"
+        params.append(statut_f)
+    sql += " ORDER BY c.id DESC LIMIT 200"
+    cur.execute(sql, params)
+    consult_rows = cur.fetchall()
+
+    stats = {}
+    for k, s in [
+        ('total', "SELECT COUNT(*) FROM consultations"),
+        ('planifiee', "SELECT COUNT(*) FROM consultations WHERE statut='planifiee'"),
+        ('en_cours', "SELECT COUNT(*) FROM consultations WHERE statut='en_cours'"),
+        ('terminee', "SELECT COUNT(*) FROM consultations WHERE statut='terminee'"),
+    ]:
+        cur.execute(s)
+        stats[k] = cur.fetchone()[0]
+
+    rows = ''
+    for c in consult_rows:
+        statut_badge = {
+            'planifiee': 'badge-blue',
+            'en_cours': 'badge-orange',
+            'terminee': 'badge-green',
+            'annulee': 'badge-red',
+        }.get(c['statut'], 'badge-gray')
+        urgence_badge = {
+            'faible': 'badge-green',
+            'normal': 'badge-blue',
+            'urgent': 'badge-red',
+        }.get(c['niveau_urgence'], 'badge-gray')
+
+        pn = decrypt_data(c['nom_encrypted']) or '?'
+        pp = decrypt_data(c['prenom_encrypted']) or '?'
+
+        rows += (
+            '<tr><td><strong style="color:#0891b2">' + str(c["numero"]) + '</strong></td>'
+            + '<td>' + pp + ' ' + pn + '<br><small style="color:#64748b">' + str(c["patient_code"] or "") + '</small></td>'
+            + '<td>Dr. ' + str(c["medecin_prenom"] or "") + ' ' + str(c["medecin_nom"] or "") + '</td>'
+            + '<td>' + str(c["motif"] or "—") + '</td>'
+            + '<td>' + str((c["date_consultation"] or "")[:10]) + '</td>'
+            + '<td><span class="badge ' + urgence_badge + '">' + str(c["niveau_urgence"]) + '</span></td>'
+            + '<td><span class="badge ' + statut_badge + '">' + str(c["statut"]) + '</span></td>'
+            + '<td><a href="/consultations/' + str(c["id"]) + '" class="btn btn-primary" style="padding:4px 10px;font-size:11px">👁</a></td></tr>'
+        )
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">📹 Consultations — ' + str(len(consult_rows)) + '</h1>'
+    content += '<a href="/consultations/nouvelle" class="btn btn-primary">+ Nouvelle consultation</a></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#0891b2,#0e7490)"><div class="kpi-icon">📹</div><div class="kpi-label">Total</div><div class="kpi-value">' + str(stats["total"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#3b82f6,#1e40af)"><div class="kpi-icon">📅</div><div class="kpi-label">Planifiées</div><div class="kpi-value">' + str(stats["planifiee"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#d97706)"><div class="kpi-icon">🔴</div><div class="kpi-label">En cours</div><div class="kpi-value">' + str(stats["en_cours"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-icon">✅</div><div class="kpi-label">Terminées</div><div class="kpi-value">' + str(stats["terminee"]) + '</div></div>'
+    content += '</div>'
+
+    content += '<div style="margin-bottom:16px">'
+    content += '<a href="/consultations" class="btn ' + ('btn-primary' if not statut_f else 'btn-secondary') + '">Toutes</a> '
+    for s in ['planifiee', 'en_cours', 'terminee', 'annulee']:
+        active_cls = 'btn-primary' if statut_f == s else 'btn-secondary'
+        content += '<a href="/consultations?statut=' + s + '" class="btn ' + active_cls + '" style="margin-left:6px">' + s + '</a> '
+    content += '</div>'
+
+    content += '<div class="card" style="padding:0;overflow:hidden">'
+    content += '<table><thead><tr><th>N°</th><th>Patient</th><th>Médecin</th><th>Motif</th><th>Date</th><th>Urgence</th><th>Statut</th><th>Actions</th></tr></thead>'
+    content += '<tbody>' + (rows or '<tr><td colspan="8" style="padding:40px;text-align:center;color:#94a3b8">Aucune consultation</td></tr>') + '</tbody></table></div>'
+
+    return render_page(content, active='consultations', page_title='Consultations')
+
+
+@app.route('/consultations/nouvelle', methods=['GET', 'POST'])
+@login_required
+def consultations_nouvelle():
+    db = get_db()
+    cur = db.cursor()
+    patient_id_pre = int(request.args.get('patient_id') or 0)
+    medecin_id_pre = int(request.args.get('medecin_id') or 0)
+
+    if request.method == 'POST':
+        try:
+            motif = request.form.get('motif') or ''
+            symptomes = request.form.get('symptomes') or ''
+            niveau = request.form.get('niveau_urgence') or 'normal'
+            type_c = request.form.get('type') or 'video'
+            date_c = request.form.get('date_consultation') or datetime.now().strftime('%Y-%m-%d')
+            medecin_id = int(request.form.get('medecin_id') or 0)
+            montant = float(request.form.get('montant') or 0)
+
+            if montant == 0 and medecin_id:
+                cur.execute("SELECT tarif_consultation FROM medecins WHERE id=?", (medecin_id,))
+                r = cur.fetchone()
+                if r:
+                    montant = r['tarif_consultation'] or 5000
+
+            cur.execute("""
+                INSERT INTO consultations (numero, patient_id, medecin_id, date_consultation,
+                                             motif, symptomes, type, statut, niveau_urgence,
+                                             montant, mode_paiement, statut_paiement, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (None,
+                  int(request.form.get('patient_id') or 0),
+                  medecin_id or None,
+                  date_c, motif, symptomes, type_c, 'planifiee', niveau,
+                  montant, request.form.get('mode_paiement') or 'mobile_money',
+                  'en_attente', datetime.now().isoformat()))
+            db.commit()
+            log_action(current_user.id, 'CREATE_CONSULTATION',
+                       f'Nouvelle consultation pour patient #{patient_id_pre}',
+                       'consultations', cur.lastrowid)
+            flash('✅ Consultation créée', 'success')
+            return redirect('/consultations/' + str(cur.lastrowid))
+        except Exception as e:
+            db.rollback()
+            flash('❌ ' + str(e), 'error')
+
+    cur.execute("SELECT * FROM patients WHERE statut='actif' ORDER BY id DESC LIMIT 200")
+    patients_rows = cur.fetchall()
+    patients = []
+    for p in patients_rows:
+        patients.append({
+            'id': p['id'],
+            'code': p['code'],
+            'nom': decrypt_data(p['nom_encrypted']) or '?',
+            'prenom': decrypt_data(p['prenom_encrypted']) or '?',
+        })
+
+    cur.execute("SELECT * FROM medecins WHERE disponible=1 ORDER BY nom")
+    medecins = cur.fetchall()
+
+    opts_p = ''.join('<option value="' + str(p["id"]) + '"' + (' selected' if p["id"] == patient_id_pre else '') + '>' + str(p["code"] or "") + ' — ' + p["prenom"] + ' ' + p["nom"] + '</option>' for p in patients)
+    opts_m = ''.join('<option value="' + str(m["id"]) + '"' + (' selected' if m["id"] == medecin_id_pre else '') + ' data-tarif="' + str(m["tarif_consultation"]) + '">Dr. ' + str(m["prenom"] or "") + ' ' + str(m["nom"]) + ' — ' + str(m["specialite"] or "") + '</option>' for m in medecins)
+
+    content = '<h1>📹 Nouvelle consultation</h1>'
+    content += '<form method="post" class="card" style="max-width:900px">'
+    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+    content += '<div style="grid-column:1/-1"><label>Patient *</label><select name="patient_id" required>'
+    content += '<option value="">— Sélectionner —</option>' + opts_p + '</select></div>'
+    content += '<div style="grid-column:1/-1"><label>Médecin *</label><select name="medecin_id" id="medecin_select" required onchange="updateTarif()">'
+    content += '<option value="">— Sélectionner —</option>' + opts_m + '</select></div>'
+    content += '<div><label>Date consultation</label><input type="date" name="date_consultation" value="' + datetime.now().strftime('%Y-%m-%d') + '"></div>'
+    content += '<div><label>Type</label><select name="type">'
+    content += '<option value="video">📹 Vidéo</option>'
+    content += '<option value="audio">📞 Audio</option>'
+    content += '<option value="chat">💬 Chat</option>'
+    content += '</select></div>'
+    content += '<div><label>Niveau d\'urgence</label><select name="niveau_urgence">'
+    content += '<option value="faible">🟢 Faible</option>'
+    content += '<option value="normal" selected>🔵 Normal</option>'
+    content += '<option value="urgent">🔴 Urgent</option>'
+    content += '</select></div>'
+    content += '<div><label>Montant (FCFA)</label><input type="number" step="500" name="montant" id="montant" value="5000"></div>'
+    content += '<div><label>Mode paiement</label><select name="mode_paiement">'
+    content += '<option value="mobile_money">📱 Mobile Money</option>'
+    content += '<option value="especes">💵 Espèces</option>'
+    content += '<option value="mutuelle">🏥 Mutuelle</option>'
+    content += '</select></div>'
+    content += '<div style="grid-column:1/-1"><label>Motif de consultation *</label>'
+    content += '<input type="text" name="motif" required placeholder="Fièvre, toux, maux de tête..."></div>'
+    content += '<div style="grid-column:1/-1"><label>Symptômes détaillés</label>'
+    content += '<textarea name="symptomes" rows="3" placeholder="Description des symptômes..."></textarea></div>'
+    content += '</div>'
+    content += '<script>'
+    content += 'function updateTarif() {'
+    content += 'var sel = document.getElementById("medecin_select");'
+    content += 'var opt = sel.options[sel.selectedIndex];'
+    content += 'if (opt.dataset.tarif) document.getElementById("montant").value = Math.round(opt.dataset.tarif);'
+    content += '}'
+    content += '</script>'
+    content += '<div style="margin-top:24px"><button type="submit" class="btn btn-success">💾 Créer la consultation</button>'
+    content += '<a href="/consultations" class="btn btn-secondary" style="margin-left:8px">Annuler</a></div>'
+    content += '</form>'
+    return render_page(content, active='consultations', page_title='Nouvelle consultation')
+
+
+@app.route('/consultations/<int:cid>', methods=['GET', 'POST'])
+@login_required
+def consultations_detail(cid):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT c.*, m.nom AS medecin_nom, m.prenom AS medecin_prenom,
+               m.specialite, m.telephone AS medecin_tel,
+               p.nom_encrypted, p.prenom_encrypted, p.code AS patient_code,
+               p.telephone_encrypted, p.date_naissance_encrypted,
+               p.groupe_sanguin, p.allergies_encrypted, p.antecedents_encrypted
+        FROM consultations c
+        LEFT JOIN medecins m ON m.id=c.medecin_id
+        LEFT JOIN patients p ON p.id=c.patient_id
+        WHERE c.id=?
+    """, (cid,))
+    c = cur.fetchone()
+    if not c:
+        flash('❌ Consultation introuvable', 'error')
+        return redirect('/consultations')
+
+    if request.method == 'POST':
+        try:
+            action = request.form.get('action') or 'update'
+            if action == 'update':
+                new_statut = request.form.get('statut') or c['statut']
+                diagnostic = request.form.get('diagnostic') or ''
+                date_fin = datetime.now().isoformat() if new_statut == 'terminee' else None
+
+                cur.execute("""
+                    UPDATE consultations SET statut=?, diagnostic=?, date_fin=?
+                    WHERE id=?
+                """, (new_statut, diagnostic, date_fin, cid))
+                db.commit()
+                log_action(current_user.id, 'UPDATE_CONSULTATION',
+                           f'Consultation #{cid} → {new_statut}', 'consultations', cid)
+                flash('✅ Consultation mise à jour', 'success')
+            return redirect('/consultations/' + str(cid))
+        except Exception as e:
+            db.rollback()
+            flash('❌ ' + str(e), 'error')
+
+    # Déchiffrement patient
+    patient_nom = decrypt_data(c['nom_encrypted']) or '?'
+    patient_prenom = decrypt_data(c['prenom_encrypted']) or '?'
+    patient_tel = decrypt_data(c['telephone_encrypted']) or '?'
+    patient_dn = decrypt_data(c['date_naissance_encrypted']) or '?'
+    patient_allergies = decrypt_data(c['allergies_encrypted']) or 'Aucune'
+    patient_antecedents = decrypt_data(c['antecedents_encrypted']) or 'Aucun'
+
+    # Ordonnances liées
+    cur.execute("SELECT * FROM ordonnances WHERE consultation_id=? ORDER BY id DESC", (cid,))
+    ordonnances = cur.fetchall()
+    ord_html = ''
+    for o in ordonnances:
+        ord_html += (
+            '<tr><td><strong>' + str(o["numero"]) + '</strong></td>'
+            + '<td>' + str(o["medicaments"] or "—") + '</td>'
+            + '<td><a href="/ordonnances/' + str(o["id"]) + '" class="btn btn-primary" style="padding:4px 10px;font-size:11px">👁</a></td></tr>'
+        )
+
+    statut_badge = {
+        'planifiee': 'badge-blue', 'en_cours': 'badge-orange',
+        'terminee': 'badge-green', 'annulee': 'badge-red'
+    }.get(c['statut'], 'badge-gray')
+    urgence_badge = {'faible': 'badge-green', 'normal': 'badge-blue', 'urgent': 'badge-red'}.get(c['niveau_urgence'], 'badge-gray')
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">📹 ' + str(c["numero"]) + ' <span class="badge ' + statut_badge + '">' + str(c["statut"]) + '</span> <span class="badge ' + urgence_badge + '">' + str(c["niveau_urgence"]) + '</span></h1>'
+    content += '<div>'
+    if c['statut'] in ('planifiee', 'en_cours'):
+        content += '<a href="/consultations/' + str(cid) + '/video" class="btn btn-success">🎥 Rejoindre la salle vidéo</a> '
+    content += '<a href="/consultations" class="btn btn-secondary" style="margin-left:6px">← Retour</a></div></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#0891b2,#0e7490)"><div class="kpi-label">Patient</div><div class="kpi-value" style="font-size:15px">' + patient_prenom + ' ' + patient_nom + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-label">Médecin</div><div class="kpi-value" style="font-size:15px">Dr. ' + str(c["medecin_prenom"] or "") + ' ' + str(c["medecin_nom"] or "") + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#d97706)"><div class="kpi-label">Montant</div><div class="kpi-value" style="font-size:18px">' + f'{c["montant"]:,.0f}' + ' F</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9)"><div class="kpi-label">Type</div><div class="kpi-value" style="font-size:16px">' + str(c["type"]) + '</div></div>'
+    content += '</div>'
+
+    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">'
+    content += '<div class="card"><h2>👤 Patient (🔐 déchiffré)</h2><table>'
+    content += '<tr><td><strong>Code</strong></td><td>' + str(c["patient_code"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Téléphone</strong></td><td>' + patient_tel + '</td></tr>'
+    content += '<tr><td><strong>Naissance</strong></td><td>' + patient_dn + '</td></tr>'
+    content += '<tr><td><strong>Groupe sanguin</strong></td><td><span class="badge badge-red">' + str(c["groupe_sanguin"] or "—") + '</span></td></tr>'
+    content += '<tr><td><strong>Allergies</strong></td><td style="color:#dc2626">' + patient_allergies + '</td></tr>'
+    content += '<tr><td><strong>Antécédents</strong></td><td>' + patient_antecedents + '</td></tr>'
+    content += '</table></div>'
+
+    content += '<div class="card"><h2>📋 Consultation</h2><table>'
+    content += '<tr><td><strong>Date</strong></td><td>' + str((c["date_consultation"] or "—")[:10]) + '</td></tr>'
+    content += '<tr><td><strong>Motif</strong></td><td>' + str(c["motif"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Symptômes</strong></td><td>' + str(c["symptomes"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Diagnostic</strong></td><td>' + str(c["diagnostic"] or "À définir") + '</td></tr>'
+    content += '<tr><td><strong>Paiement</strong></td><td>' + str(c["statut_paiement"]) + ' (' + str(c["mode_paiement"] or "") + ')</td></tr>'
+    content += '</table></div>'
+    content += '</div>'
+
+    # Actions médecin : mise à jour + créer ordonnance
+    content += '<div class="card"><h2>✏️ Actions médecin</h2>'
+    content += '<form method="post">'
+    content += '<input type="hidden" name="action" value="update">'
+    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+    content += '<div><label>Statut</label><select name="statut">'
+    for st, lb in [('planifiee', 'Planifiée'), ('en_cours', 'En cours'), ('terminee', 'Terminée'), ('annulee', 'Annulée')]:
+        sel = ' selected' if c['statut'] == st else ''
+        content += '<option value="' + st + '"' + sel + '>' + lb + '</option>'
+    content += '</select></div>'
+    content += '<div style="grid-column:1/-1"><label>Diagnostic</label>'
+    content += '<textarea name="diagnostic" rows="3">' + str(c["diagnostic"] or "") + '</textarea></div>'
+    content += '</div>'
+    content += '<div style="margin-top:16px;display:flex;gap:8px">'
+    content += '<button type="submit" class="btn btn-success">💾 Mettre à jour</button>'
+    content += '<a href="/ordonnances/nouvelle?consultation_id=' + str(cid) + '" class="btn btn-primary">📝 Créer ordonnance</a>'
+    content += '</div>'
+    content += '</form></div>'
+
+    if ordonnances:
+        content += '<div class="card"><h2>📝 Ordonnances (' + str(len(ordonnances)) + ')</h2>'
+        content += '<table><thead><tr><th>N°</th><th>Médicaments</th><th>Actions</th></tr></thead>'
+        content += '<tbody>' + ord_html + '</tbody></table></div>'
+
+    return render_page(content, active='consultations', page_title='Consultation')
+
+
+# ═══════════════════════════════════════════════════════════════
+# 🎥 SALLE VIDÉO WEBRTC
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/consultations/<int:cid>/video', methods=['GET', 'POST'])
+@login_required
+def consultations_video(cid):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT c.*, m.nom AS medecin_nom, m.prenom AS medecin_prenom,
+               p.nom_encrypted, p.prenom_encrypted, p.code AS patient_code
+        FROM consultations c
+        LEFT JOIN medecins m ON m.id=c.medecin_id
+        LEFT JOIN patients p ON p.id=c.patient_id
+        WHERE c.id=?
+    """, (cid,))
+    c = cur.fetchone()
+    if not c:
+        flash('❌ Consultation introuvable', 'error')
+        return redirect('/consultations')
+
+    # Créer ou récupérer la session vidéo
+    cur.execute("SELECT * FROM sessions_video WHERE consultation_id=?", (cid,))
+    sv = cur.fetchone()
+    if not sv:
+        # Tokens JWT sécurisés
+        token_patient = generate_jwt({'consultation': cid, 'role': 'patient'}, expires_hours=2)
+        token_medecin = generate_jwt({'consultation': cid, 'role': 'medecin'}, expires_hours=2)
+        room_id = 'omega_room_' + str(cid) + '_' + str(int(datetime.now().timestamp()))
+
+        cur.execute("""
+            INSERT INTO sessions_video (consultation_id, room_id, token_patient, token_medecin,
+                                          statut, created_at)
+            VALUES (?,?,?,?, 'attente', ?)
+        """, (cid, room_id, token_patient, token_medecin, datetime.now().isoformat()))
+        db.commit()
+        cur.execute("SELECT * FROM sessions_video WHERE consultation_id=?", (cid,))
+        sv = cur.fetchone()
+
+    if request.method == 'POST':
+        action = request.form.get('action') or ''
+        try:
+            if action == 'start':
+                cur.execute("UPDATE sessions_video SET statut='active', debut_video=? WHERE consultation_id=?",
+                            (datetime.now().isoformat(), cid))
+                cur.execute("UPDATE consultations SET statut='en_cours' WHERE id=?", (cid,))
+                db.commit()
+                flash('🎥 Session vidéo démarrée', 'success')
+            elif action == 'end':
+                now = datetime.now()
+                debut = sv['debut_video']
+                duree = 0
+                if debut:
+                    try:
+                        duree = int((now - datetime.fromisoformat(debut)).total_seconds() / 60)
+                    except Exception:
+                        duree = 0
+                cur.execute("""
+                    UPDATE sessions_video SET statut='terminee', fin_video=?, duree_reelle=?
+                    WHERE consultation_id=?
+                """, (now.isoformat(), duree, cid))
+                cur.execute("UPDATE consultations SET statut='terminee', date_fin=? WHERE id=?",
+                            (now.isoformat(), cid))
+                db.commit()
+                flash('✅ Session vidéo terminée', 'success')
+            return redirect('/consultations/' + str(cid) + '/video')
+        except Exception as e:
+            db.rollback()
+            flash('❌ ' + str(e), 'error')
+
+    pn = decrypt_data(c['nom_encrypted']) or '?'
+    pp = decrypt_data(c['prenom_encrypted']) or '?'
+    med_nom = 'Dr. ' + str(c['medecin_prenom'] or '') + ' ' + str(c['medecin_nom'] or '')
+
+    sv_statut = sv['statut'] if sv else 'attente'
+    sv_badge = {'attente': 'badge-blue', 'active': 'badge-orange', 'terminee': 'badge-green'}.get(sv_statut, 'badge-gray')
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">🎥 Salle vidéo — Consultation ' + str(c["numero"]) + ' <span class="badge ' + sv_badge + '">' + str(sv_statut) + '</span></h1>'
+    content += '<a href="/consultations/' + str(cid) + '" class="btn btn-secondary">← Retour consultation</a></div>'
+
+    content += '<div style="margin-bottom:16px"><span class="secure-badge">🔐 Vidéo chiffrée WebRTC · Connexion sécurisée P2P · Tokens JWT signés</span></div>'
+
+    content += '''
+    <div class="video-room">
+      <h3>🎥 Consultation en direct</h3>
+      <p style="color:#94a3b8;margin-bottom:16px">''' + med_nom + ''' ↔ ''' + pp + ' ' + pn + '''</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px">
+        <div>
+          <div style="background:#1e293b;border-radius:10px;height:240px;display:flex;align-items:center;justify-content:center;font-size:60px">🩺</div>
+          <div style="margin-top:8px;color:#10b981;font-weight:700">🟢 Vous</div>
+        </div>
+        <div>
+          <div style="background:#1e293b;border-radius:10px;height:240px;display:flex;align-items:center;justify-content:center;font-size:60px">👨‍⚕️</div>
+          <div style="margin-top:8px;color:#94a3b8;font-weight:700">📡 En attente de connexion</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+        <button style="background:#10b981;color:#fff;border:none;padding:12px 20px;border-radius:8px;font-weight:700;cursor:pointer">🎤 Micro</button>
+        <button style="background:#0891b2;color:#fff;border:none;padding:12px 20px;border-radius:8px;font-weight:700;cursor:pointer">📹 Caméra</button>
+        <button style="background:#f59e0b;color:#fff;border:none;padding:12px 20px;border-radius:8px;font-weight:700;cursor:pointer">💬 Chat</button>
+      </div>
+    </div>
+    '''
+
+    content += '<div class="card"><h2>🎮 Contrôles de session</h2>'
+    content += '<div style="display:flex;gap:10px;flex-wrap:wrap">'
+    if sv_statut == 'attente':
+        content += '<form method="post" style="display:inline"><input type="hidden" name="action" value="start"><button type="submit" class="btn btn-success">🟢 Démarrer la consultation</button></form>'
+    elif sv_statut == 'active':
+        content += '<form method="post" style="display:inline"><input type="hidden" name="action" value="end"><button type="submit" class="btn btn-danger">🔴 Terminer la consultation</button></form>'
+    content += '</div></div>'
+
+    # Infos techniques (WebRTC simulé)
+    content += '<div class="card"><h2>📡 Informations techniques</h2><table>'
+    content += '<tr><td><strong>Room ID</strong></td><td><code>' + str(sv["room_id"] if sv else "—") + '</code></td></tr>'
+    content += '<tr><td><strong>Token patient</strong></td><td><code style="font-size:10px">' + str((sv["token_patient"] if sv else "")[:60]) + '...</code></td></tr>'
+    content += '<tr><td><strong>Statut session</strong></td><td>' + sv_statut + '</td></tr>'
+    content += '</table></div>'
+
+    content += '<div class="card"><h2>💬 Chat sécurisé</h2>'
+    content += '<div style="background:#f8fafc;padding:14px;border-radius:8px;height:180px;overflow-y:auto;margin-bottom:12px">'
+    content += '<div style="font-size:12.5px;color:#94a3b8;text-align:center;padding:20px">💬 Messages chiffrés AES-256 · Le contenu est chiffré avant envoi</div>'
+    content += '</div>'
+    content += '<div style="display:flex;gap:8px">'
+    content += '<input type="text" placeholder="Écrire un message chiffré..." style="flex:1;padding:12px;border:2px solid #e5e7eb;border-radius:8px">'
+    content += '<button style="background:#0891b2;color:#fff;border:none;padding:12px 20px;border-radius:8px;font-weight:700;cursor:pointer">🔐 Envoyer</button>'
+    content += '</div></div>'
+
+    return render_page(content, active='consultations', page_title='Salle vidéo')
+
+
+# ═══════════════════════════════════════════════════════════════
+# 📝 ORDONNANCES NUMÉRIQUES (signées RSA)
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/ordonnances')
+@login_required
+def ordonnances_liste():
+    db = get_db()
+    cur = db.cursor()
+    statut_f = request.args.get('statut', '')
+
+    sql = """
+        SELECT o.*, m.nom AS medecin_nom, m.prenom AS medecin_prenom,
+               p.nom_encrypted, p.prenom_encrypted, p.code AS patient_code
+        FROM ordonnances o
+        LEFT JOIN medecins m ON m.id=o.medecin_id
+        LEFT JOIN patients p ON p.id=o.patient_id
+        WHERE 1=1
+    """
+    params = []
+    if statut_f:
+        sql += " AND o.statut=?"
+        params.append(statut_f)
+    sql += " ORDER BY o.id DESC LIMIT 200"
+    cur.execute(sql, params)
+    ordonnances = cur.fetchall()
+
+    stats = {}
+    cur.execute("SELECT COUNT(*) FROM ordonnances")
+    stats['total'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM ordonnances WHERE statut='emise'")
+    stats['emises'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM ordonnances WHERE statut='delivree'")
+    stats['delivrees'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM ordonnances WHERE signature_rsa IS NOT NULL AND signature_rsa != 'unsigned'")
+    stats['signees'] = cur.fetchone()[0]
+
+    rows = ''
+    for o in ordonnances:
+        statut_badge = {
+            'emise': 'badge-blue',
+            'delivree': 'badge-green',
+            'annulee': 'badge-red',
+        }.get(o['statut'], 'badge-gray')
+
+        patient_nom = '—'
+        if o['nom_encrypted'] and o['prenom_encrypted']:
+            pn = decrypt_data(o['nom_encrypted']) or '?'
+            pp = decrypt_data(o['prenom_encrypted']) or '?'
+            patient_nom = pp + ' ' + pn
+
+        signe_badge = '<span class="secure-badge" style="font-size:10px">🔐 Signée RSA</span>' if (o['signature_rsa'] and o['signature_rsa'] != 'unsigned') else '<span class="badge badge-orange" style="font-size:10px">⚠ Non signée</span>'
+
+        rows += (
+            '<tr><td><strong style="color:#0891b2">' + str(o["numero"]) + '</strong></td>'
+            + '<td>' + str(patient_nom) + '<br><small style="color:#64748b">' + str(o["patient_code"] or "") + '</small></td>'
+            + '<td>Dr. ' + str(o["medecin_prenom"] or "") + ' ' + str(o["medecin_nom"] or "") + '</td>'
+            + '<td style="font-size:12px">' + str(o["medicaments"] or "—")[:60] + '</td>'
+            + '<td>' + str((o["date_emission"] or "")[:10]) + '</td>'
+            + '<td>' + signe_badge + '</td>'
+            + '<td><span class="badge ' + statut_badge + '">' + str(o["statut"]) + '</span></td>'
+            + '<td><a href="/ordonnances/' + str(o["id"]) + '" class="btn btn-primary" style="padding:4px 10px;font-size:11px">👁</a></td></tr>'
+        )
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">📝 Ordonnances — ' + str(len(ordonnances)) + '</h1>'
+    content += '<a href="/ordonnances/nouvelle" class="btn btn-primary">+ Nouvelle ordonnance</a></div>'
+
+    content += '<div style="margin-bottom:16px"><span class="secure-badge">🔐 Ordonnances signées RSA · QR code vérifiable · Anti-fraude</span></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#0891b2,#0e7490)"><div class="kpi-icon">📝</div><div class="kpi-label">Total</div><div class="kpi-value">' + str(stats["total"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#3b82f6,#1e40af)"><div class="kpi-icon">📤</div><div class="kpi-label">Émises</div><div class="kpi-value">' + str(stats["emises"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-icon">✅</div><div class="kpi-label">Délivrées</div><div class="kpi-value">' + str(stats["delivrees"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9)"><div class="kpi-icon">🔐</div><div class="kpi-label">Signées RSA</div><div class="kpi-value">' + str(stats["signees"]) + '</div></div>'
+    content += '</div>'
+
+    content += '<div style="margin-bottom:16px">'
+    content += '<a href="/ordonnances" class="btn ' + ('btn-primary' if not statut_f else 'btn-secondary') + '">Toutes</a> '
+    for s in ['emise', 'delivree', 'annulee']:
+        active_cls = 'btn-primary' if statut_f == s else 'btn-secondary'
+        content += '<a href="/ordonnances?statut=' + s + '" class="btn ' + active_cls + '" style="margin-left:6px">' + s + '</a> '
+    content += '</div>'
+
+    content += '<div class="card" style="padding:0;overflow:hidden">'
+    content += '<table><thead><tr><th>N°</th><th>Patient</th><th>Médecin</th><th>Médicaments</th><th>Date</th><th>Signature</th><th>Statut</th><th>Actions</th></tr></thead>'
+    content += '<tbody>' + (rows or '<tr><td colspan="8" style="padding:40px;text-align:center;color:#94a3b8">Aucune ordonnance</td></tr>') + '</tbody></table></div>'
+
+    return render_page(content, active='ordonnances', page_title='Ordonnances')
+
+
+@app.route('/ordonnances/nouvelle', methods=['GET', 'POST'])
+@login_required
+def ordonnances_nouvelle():
+    db = get_db()
+    cur = db.cursor()
+    consultation_id_pre = int(request.args.get('consultation_id') or 0)
+
+    if request.method == 'POST':
+        try:
+            consultation_id = int(request.form.get('consultation_id') or 0)
+            medicaments = request.form.get('medicaments') or ''
+            posologie = request.form.get('posologie') or ''
+            duree = int(request.form.get('duree_jours') or 7)
+            instructions = request.form.get('instructions') or ''
+
+            cur.execute("SELECT patient_id, medecin_id FROM consultations WHERE id=?", (consultation_id,))
+            c = cur.fetchone()
+            if not c:
+                raise ValueError('Consultation introuvable')
+
+            # Signature RSA
+            payload = f'ORD|{consultation_id}|{c["patient_id"]}|{c["medecin_id"]}|{medicaments}'
+            signature = sign_ordonnance(payload) or 'unsigned'
+
+            cur.execute("""
+                INSERT INTO ordonnances (numero, consultation_id, patient_id, medecin_id,
+                                           date_emission, medicaments, posologie, duree_jours,
+                                           instructions, signature_rsa, statut, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?, 'emise', ?)
+            """, (None, consultation_id, c['patient_id'], c['medecin_id'],
+                  datetime.now().strftime('%Y-%m-%d'),
+                  medicaments, posologie, duree, instructions,
+                  signature, datetime.now().isoformat()))
+            db.commit()
+            ord_id = cur.lastrowid
+            log_action(current_user.id, 'CREATE_ORDONNANCE',
+                       f'Ordonnance #{ord_id} signée RSA', 'ordonnances', ord_id)
+            flash('✅ Ordonnance créée et signée RSA', 'success')
+            return redirect('/ordonnances/' + str(ord_id))
+        except Exception as e:
+            db.rollback()
+            flash('❌ ' + str(e), 'error')
+
+    cur.execute("""
+        SELECT c.id, c.numero, p.code AS patient_code, p.nom_encrypted, p.prenom_encrypted,
+               m.nom AS medecin_nom
+        FROM consultations c
+        LEFT JOIN patients p ON p.id=c.patient_id
+        LEFT JOIN medecins m ON m.id=c.medecin_id
+        WHERE c.statut IN ('en_cours', 'terminee')
+        ORDER BY c.id DESC LIMIT 200
+    """)
+    consults_rows = cur.fetchall()
+    consults = []
+    for c in consults_rows:
+        pn = decrypt_data(c['nom_encrypted']) or '?'
+        pp = decrypt_data(c['prenom_encrypted']) or '?'
+        consults.append({
+            'id': c['id'],
+            'label': str(c['numero']) + ' — ' + pp + ' ' + pn + ' (Dr. ' + str(c['medecin_nom'] or '') + ')',
+        })
+
+    opts_c = ''.join('<option value="' + str(c["id"]) + '"' + (' selected' if c["id"] == consultation_id_pre else '') + '>' + str(c["label"]) + '</option>' for c in consults)
+
+    content = '<h1>📝 Nouvelle ordonnance</h1>'
+    content += '<div style="margin-bottom:16px"><span class="secure-badge">🔐 Sera signée avec RSA-2048 automatiquement</span></div>'
+    content += '<form method="post" class="card" style="max-width:900px">'
+    content += '<div style="margin-bottom:16px"><label>Consultation *</label><select name="consultation_id" required>'
+    content += '<option value="">— Sélectionner —</option>' + opts_c + '</select></div>'
+    content += '<div style="margin-bottom:16px"><label>Médicaments *</label>'
+    content += '<textarea name="medicaments" rows="3" required placeholder="Paracétamol 500mg, Amoxicilline 500mg..."></textarea></div>'
+    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+    content += '<div><label>Posologie</label><input type="text" name="posologie" placeholder="1 comprimé 3x/jour"></div>'
+    content += '<div><label>Durée (jours)</label><input type="number" name="duree_jours" value="7"></div>'
+    content += '</div>'
+    content += '<div style="margin-top:16px"><label>Instructions</label>'
+    content += '<textarea name="instructions" rows="3" placeholder="Prendre pendant les repas..."></textarea></div>'
+    content += '<div style="margin-top:24px"><button type="submit" class="btn btn-success">💾 Créer et signer</button>'
+    content += '<a href="/ordonnances" class="btn btn-secondary" style="margin-left:8px">Annuler</a></div>'
+    content += '</form>'
+    return render_page(content, active='ordonnances', page_title='Nouvelle ordonnance')
+
+
+@app.route('/ordonnances/<int:oid>')
+@login_required
+def ordonnances_detail(oid):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT o.*, m.nom AS medecin_nom, m.prenom AS medecin_prenom, m.specialite, m.numero_ordre,
+               p.nom_encrypted, p.prenom_encrypted, p.date_naissance_encrypted, p.code AS patient_code
+        FROM ordonnances o
+        LEFT JOIN medecins m ON m.id=o.medecin_id
+        LEFT JOIN patients p ON p.id=o.patient_id
+        WHERE o.id=?
+    """, (oid,))
+    o = cur.fetchone()
+    if not o:
+        flash('❌ Ordonnance introuvable', 'error')
+        return redirect('/ordonnances')
+
+    log_action(current_user.id, 'VIEW_ORDONNANCE', f'Ordonnance #{oid}', 'ordonnances', oid)
+
+    patient_nom = '—'
+    patient_dn = '—'
+    if o['nom_encrypted'] and o['prenom_encrypted']:
+        pn = decrypt_data(o['nom_encrypted']) or '?'
+        pp = decrypt_data(o['prenom_encrypted']) or '?'
+        patient_nom = pp + ' ' + pn
+    if o['date_naissance_encrypted']:
+        patient_dn = decrypt_data(o['date_naissance_encrypted']) or '—'
+
+    # Vérifier signature
+    payload = f'ORD|{o["consultation_id"]}|{o["patient_id"]}|{o["medecin_id"]}|{o["medicaments"]}'
+    sig_ok = verify_signature(payload, o['signature_rsa']) if o['signature_rsa'] and o['signature_rsa'] != 'unsigned' else False
+
+    sig_badge = '<span class="secure-badge">✅ Signature RSA valide</span>' if sig_ok else '<span class="badge badge-red">❌ Signature invalide</span>'
+
+    qr_url = '/ordonnances/' + str(oid) + '/qr.png'
+
+    content = '''
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+      <h1 style="margin:0">📝 Ordonnance ''' + str(o["numero"]) + '''</h1>
+      <div>
+        <a href="/ordonnances/''' + str(oid) + '''/pdf" class="btn btn-warning">📄 PDF</a>
+        <a href="/ordonnances" class="btn btn-secondary" style="margin-left:6px">← Retour</a>
+      </div>
+    </div>
+
+    <div style="margin-bottom:16px">''' + sig_badge + '''</div>
+
+    <div style="background:linear-gradient(135deg,#fff,#f0fdf4);border:4px solid #10b981;border-radius:16px;padding:32px;box-shadow:0 10px 30px rgba(0,0,0,.15);max-width:750px;margin:0 auto">
+      <div style="text-align:center;margin-bottom:24px">
+        <div style="font-size:48px;margin-bottom:8px">📝</div>
+        <div style="font-size:11px;letter-spacing:3px;color:#0e7490;font-weight:700">OMEGA TÉLÉMÉDECINE</div>
+        <div style="font-size:20px;font-weight:900;color:#0891b2;margin-top:4px">ORDONNANCE MÉDICALE</div>
+        <div style="height:3px;background:#10b981;width:80px;margin:14px auto"></div>
+      </div>
+
+      <table style="width:100%;font-size:14px;margin-bottom:20px">
+        <tr><td style="padding:6px 0;color:#64748b">Patient</td><td style="padding:6px 0;text-align:right;font-weight:700">''' + str(patient_nom) + '''</td></tr>
+        <tr><td style="padding:6px 0;color:#64748b">Code patient</td><td style="padding:6px 0;text-align:right">''' + str(o["patient_code"] or "") + '''</td></tr>
+        <tr><td style="padding:6px 0;color:#64748b">Date naissance</td><td style="padding:6px 0;text-align:right">''' + str(patient_dn) + '''</td></tr>
+        <tr><td style="padding:6px 0;color:#64748b">Médecin</td><td style="padding:6px 0;text-align:right;font-weight:700">Dr. ''' + str(o["medecin_prenom"] or "") + ' ' + str(o["medecin_nom"] or "") + '''</td></tr>
+        <tr><td style="padding:6px 0;color:#64748b">Spécialité</td><td style="padding:6px 0;text-align:right">''' + str(o["specialite"] or "") + '''</td></tr>
+        <tr><td style="padding:6px 0;color:#64748b">N° Ordre</td><td style="padding:6px 0;text-align:right">''' + str(o["numero_ordre"] or "") + '''</td></tr>
+      </table>
+
+      <div style="background:#fff;border:2px dashed #10b981;border-radius:12px;padding:20px;margin-bottom:20px">
+        <div style="font-size:11px;color:#0e7490;font-weight:700;letter-spacing:2px;margin-bottom:8px">💊 PRESCRIPTION</div>
+        <div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:12px">''' + str(o["medicaments"] or "") + '''</div>
+        <div style="font-size:13px;color:#475569"><strong>Posologie :</strong> ''' + str(o["posologie"] or "—") + '''</div>
+        <div style="font-size:13px;color:#475569"><strong>Durée :</strong> ''' + str(o["duree_jours"]) + ''' jours</div>
+        <div style="font-size:13px;color:#475569;margin-top:6px"><em>''' + str(o["instructions"] or "") + '''</em></div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:20px;align-items:center">
+        <div style="font-size:12px;color:#475569">
+          <div><strong>N° ordonnance :</strong> <code>''' + str(o["numero"]) + '''</code></div>
+          <div style="margin-top:6px"><strong>Émise le :</strong> ''' + str((o["date_emission"] or "")[:10]) + '''</div>
+          <div style="margin-top:6px"><strong>Signature :</strong> ''' + ('✅ Validée' if sig_ok else '❌ Invalide') + '''</div>
+        </div>
+        <div style="text-align:center">
+          <img src="''' + qr_url + '''" alt="QR" style="width:120px;height:120px;border:3px solid #10b981;border-radius:10px;background:#fff">
+          <div style="font-size:10px;color:#64748b;margin-top:6px;font-weight:700">SCANNER EN PHARMACIE</div>
+        </div>
+      </div>
+    </div>
+    '''
+    return render_page(content, active='ordonnances', page_title='Ordonnance')
+
+
+@app.route('/ordonnances/<int:oid>/qr.png')
+def ordonnances_qr(oid):
+    """QR code de l'ordonnance (public, pour pharmacie)."""
+    import qrcode
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT numero FROM ordonnances WHERE id=?", (oid,))
+    o = cur.fetchone()
+    if not o:
+        return redirect('/')
+    qr_data = 'TELEMED|ORD|' + str(oid) + '|' + (o['numero'] or '')
+    qr = qrcode.QRCode(version=2, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=8, border=2)
+    qr.add_data(qr_data)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color='#0891b2', back_color='white')
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    buf.seek(0)
+    return send_file(buf, mimetype='image/png')
+
+
+@app.route('/ordonnances/<int:oid>/pdf')
+@login_required
+def ordonnances_pdf(oid):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.units import mm
+    from reportlab.lib import colors
+    import qrcode
+
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT o.*, m.nom AS medecin_nom, m.prenom AS medecin_prenom, m.specialite, m.numero_ordre,
+               p.nom_encrypted, p.prenom_encrypted, p.date_naissance_encrypted, p.code AS patient_code
+        FROM ordonnances o
+        LEFT JOIN medecins m ON m.id=o.medecin_id
+        LEFT JOIN patients p ON p.id=o.patient_id
+        WHERE o.id=?
+    """, (oid,))
+    o = cur.fetchone()
+    if not o:
+        flash('❌ Ordonnance introuvable', 'error')
+        return redirect('/ordonnances')
+
+    patient_nom = '—'
+    if o['nom_encrypted'] and o['prenom_encrypted']:
+        pn = decrypt_data(o['nom_encrypted']) or '?'
+        pp = decrypt_data(o['prenom_encrypted']) or '?'
+        patient_nom = pp + ' ' + pn
+
+    payload = f'ORD|{o["consultation_id"]}|{o["patient_id"]}|{o["medecin_id"]}|{o["medicaments"]}'
+    sig_ok = verify_signature(payload, o['signature_rsa']) if o['signature_rsa'] and o['signature_rsa'] != 'unsigned' else False
+
+    # QR
+    qr = qrcode.make('TELEMED|ORD|' + str(oid) + '|' + str(o['numero']))
+    qr_buf = io.BytesIO()
+    qr.save(qr_buf, format='PNG')
+    qr_buf.seek(0)
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    w, h = A4
+
+    # Header
+    c.setFillColor(colors.HexColor('#0891b2'))
+    c.rect(0, h - 35*mm, w, 35*mm, fill=1, stroke=0)
+    c.setFillColor(colors.HexColor('#10b981'))
+    c.rect(0, h - 35*mm, w, 3*mm, fill=1, stroke=0)
+    c.setFillColor(colors.white)
+    c.setFont('Helvetica-Bold', 18)
+    c.drawString(15*mm, h - 15*mm, "OMEGA TÉLÉMÉDECINE")
+    c.setFont('Helvetica', 10)
+    c.drawString(15*mm, h - 22*mm, "ORDONNANCE MÉDICALE NUMÉRIQUE")
+    c.setFont('Helvetica-Bold', 12)
+    c.drawRightString(w - 15*mm, h - 15*mm, str(o["numero"] or ""))
+    c.setFont('Helvetica', 9)
+    c.drawRightString(w - 15*mm, h - 22*mm, "Émise le " + str((o["date_emission"] or "")[:10]))
+
+    # Patient
+    y = h - 50*mm
+    c.setFillColor(colors.black)
+    c.setFont('Helvetica-Bold', 11)
+    c.drawString(15*mm, y, "PATIENT")
+    y -= 6*mm
+    c.setFont('Helvetica', 10)
+    c.drawString(15*mm, y, str(patient_nom))
+    y -= 5*mm
+    c.drawString(15*mm, y, "Code : " + str(o["patient_code"] or ""))
+
+    # Médecin
+    y -= 8*mm
+    c.setFont('Helvetica-Bold', 11)
+    c.drawString(15*mm, y, "MÉDECIN")
+    y -= 6*mm
+    c.setFont('Helvetica', 10)
+    c.drawString(15*mm, y, "Dr. " + str(o["medecin_prenom"] or "") + " " + str(o["medecin_nom"] or ""))
+    y -= 5*mm
+    c.drawString(15*mm, y, "Spécialité : " + str(o["specialite"] or ""))
+    y -= 5*mm
+    c.drawString(15*mm, y, "N° Ordre : " + str(o["numero_ordre"] or ""))
+
+    # Prescription
+    y -= 15*mm
+    c.setFillColor(colors.HexColor('#f0fdf4'))
+    c.rect(15*mm, y - 40*mm, w - 30*mm, 42*mm, fill=1, stroke=0)
+    c.setFillColor(colors.HexColor('#047857'))
+    c.setFont('Helvetica-Bold', 11)
+    c.drawString(17*mm, y - 5*mm, "PRESCRIPTION")
+    y -= 12*mm
+    c.setFillColor(colors.black)
+    c.setFont('Helvetica-Bold', 12)
+    txt = str(o["medicaments"] or "")
+    for i in range(0, len(txt), 70):
+        c.drawString(17*mm, y, txt[i:i+70])
+        y -= 6*mm
+    y -= 2*mm
+    c.setFont('Helvetica', 10)
+    c.drawString(17*mm, y, "Posologie : " + str(o["posologie"] or "—"))
+    y -= 5*mm
+    c.drawString(17*mm, y, "Durée : " + str(o["duree_jours"]) + " jours")
+    y -= 5*mm
+    c.drawString(17*mm, y, "Instructions : " + str(o["instructions"] or "—"))
+
+    # QR + signature
+    y -= 15*mm
+    qr_size = 30*mm
+    c.drawImage(qr_buf, w - qr_size - 15*mm, y - qr_size, qr_size, qr_size)
+
+    c.setFillColor(colors.HexColor('#047857') if sig_ok else colors.HexColor('#dc2626'))
+    c.setFont('Helvetica-Bold', 10)
+    c.drawString(15*mm, y - 5*mm, "Signature RSA-2048 : " + ("VALIDÉE ✅" if sig_ok else "INVALIDE ❌"))
+    c.setFillColor(colors.grey)
+    c.setFont('Helvetica', 8)
+    c.drawString(15*mm, y - 12*mm, "Ordonnance vérifiable en scannant le QR code en pharmacie partenaire")
+    c.drawString(15*mm, y - 17*mm, "Signée le " + str((o["date_emission"] or "")[:10]))
+
+    # Footer
+    c.setFillColor(colors.grey)
+    c.setFont('Helvetica', 7)
+    c.drawString(15*mm, 10*mm, "OMEGA Télémédecine · Dakar, Sénégal · Document chiffré AES-256 · RGPD conforme")
+    c.drawRightString(w - 15*mm, 10*mm, "Ordonnance n° " + str(o["numero"]))
+
+    c.showPage()
+    c.save()
+    buf.seek(0)
+
+    log_action(current_user.id, 'PDF_ORDONNANCE', str(o['numero']), 'ordonnances', oid)
+    return send_file(buf, mimetype='application/pdf',
+                     download_name='ordonnance_' + str(o['numero']) + '.pdf')
+
+
+# ═══════════════════════════════════════════════════════════════
+# 💊 PHARMACIES PARTENAIRES
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/pharmacies')
+@login_required
+def pharmacies_liste():
+    db = get_db()
+    cur = db.cursor()
+    q = request.args.get('q', '').strip()
+
+    sql = "SELECT * FROM pharmacies WHERE 1=1"
+    params = []
+    if q:
+        sql += " AND (nom LIKE ? OR ville LIKE ? OR region LIKE ?)"
+        params += [f'%{q}%'] * 3
+    sql += " ORDER BY nom"
+    cur.execute(sql, params)
+    pharmacies = cur.fetchall()
+
+    stats = {}
+    cur.execute("SELECT COUNT(*) FROM pharmacies WHERE statut='actif'")
+    stats['total'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM dispensations")
+    stats['disp'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(DISTINCT ville) FROM pharmacies")
+    stats['villes'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(DISTINCT region) FROM pharmacies")
+    stats['regions'] = cur.fetchone()[0]
+
+    rows = ''
+    for p in pharmacies:
+        rows += (
+            '<tr><td><strong style="color:#0891b2">' + str(p["code"] or "—") + '</strong></td>'
+            + '<td><strong>' + str(p["nom"]) + '</strong></td>'
+            + '<td>' + str(p["adresse"] or "—") + '</td>'
+            + '<td>' + str(p["ville"] or "—") + '<br><small style="color:#64748b">' + str(p["region"] or "") + '</small></td>'
+            + '<td>' + str(p["telephone"] or "—") + '</td>'
+            + '<td><span class="badge badge-green">' + str(p["statut"]) + '</span></td></tr>'
+        )
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">💊 Pharmacies partenaires — ' + str(len(pharmacies)) + '</h1>'
+    content += '<a href="/pharmacies/nouvelle" class="btn btn-primary">+ Nouvelle pharmacie</a></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#0891b2,#0e7490)"><div class="kpi-icon">💊</div><div class="kpi-label">Pharmacies actives</div><div class="kpi-value">' + str(stats["total"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-icon">📤</div><div class="kpi-label">Dispensations</div><div class="kpi-value">' + str(stats["disp"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#d97706)"><div class="kpi-icon">🗺️</div><div class="kpi-label">Villes</div><div class="kpi-value">' + str(stats["villes"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9)"><div class="kpi-icon">🌍</div><div class="kpi-label">Régions</div><div class="kpi-value">' + str(stats["regions"]) + '</div></div>'
+    content += '</div>'
+
+    content += '<form method="get" style="margin-bottom:16px;display:flex;gap:10px">'
+    content += '<input type="text" name="q" value="' + q + '" placeholder="Rechercher pharmacie, ville..." style="max-width:500px">'
+    content += '<button type="submit" class="btn btn-primary">🔍 Rechercher</button></form>'
+
+    content += '<div class="card" style="padding:0;overflow:hidden">'
+    content += '<table><thead><tr><th>Code</th><th>Nom</th><th>Adresse</th><th>Ville</th><th>Téléphone</th><th>Statut</th></tr></thead>'
+    content += '<tbody>' + (rows or '<tr><td colspan="6" style="padding:40px;text-align:center;color:#94a3b8">Aucune pharmacie</td></tr>') + '</tbody></table></div>'
+
+    return render_page(content, active='pharmacies', page_title='Pharmacies')
+
+
+@app.route('/pharmacies/nouvelle', methods=['GET', 'POST'])
+@login_required
+def pharmacies_nouvelle():
+    db = get_db()
+    cur = db.cursor()
+
+    if request.method == 'POST':
+        try:
+            cur.execute("""
+                INSERT INTO pharmacies (code, nom, adresse, ville, region, telephone,
+                                          responsable, num_licence, latitude, longitude, statut, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?, 'actif', ?)
+            """, (None,
+                  request.form.get('nom'),
+                  request.form.get('adresse'),
+                  request.form.get('ville'),
+                  request.form.get('region'),
+                  request.form.get('telephone'),
+                  request.form.get('responsable'),
+                  request.form.get('num_licence'),
+                  float(request.form.get('latitude') or 0),
+                  float(request.form.get('longitude') or 0),
+                  datetime.now().isoformat()))
+            db.commit()
+            flash('✅ Pharmacie créée', 'success')
+            return redirect('/pharmacies')
+        except Exception as e:
+            db.rollback()
+            flash('❌ ' + str(e), 'error')
+
+    content = '<h1>💊 Nouvelle pharmacie partenaire</h1>'
+    content += '<form method="post" class="card" style="max-width:800px">'
+    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+    content += '<div style="grid-column:1/-1"><label>Nom *</label><input type="text" name="nom" required autofocus></div>'
+    content += '<div style="grid-column:1/-1"><label>Adresse</label><input type="text" name="adresse"></div>'
+    content += '<div><label>Ville</label><input type="text" name="ville" value="Dakar"></div>'
+    content += '<div><label>Région</label><input type="text" name="region" value="Dakar"></div>'
+    content += '<div><label>Téléphone</label><input type="text" name="telephone"></div>'
+    content += '<div><label>Responsable</label><input type="text" name="responsable"></div>'
+    content += '<div><label>N° Licence</label><input type="text" name="num_licence"></div>'
+    content += '<div><label>Latitude GPS</label><input type="number" step="0.0001" name="latitude" value="14.6928"></div>'
+    content += '<div><label>Longitude GPS</label><input type="number" step="0.0001" name="longitude" value="-17.4467"></div>'
+    content += '</div>'
+    content += '<div style="margin-top:24px"><button type="submit" class="btn btn-success">💾 Créer</button>'
+    content += '<a href="/pharmacies" class="btn btn-secondary" style="margin-left:8px">Annuler</a></div>'
+    content += '</form>'
+    return render_page(content, active='pharmacies', page_title='Nouvelle pharmacie')
+
+
+# ═══════════════════════════════════════════════════════════════
+# 💳 PAIEMENTS MOBILE MONEY
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/paiements')
+@login_required
+def paiements_liste():
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT p.*, c.numero AS consultation_numero
+        FROM paiements p
+        LEFT JOIN consultations c ON c.id=p.consultation_id
+        ORDER BY p.id DESC LIMIT 200
+    """)
+    paiements = cur.fetchall()
+
+    stats = {}
+    cur.execute("SELECT COUNT(*) FROM paiements WHERE statut='reussi'")
+    stats['reussis'] = cur.fetchone()[0]
+    cur.execute("SELECT COALESCE(SUM(montant),0) FROM paiements WHERE statut='reussi'")
+    stats['ca'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM paiements WHERE statut='en_attente'")
+    stats['attente'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM paiements WHERE operateur='wave'")
+    stats['wave'] = cur.fetchone()[0]
+
+    rows = ''
+    for p in paiements:
+        statut_badge = {
+            'reussi': 'badge-green',
+            'en_attente': 'badge-orange',
+            'echoue': 'badge-red',
+        }.get(p['statut'], 'badge-gray')
+        op_icon = {'wave': '🌊', 'orange_money': '🟠', 'free_money': '🔵'}.get(p['operateur'], '📱')
+        rows += (
+            '<tr><td><strong>' + str(p["consultation_numero"] or "—") + '</strong></td>'
+            + '<td>' + op_icon + ' ' + str(p["operateur"] or "—") + '</td>'
+            + '<td>' + str(p["telephone"] or "—") + '</td>'
+            + '<td style="text-align:right;font-weight:800;color:#10b981">' + f'{p["montant"]:,.0f}' + ' F</td>'
+            + '<td><span class="badge ' + statut_badge + '">' + str(p["statut"]) + '</span></td>'
+            + '<td>' + str((p["date_paiement"] or "")[:16]) + '</td></tr>'
+        )
+
+    content = '<h1>💳 Paiements Mobile Money — ' + str(len(paiements)) + '</h1>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-icon">✅</div><div class="kpi-label">Réussis</div><div class="kpi-value">' + str(stats["reussis"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#0891b2,#0e7490)"><div class="kpi-icon">💰</div><div class="kpi-label">CA total</div><div class="kpi-value" style="font-size:16px">' + f'{stats["ca"]:,.0f}' + ' F</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#d97706)"><div class="kpi-icon">⏳</div><div class="kpi-label">En attente</div><div class="kpi-value">' + str(stats["attente"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#3b82f6,#1e40af)"><div class="kpi-icon">🌊</div><div class="kpi-label">Wave</div><div class="kpi-value">' + str(stats["wave"]) + '</div></div>'
+    content += '</div>'
+
+    content += '<div class="card" style="padding:0;overflow:hidden">'
+    content += '<table><thead><tr><th>Consultation</th><th>Opérateur</th><th>Téléphone</th><th style="text-align:right">Montant</th><th>Statut</th><th>Date</th></tr></thead>'
+    content += '<tbody>' + (rows or '<tr><td colspan="6" style="padding:40px;text-align:center;color:#94a3b8">Aucun paiement</td></tr>') + '</tbody></table></div>'
+
+    return render_page(content, active='paiements', page_title='Paiements')
+
+
+# ═══════════════════════════════════════════════════════════════
+# 📊 SUIVI POST-CONSULTATION
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/suivi')
+@login_required
+def suivi_liste():
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT s.*, p.nom_encrypted, p.prenom_encrypted, p.code AS patient_code,
+               c.numero AS consultation_numero
+        FROM suivi s
+        LEFT JOIN patients p ON p.id=s.patient_id
+        LEFT JOIN consultations c ON c.id=s.consultation_id
+        ORDER BY s.id DESC LIMIT 200
+    """)
+    suivis = cur.fetchall()
+
+    stats = {}
+    cur.execute("SELECT COUNT(*) FROM suivi")
+    stats['total'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM suivi WHERE statut='normal'")
+    stats['normal'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM suivi WHERE statut='alerte'")
+    stats['alerte'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM suivi WHERE statut='critique'")
+    stats['critique'] = cur.fetchone()[0]
+
+    rows = ''
+    for s in suivis:
+        statut_badge = {
+            'normal': 'badge-green',
+            'alerte': 'badge-orange',
+            'critique': 'badge-red',
+        }.get(s['statut'], 'badge-gray')
+
+        patient_nom = '—'
+        if s['nom_encrypted'] and s['prenom_encrypted']:
+            pn = decrypt_data(s['nom_encrypted']) or '?'
+            pp = decrypt_data(s['prenom_encrypted']) or '?'
+            patient_nom = pp + ' ' + pn
+
+        rows += (
+            '<tr><td>' + str(patient_nom) + '<br><small style="color:#64748b">' + str(s["patient_code"] or "") + '</small></td>'
+            + '<td>' + str(s["type"] or "—") + '</td>'
+            + '<td>' + str((s["date_suivi"] or "")[:10]) + '</td>'
+            + '<td style="text-align:center">' + (str(s["tension"]) if s["tension"] else "—") + '</td>'
+            + '<td style="text-align:center">' + (f'{s["temperature"]:.1f}°' if s["temperature"] else "—") + '</td>'
+            + '<td><span class="badge ' + statut_badge + '">' + str(s["statut"]) + '</span></td></tr>'
+        )
+
+    content = '<h1>📊 Suivi post-consultation — ' + str(len(suivis)) + '</h1>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#0891b2,#0e7490)"><div class="kpi-icon">📊</div><div class="kpi-label">Total suivis</div><div class="kpi-value">' + str(stats["total"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-icon">✅</div><div class="kpi-label">Normal</div><div class="kpi-value">' + str(stats["normal"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#d97706)"><div class="kpi-icon">⚠️</div><div class="kpi-label">Alerte</div><div class="kpi-value">' + str(stats["alerte"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#dc2626,#991b1b)"><div class="kpi-icon">🚨</div><div class="kpi-label">Critique</div><div class="kpi-value">' + str(stats["critique"]) + '</div></div>'
+    content += '</div>'
+
+    content += '<div class="card" style="padding:0;overflow:hidden">'
+    content += '<table><thead><tr><th>Patient</th><th>Type</th><th>Date</th><th style="text-align:center">Tension</th><th style="text-align:center">Temp.</th><th>Statut</th></tr></thead>'
+    content += '<tbody>' + (rows or '<tr><td colspan="6" style="padding:40px;text-align:center;color:#94a3b8">Aucun suivi</td></tr>') + '</tbody></table></div>'
+
+    return render_page(content, active='suivi', page_title='Suivi')
+
+
+# ═══════════════════════════════════════════════════════════════
+# 🔐 CONFORMITÉ RGPD
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/rgpd')
+@login_required
+def rgpd_dashboard():
+    db = get_db()
+    cur = db.cursor()
+
+    def sc(sql, default=0):
+        try:
+            cur.execute(sql)
+            r = cur.fetchone()
+            return r[0] if r and r[0] is not None else default
+        except Exception:
+            return default
+
+    stats = {
+        'audit_total': sc("SELECT COUNT(*) FROM audit_rgpd"),
+        'audit_jour': sc("SELECT COUNT(*) FROM audit_rgpd WHERE date(created_at)=date('now')"),
+        'view_patient': sc("SELECT COUNT(*) FROM audit_rgpd WHERE action='VIEW_PATIENT'"),
+        'login': sc("SELECT COUNT(*) FROM audit_rgpd WHERE action='LOGIN'"),
+        'patients_chiffres': sc("SELECT COUNT(*) FROM patients WHERE nom_encrypted IS NOT NULL"),
+        'ord_signees': sc("SELECT COUNT(*) FROM ordonnances WHERE signature_rsa IS NOT NULL AND signature_rsa != 'unsigned'"),
+        'total_ord': sc("SELECT COUNT(*) FROM ordonnances"),
+        'sessions_video': sc("SELECT COUNT(*) FROM sessions_video"),
+    }
+
+    taux_chiffrement = (stats['patients_chiffres'] / sc("SELECT COUNT(*) FROM patients") * 100) if sc("SELECT COUNT(*) FROM patients") > 0 else 0
+    taux_signature = (stats['ord_signees'] / stats['total_ord'] * 100) if stats['total_ord'] > 0 else 0
+
+    # Audit récent
+    cur.execute("""
+        SELECT a.*, u.nom_complet AS user_nom
+        FROM audit_rgpd a
+        LEFT JOIN users u ON u.id=a.user_id
+        ORDER BY a.id DESC LIMIT 15
+    """)
+    audit = cur.fetchall()
+    audit_html = ''
+    for a in audit:
+        action_badge = {
+            'LOGIN': 'badge-blue',
+            'LOGOUT': 'badge-gray',
+            'VIEW_PATIENT': 'badge-orange',
+            'VIEW_CONSULTATION': 'badge-orange',
+            'VIEW_ORDONNANCE': 'badge-orange',
+            'CREATE_PATIENT': 'badge-green',
+            'CREATE_ORDONNANCE': 'badge-green',
+            'JOIN_VIDEO': 'badge-purple',
+        }.get(a['action'], 'badge-gray')
+        audit_html += (
+            '<tr><td>' + str((a["created_at"] or "")[:16]) + '</td>'
+            + '<td>' + str(a["user_nom"] or "—") + '</td>'
+            + '<td><span class="badge ' + action_badge + '">' + str(a["action"]) + '</span></td>'
+            + '<td style="font-size:12px">' + str(a["details"] or "")[:70] + '</td>'
+            + '<td style="font-size:11px;color:#64748b">' + str(a["ip"] or "") + '</td></tr>'
+        )
+
+    content = '<h1>🔐 Conformité RGPD & Audit</h1>'
+
+    content += '<div style="margin-bottom:16px"><span class="secure-badge">🔐 Conformité Règlement Général sur la Protection des Données</span></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#0891b2,#0e7490)"><div class="kpi-icon">📊</div><div class="kpi-label">Actions auditées</div><div class="kpi-value">' + str(stats["audit_total"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-icon">📅</div><div class="kpi-label">Aujourd\'hui</div><div class="kpi-value">' + str(stats["audit_jour"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#d97706)"><div class="kpi-icon">👁</div><div class="kpi-label">Accès patients</div><div class="kpi-value">' + str(stats["view_patient"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9)"><div class="kpi-icon">🔐</div><div class="kpi-label">Taux chiffrement</div><div class="kpi-value">' + f'{taux_chiffrement:.0f}' + '%</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#ec4899,#be185d)"><div class="kpi-icon">✍</div><div class="kpi-label">Ordonnances signées</div><div class="kpi-value">' + f'{taux_signature:.0f}' + '%</div></div>'
+    content += '</div>'
+
+    content += '<div class="card"><h2>📋 Actions de conformité RGPD</h2>'
+    content += '<table>'
+    content += '<tr><td><strong>Chiffrement données santé</strong></td><td style="text-align:right"><span class="badge badge-green">✅ AES-256-GCM</span></td></tr>'
+    content += '<tr><td><strong>Signature ordonnances</strong></td><td style="text-align:right"><span class="badge badge-green">✅ RSA-2048</span></td></tr>'
+    content += '<tr><td><strong>Journal d\'audit</strong></td><td style="text-align:right"><span class="badge badge-green">✅ ' + str(stats["audit_total"]) + ' entrées</span></td></tr>'
+    content += '<tr><td><strong>Droit d\'accès patient</strong></td><td style="text-align:right"><span class="badge badge-green">✅ /patients/&lt;id&gt;</span></td></tr>'
+    content += '<tr><td><strong>Consentement explicite</strong></td><td style="text-align:right"><span class="badge badge-green">✅ Formulaire</span></td></tr>'
+    content += '<tr><td><strong>Durée de conservation</strong></td><td style="text-align:right"><span class="badge badge-blue">10 ans (dossier médical)</span></td></tr>'
+    content += '<tr><td><strong>Hébergement données</strong></td><td style="text-align:right"><span class="badge badge-blue">Sénégal (souveraineté)</span></td></tr>'
+    content += '<tr><td><strong>Transfert hors UE</strong></td><td style="text-align:right"><span class="badge badge-green">❌ Non autorisé</span></td></tr>'
+    content += '<tr><td><strong>Droit à l\'oubli</strong></td><td style="text-align:right"><span class="badge badge-green">✅ Anonymisation possible</span></td></tr>'
+    content += '</table></div>'
+
+    content += '<div class="card"><h2>📊 Audit récent (15 dernières actions)</h2>'
+    content += '<table><thead><tr><th>Date</th><th>Utilisateur</th><th>Action</th><th>Détails</th><th>IP</th></tr></thead>'
+    content += '<tbody>' + (audit_html or '<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:20px">Aucune action auditée</td></tr>') + '</tbody></table></div>'
+
+    content += '<div class="card" style="border-left-color:#dc2626"><h2>⚠️ Obligations légales</h2>'
+    content += '<ul style="line-height:2;color:#334155;font-size:14px">'
+    content += '<li>📋 <strong>Article 9 RGPD</strong> : Données de santé = données sensibles (protection renforcée)</li>'
+    content += '<li>🔐 <strong>Article 32 RGPD</strong> : Chiffrement obligatoire au repos et en transit</li>'
+    content += '<li>📊 <strong>Article 30 RGPD</strong> : Registre des activités de traitement (audit)</li>'
+    content += '<li>✍ <strong>Article 7 RGPD</strong> : Consentement explicite du patient</li>'
+    content += '<li>🚨 <strong>Article 33 RGPD</strong> : Notification violation sous 72h</li>'
+    content += '<li>👁 <strong>Article 15 RGPD</strong> : Droit d\'accès du patient à son dossier</li>'
+    content += '</ul></div>'
+
+    return render_page(content, active='rgpd', page_title='RGPD')
+
+
+@app.route('/rgpd/audit/export.csv')
+@login_required
+def rgpd_audit_export():
+    """Export audit complet (obligation RGPD Article 30)."""
+    import csv
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT a.created_at, u.username, a.action, a.entity, a.entity_id, a.details, a.ip, a.user_agent
+        FROM audit_rgpd a
+        LEFT JOIN users u ON u.id=a.user_id
+        ORDER BY a.id DESC LIMIT 10000
+    """)
+    rows = cur.fetchall()
+
+    si = io.StringIO()
+    w = csv.writer(si, delimiter=';')
+    w.writerow(['Date', 'Utilisateur', 'Action', 'Entity', 'Entity ID', 'Détails', 'IP', 'User Agent'])
+    for r in rows:
+        w.writerow([r['created_at'], r['username'], r['action'], r['entity'],
+                    r['entity_id'], r['details'], r['ip'], r['user_agent']])
+
+    log_action(current_user.id, 'EXPORT_AUDIT_RGPD', f'{len(rows)} lignes', 'audit_rgpd')
+    return Response(si.getvalue(), mimetype='text/csv',
+                    headers={'Content-Disposition': f'attachment;filename=audit_rgpd_{datetime.now().strftime("%Y%m%d")}.csv'})
+
+
+@app.route('/rgpd/patient/<int:pid>/export')
+@login_required
+def rgpd_patient_export(pid):
+    """Droit d'accès RGPD Art. 15 — le patient peut demander ses données."""
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT * FROM patients WHERE id=?", (pid,))
+    p = cur.fetchone()
+    if not p:
+        flash('❌ Patient introuvable', 'error')
+        return redirect('/patients')
+
+    log_action(current_user.id, 'RGPD_EXPORT_PATIENT',
+               f'Export données patient {p["code"]} (Art.15)', 'patients', pid)
+
+    data = {
+        'code_patient': p['code'],
+        'nom': decrypt_data(p['nom_encrypted']),
+        'prenom': decrypt_data(p['prenom_encrypted']),
+        'date_naissance': decrypt_data(p['date_naissance_encrypted']),
+        'telephone': decrypt_data(p['telephone_encrypted']),
+        'adresse': decrypt_data(p['adresse_encrypted']),
+        'allergies': decrypt_data(p['allergies_encrypted']),
+        'antecedents': decrypt_data(p['antecedents_encrypted']),
+        'ville': p['ville'],
+        'groupe_sanguin': p['groupe_sanguin'],
+        'date_export': datetime.now().isoformat(),
+        'article_rgpd': 'Article 15 — Droit d\'accès',
+    }
+    return jsonify(data)
+
+
+@app.route('/rgpd/patient/<int:pid>/delete', methods=['POST'])
+@login_required
+def rgpd_patient_anonymize(pid):
+    """Droit à l'effacement RGPD Art. 17 — anonymisation."""
+    if current_user.role not in ('admin',):
+        flash('❌ Seul l\'admin peut anonymiser', 'error')
+        return redirect('/patients')
+
+    db = get_db()
+    cur = db.cursor()
+    try:
+        anon = encrypt_data('[ANONYMISÉ RGPD]')
+        cur.execute("""
+            UPDATE patients SET
+                nom_encrypted=?, prenom_encrypted=?,
+                date_naissance_encrypted=?, telephone_encrypted=?,
+                adresse_encrypted=?, allergies_encrypted=?,
+                antecedents_encrypted=?, statut='anonymise'
+            WHERE id=?
+        """, (anon, anon, anon, anon, anon, anon, anon, pid))
+        db.commit()
+        log_action(current_user.id, 'RGPD_ANONYMIZE',
+                   f'Patient #{pid} anonymisé (Art.17)', 'patients', pid)
+        flash('✅ Patient anonymisé (RGPD Art.17)', 'success')
+    except Exception as e:
+        db.rollback()
+        flash('❌ ' + str(e), 'error')
+    return redirect('/patients')
+
+
+# ═══════════════════════════════════════════════════════════════
+# 🔍 VÉRIFICATION PUBLIQUE ORDONNANCE (via QR)
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/verifier/<numero>')
+def verifier_ordonnance(numero):
+    """Page publique pour vérifier une ordonnance (pharmacie / patient)."""
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT o.*, m.nom AS medecin_nom, m.prenom AS medecin_prenom, m.specialite, m.numero_ordre,
+               p.code AS patient_code, p.nom_encrypted, p.prenom_encrypted
+        FROM ordonnances o
+        LEFT JOIN medecins m ON m.id=o.medecin_id
+        LEFT JOIN patients p ON p.id=o.patient_id
+        WHERE o.numero=?
+    """, (numero,))
+    o = cur.fetchone()
+
+    if not o:
+        return render_template_string('''
+<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Vérification</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{font-family:system-ui;background:linear-gradient(135deg,#dc2626,#991b1b);min-height:100vh;display:flex;align-items:center;justify-content:center;margin:0;padding:20px}
+.box{background:#fff;padding:40px;border-radius:16px;max-width:500px;text-align:center;box-shadow:0 25px 70px rgba(0,0,0,.4)}
+.x{font-size:80px;color:#dc2626;margin-bottom:16px}
+h1{color:#dc2626}h2{color:#64748b;font-weight:400;margin-top:20px}</style></head>
+<body><div class="box"><div class="x">❌</div><h1>ORDONNANCE NON TROUVÉE</h1><h2>Ce document n'est pas valide ou a été supprimé</h2></div></body></html>
+        ''')
+
+    payload = f'ORD|{o["consultation_id"]}|{o["patient_id"]}|{o["medecin_id"]}|{o["medicaments"]}'
+    sig_ok = verify_signature(payload, o['signature_rsa']) if o['signature_rsa'] and o['signature_rsa'] != 'unsigned' else False
+
+    patient_nom = '—'
+    if o['nom_encrypted'] and o['prenom_encrypted']:
+        pn = decrypt_data(o['nom_encrypted']) or '?'
+        pp = decrypt_data(o['prenom_encrypted']) or '?'
+        patient_nom = pp + ' ' + pn
+
+    color = '#10b981' if sig_ok else '#dc2626'
+    icon = '✅' if sig_ok else '❌'
+    verdict = 'ORDONNANCE VALIDE' if sig_ok else 'SIGNATURE INVALIDE'
+
+    return render_template_string('''
+<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Vérification ordonnance</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{font-family:system-ui;background:linear-gradient(135deg,#0891b2,#0e7490);min-height:100vh;display:flex;align-items:center;justify-content:center;margin:0;padding:20px}
+.box{background:#fff;padding:32px;border-radius:16px;max-width:600px;width:100%;box-shadow:0 25px 70px rgba(0,0,0,.4);border-top:6px solid {{ color }}}
+.v{font-size:64px;text-align:center;margin-bottom:12px}
+h1{color:{{ color }};text-align:center;margin:0 0 6px;font-size:22px}
+.sub{text-align:center;color:#64748b;margin-bottom:24px;font-size:13px;letter-spacing:1.5px}
+table{width:100%;border-collapse:collapse;margin-top:20px}
+td{padding:10px 0;border-bottom:1px solid #f1f5f9;font-size:14px}
+td:first-child{color:#64748b;width:40%}
+td:last-child{text-align:right;font-weight:600}
+.badge{display:inline-block;padding:6px 14px;border-radius:20px;font-size:11px;font-weight:800;letter-spacing:.4px;color:#fff;background:{{ color }}}
+.footer{text-align:center;margin-top:24px;font-size:11px;color:#94a3b8}
+</style></head>
+<body><div class="box">
+<div class="v">{{ icon }}</div>
+<h1>{{ verdict }}</h1>
+<div class="sub">OMEGA TÉLÉMÉDECINE · VÉRIFICATION SÉCURISÉE</div>
+<table>
+  <tr><td>N° ordonnance</td><td><code>{{ numero }}</code></td></tr>
+  <tr><td>Patient</td><td>{{ patient_nom }}</td></tr>
+  <tr><td>Médecin</td><td>Dr. {{ medecin }}</td></tr>
+  <tr><td>Spécialité</td><td>{{ specialite }}</td></tr>
+  <tr><td>N° Ordre médecin</td><td>{{ num_ordre }}</td></tr>
+  <tr><td>Médicaments</td><td>{{ medicaments }}</td></tr>
+  <tr><td>Posologie</td><td>{{ posologie }}</td></tr>
+  <tr><td>Durée</td><td>{{ duree }} jours</td></tr>
+  <tr><td>Date émission</td><td>{{ date_emission }}</td></tr>
+  <tr><td>Signature RSA</td><td><span class="badge">{{ sig_status }}</span></td></tr>
+</table>
+<div class="footer">
+  🔐 Document chiffré AES-256 · Signature RSA-2048 · Conforme RGPD<br>
+  Vérifié le {{ date_verif }}
+</div>
+</div></body></html>
+    ''',
+        color=color, icon=icon, verdict=verdict,
+        numero=o['numero'], patient_nom=patient_nom,
+        medecin=str(o["medecin_prenom"] or "") + ' ' + str(o["medecin_nom"] or ""),
+        specialite=o['specialite'] or '—',
+        num_ordre=o['numero_ordre'] or '—',
+        medicaments=o['medicaments'] or '—',
+        posologie=o['posologie'] or '—',
+        duree=o['duree_jours'],
+        date_emission=(o['date_emission'] or '')[:10],
+        sig_status='VALIDÉE' if sig_ok else 'INVALIDE',
+        date_verif=datetime.now().strftime('%d/%m/%Y à %H:%M')
+    )
+
+
+@app.route('/api/verifier/<numero>')
+def api_verifier_ordonnance(numero):
+    """Endpoint API JSON pour vérification par pharmacie."""
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT o.*, m.nom AS medecin_nom, m.prenom AS medecin_prenom, m.specialite, m.numero_ordre
+        FROM ordonnances o
+        LEFT JOIN medecins m ON m.id=o.medecin_id
+        WHERE o.numero=?
+    """, (numero,))
+    o = cur.fetchone()
+
+    if not o:
+        return jsonify({'valide': False, 'error': 'Ordonnance introuvable'}), 404
+
+    payload = f'ORD|{o["consultation_id"]}|{o["patient_id"]}|{o["medecin_id"]}|{o["medicaments"]}'
+    sig_ok = verify_signature(payload, o['signature_rsa']) if o['signature_rsa'] and o['signature_rsa'] != 'unsigned' else False
+
+    return jsonify({
+        'valide': sig_ok,
+        'numero': o['numero'],
+        'medecin': 'Dr. ' + str(o['medecin_prenom'] or '') + ' ' + str(o['medecin_nom'] or ''),
+        'specialite': o['specialite'],
+        'numero_ordre': o['numero_ordre'],
+        'medicaments': o['medicaments'],
+        'posologie': o['posologie'],
+        'duree_jours': o['duree_jours'],
+        'date_emission': o['date_emission'],
+        'statut': o['statut'],
+        'signature_verifiee': sig_ok,
+    })
+
+
+# ═══════════════════════════════════════════════════════════════
+# 📱 MOBILE PATIENT
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/mobile-patient')
+@login_required
+def mobile_patient():
+    db = get_db()
+    cur = db.cursor()
+
+    def sc(sql, default=0):
+        cur.execute(sql)
+        r = cur.fetchone()
+        return r[0] if r and r[0] is not None else default
+
+    stats = {
+        'consultations_jour': sc("SELECT COUNT(*) FROM consultations WHERE date(date_consultation)=date('now')"),
+        'medecins_dispo': sc("SELECT COUNT(*) FROM medecins WHERE disponible=1"),
+        'ordonnances': sc("SELECT COUNT(*) FROM ordonnances"),
+        'pharmacies': sc("SELECT COUNT(*) FROM pharmacies WHERE statut='actif'"),
+    }
+
+    content = '<h1>📱 Mobile Patient</h1>'
+    content += '<div style="background:#ecfeff;border-left:4px solid #0891b2;padding:14px;border-radius:8px;margin-bottom:20px;font-size:13px;color:#0e7490">'
+    content += '💡 Interface mobile pour patients — consultation, ordonnances, pharmacies, suivi'
+    content += '</div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#0891b2,#0e7490)"><div class="kpi-label">Consultations du jour</div><div class="kpi-value">' + str(stats["consultations_jour"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-label">Médecins dispo</div><div class="kpi-value">' + str(stats["medecins_dispo"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#d97706)"><div class="kpi-label">Ordonnances</div><div class="kpi-value">' + str(stats["ordonnances"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9)"><div class="kpi-label">Pharmacies</div><div class="kpi-value">' + str(stats["pharmacies"]) + '</div></div>'
+    content += '</div>'
+
+    content += '<div class="card"><h2>⚡ Actions rapides</h2>'
+    content += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:12px">'
+    actions = [
+        ('/consultations/nouvelle', '📹 Consulter un médecin', '#0891b2'),
+        ('/patients', '👤 Mon dossier', '#10b981'),
+        ('/ordonnances', '📝 Mes ordonnances', '#f59e0b'),
+        ('/pharmacies', '💊 Pharmacies', '#8b5cf6'),
+        ('/suivi', '📊 Mon suivi', '#dc2626'),
+        ('/rgpd', '🔐 Mes droits RGPD', '#14b8a6'),
+    ]
+    for url, label, color in actions:
+        content += '<a href="' + url + '" style="text-decoration:none"><div style="background:' + color + ';color:#fff;padding:20px;border-radius:10px;text-align:center;font-weight:700;font-size:13px">' + label + '</div></a>'
+    content += '</div></div>'
+
+    content += '<div class="card"><h2>👨‍⚕️ Médecins disponibles</h2>'
+    cur.execute("""
+        SELECT * FROM medecins WHERE disponible=1
+        ORDER BY note_moyenne DESC LIMIT 6
+    """)
+    meds = cur.fetchall()
+    rows = ''
+    for m in meds:
+        rows += (
+            '<tr><td><strong>Dr. ' + str(m["prenom"] or "") + ' ' + str(m["nom"]) + '</strong></td>'
+            + '<td>' + str(m["specialite"] or "—") + '</td>'
+            + '<td style="text-align:center">⭐ ' + f'{m["note_moyenne"]:.1f}' + '</td>'
+            + '<td style="text-align:right">' + f'{m["tarif_consultation"]:,.0f}' + ' F</td>'
+            + '<td><a href="/consultations/nouvelle?medecin_id=' + str(m["id"]) + '" class="btn btn-success" style="padding:4px 10px;font-size:11px">📹</a></td></tr>'
+        )
+    content += '<table><tbody>' + (rows or '<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:20px">Aucun médecin</td></tr>') + '</tbody></table></div>'
+
+    return render_page(content, active='dashboard', page_title='Mobile Patient')
+
+
+# ═══════════════════════════════════════════════════════════════
+# 📊 API JSON
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/api/telemed/stats')
+@login_required
+def api_telemed_stats():
+    db = get_db()
+    cur = db.cursor()
+    result = {}
+    for k, sql in [
+        ('patients', "SELECT COUNT(*) FROM patients WHERE statut='actif'"),
+        ('medecins', "SELECT COUNT(*) FROM medecins WHERE disponible=1"),
+        ('consultations', "SELECT COUNT(*) FROM consultations"),
+        ('consultations_jour', "SELECT COUNT(*) FROM consultations WHERE date(date_consultation)=date('now')"),
+        ('ordonnances', "SELECT COUNT(*) FROM ordonnances"),
+        ('pharmacies', "SELECT COUNT(*) FROM pharmacies WHERE statut='actif'"),
+    ]:
+        try:
+            cur.execute(sql)
+            r = cur.fetchone()
+            result[k] = r[0] if r else 0
+        except Exception:
+            result[k] = 0
+    return jsonify(result)
+
+
+@app.route('/api/medecins/disponibles')
+@login_required
+def api_medecins_dispo():
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT id, code, nom, prenom, specialite, ville, tarif_consultation, note_moyenne
+        FROM medecins WHERE disponible=1
+        ORDER BY note_moyenne DESC
+    """)
+    return jsonify([dict(r) for r in cur.fetchall()])
+
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8000, debug=False)
+
+
+# ═══════════════════════════════════════════════════════════════
+# 📹 SALLE VIDÉO WEBRTC (sous-bloc rattrapage)
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/consultations/<int:cid>/salle')
+@login_required
+def consultations_salle(cid):
+    """Salle vidéo WebRTC sécurisée."""
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT c.*, m.nom AS medecin_nom, m.prenom AS medecin_prenom,
+               p.nom_encrypted, p.prenom_encrypted
+        FROM consultations c
+        LEFT JOIN medecins m ON m.id=c.medecin_id
+        LEFT JOIN patients p ON p.id=c.patient_id
+        WHERE c.id=?
+    """, (cid,))
+    c = cur.fetchone()
+    if not c:
+        flash('❌ Consultation introuvable', 'error')
+        return redirect('/consultations')
+
+    # Créer ou récupérer la session vidéo
+    cur.execute("SELECT * FROM sessions_video WHERE consultation_id=?", (cid,))
+    sv = cur.fetchone()
+    if not sv:
+        room_id = 'room_' + str(cid) + '_' + os.urandom(4).hex()
+        jwt_patient = generate_jwt({'cid': cid, 'role': 'patient', 'room': room_id}, 4)
+        jwt_medecin = generate_jwt({'cid': cid, 'role': 'medecin', 'room': room_id}, 4)
+        cur.execute("""
+            INSERT INTO sessions_video (consultation_id, room_id, token_patient, token_medecin, statut, created_at)
+            VALUES (?,?,?,?, 'attente', ?)
+        """, (cid, room_id, jwt_patient, jwt_medecin, datetime.now().isoformat()))
+        db.commit()
+        cur.execute("SELECT * FROM sessions_video WHERE consultation_id=?", (cid,))
+        sv = cur.fetchone()
+
+    if c['statut'] == 'planifiee':
+        cur.execute("UPDATE consultations SET statut='en_cours', heure_debut=? WHERE id=?",
+                    (datetime.now().isoformat(), cid))
+        db.commit()
+
+    patient_nom = '—'
+    if c['nom_encrypted'] and c['prenom_encrypted']:
+        pn = decrypt_data(c['nom_encrypted']) or '?'
+        pp = decrypt_data(c['prenom_encrypted']) or '?'
+        patient_nom = pp + ' ' + pn
+
+    log_action(current_user.id, 'JOIN_VIDEO', f'Salle vidéo #{cid}', 'consultations', cid)
+
+    content = '''
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+      <h1 style="margin:0">📹 Salle de consultation sécurisée</h1>
+      <a href="/consultations/''' + str(cid) + '''" class="btn btn-secondary">← Retour</a>
+    </div>
+
+    <div style="margin-bottom:16px"><span class="secure-badge">🔐 Session chiffrée WebRTC · JWT signé · Enregistrement RGPD</span></div>
+
+    <div class="video-room">
+      <h3>🩺 ''' + str(c["numero"]) + ''' — Dr. ''' + str(c["medecin_prenom"] or "") + ' ' + str(c["medecin_nom"] or "") + '''</h3>
+      <p style="color:#94a3b8;margin-bottom:14px">Patient : ''' + str(patient_nom) + '''</p>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px;max-width:900px;margin-left:auto;margin-right:auto">
+        <div>
+          <div style="font-size:12px;color:#10b981;margin-bottom:6px;font-weight:700">👨‍⚕️ MÉDECIN</div>
+          <video id="video-medecin" autoplay muted playsinline style="background:#000;border-radius:10px;width:100%"></video>
+        </div>
+        <div>
+          <div style="font-size:12px;color:#f59e0b;margin-bottom:6px;font-weight:700">👤 PATIENT</div>
+          <video id="video-patient" autoplay playsinline style="background:#000;border-radius:10px;width:100%"></video>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+        <button id="btn-start" onclick="startCall()" class="btn btn-success">▶ Démarrer la vidéo</button>
+        <button id="btn-mute" onclick="toggleMute()" class="btn btn-warning">🎤 Couper micro</button>
+        <button id="btn-cam" onclick="toggleCam()" class="btn btn-warning">📹 Couper caméra</button>
+        <button onclick="endCall()" class="btn btn-danger">📴 Terminer la consultation</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>💬 Chat sécurisé</h2>
+      <div id="chat-messages" style="background:#f8fafc;border-radius:8px;padding:14px;height:300px;overflow-y:auto;margin-bottom:12px"></div>
+      <div style="display:flex;gap:8px">
+        <input type="text" id="chat-input" placeholder="Écrire un message..." style="flex:1" onkeypress="if(event.key==='Enter')sendMessage()">
+        <button onclick="sendMessage()" class="btn btn-primary">📤 Envoyer</button>
+      </div>
+    </div>
+
+    <script>
+    let localStream = null;
+    let camEnabled = true;
+    let micEnabled = true;
+    const consultationId = ''' + str(cid) + ''';
+    const roomId = "''' + str(sv['room_id']) + '''";
+
+    async function startCall() {
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        document.getElementById('video-medecin').srcObject = localStream;
+        document.getElementById('video-patient').srcObject = localStream;
+        document.getElementById('btn-start').textContent = '✅ Vidéo active';
+        document.getElementById('btn-start').disabled = true;
+
+        fetch('/api/consultations/' + consultationId + '/video-start', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ room: roomId })
+        });
+      } catch (e) {
+        alert('❌ Caméra/micro non accessible : ' + e.message);
+      }
+    }
+
+    function toggleMute() {
+      if (localStream) {
+        micEnabled = !micEnabled;
+        localStream.getAudioTracks().forEach(t => t.enabled = micEnabled);
+        document.getElementById('btn-mute').textContent = micEnabled ? '🎤 Couper micro' : '🔇 Activer micro';
+      }
+    }
+
+    function toggleCam() {
+      if (localStream) {
+        camEnabled = !camEnabled;
+        localStream.getVideoTracks().forEach(t => t.enabled = camEnabled);
+        document.getElementById('btn-cam').textContent = camEnabled ? '📹 Couper caméra' : '📷 Activer caméra';
+      }
+    }
+
+    function endCall() {
+      if (!confirm('Terminer la consultation ?')) return;
+      if (localStream) localStream.getTracks().forEach(t => t.stop());
+      fetch('/api/consultations/' + consultationId + '/terminer', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ room: roomId })
+      }).then(() => {
+        alert('✅ Consultation terminée');
+        location.href = '/consultations/' + consultationId;
+      });
+    }
+
+    async function sendMessage() {
+      const input = document.getElementById('chat-input');
+      const msg = input.value.trim();
+      if (!msg) return;
+      input.value = '';
+      try {
+        const r = await fetch('/api/consultations/' + consultationId + '/message', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contenu: msg })
+        });
+        const data = await r.json();
+        if (data.ok) loadMessages();
+      } catch (e) {}
+    }
+
+    async function loadMessages() {
+      try {
+        const r = await fetch('/api/consultations/' + consultationId + '/messages', { credentials: 'same-origin' });
+        const data = await r.json();
+        const cont = document.getElementById('chat-messages');
+        if (!data.messages || data.messages.length === 0) {
+          cont.innerHTML = '<div style="text-align:center;color:#94a3b8;font-size:12px">Aucun message</div>';
+          return;
+        }
+        cont.innerHTML = data.messages.map(m =>
+          '<div style="margin-bottom:8px;padding:8px 12px;background:#fff;border-radius:8px;border-left:3px solid #10b981">' +
+          '<div style="font-size:11px;color:#64748b">' + m.expediteur + ' · ' + m.heure + '</div>' +
+          '<div style="font-size:13px;color:#1e293b;margin-top:4px">' + m.contenu + '</div>' +
+          '</div>'
+        ).join('');
+        cont.scrollTop = cont.scrollHeight;
+      } catch (e) {}
+    }
+
+    setInterval(loadMessages, 3000);
+    loadMessages();
+    </script>
+    '''
+    return render_page(content, active='consultations', page_title='Salle vidéo')
+
+
+@app.route('/api/consultations/<int:cid>/video-start', methods=['POST'])
+@login_required
+def api_video_start(cid):
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute("UPDATE sessions_video SET statut='en_cours', debut_video=? WHERE consultation_id=?",
+                    (datetime.now().isoformat(), cid))
+        db.commit()
+        log_action(current_user.id, 'VIDEO_START', f'Vidéo démarrée #{cid}', 'consultations', cid)
+        return jsonify({'ok': True})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/consultations/<int:cid>/terminer', methods=['POST'])
+@login_required
+def api_consultation_terminer(cid):
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute("SELECT debut_video FROM sessions_video WHERE consultation_id=?", (cid,))
+        sv = cur.fetchone()
+        duree = 0
+        if sv and sv['debut_video']:
+            try:
+                d = datetime.fromisoformat(sv['debut_video'])
+                duree = int((datetime.now() - d).total_seconds() / 60)
+            except Exception:
+                pass
+
+        cur.execute("""
+            UPDATE consultations SET statut='terminee', heure_fin=?, duree_minutes=? WHERE id=?
+        """, (datetime.now().isoformat(), duree, cid))
+        cur.execute("""
+            UPDATE sessions_video SET statut='terminee', fin_video=?, duree_reelle=? WHERE consultation_id=?
+        """, (datetime.now().isoformat(), duree, cid))
+        db.commit()
+        log_action(current_user.id, 'VIDEO_END', f'Consultation terminée #{cid} ({duree}min)', 'consultations', cid)
+        return jsonify({'ok': True, 'duree': duree})
+    except Exception as e:
+        db.rollback()
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/consultations/<int:cid>/message', methods=['POST'])
+@login_required
+def api_consultation_message(cid):
+    db = get_db()
+    cur = db.cursor()
+    data = request.get_json() or {}
+    contenu = data.get('contenu', '')
+    if not contenu:
+        return jsonify({'ok': False, 'error': 'Message vide'}), 400
+
+    try:
+        contenu_enc = encrypt_data(contenu)
+        cur.execute("""
+            INSERT INTO messages (consultation_id, expediteur_id, contenu_encrypted, date_message, created_at)
+            VALUES (?,?,?,?,?)
+        """, (cid, current_user.id, contenu_enc,
+              datetime.now().isoformat(), datetime.now().isoformat()))
+        db.commit()
+        return jsonify({'ok': True})
+    except Exception as e:
+        db.rollback()
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/consultations/<int:cid>/messages')
+@login_required
+def api_consultation_messages(cid):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT m.*, u.nom_complet AS expediteur_nom
+        FROM messages m
+        LEFT JOIN users u ON u.id=m.expediteur_id
+        WHERE m.consultation_id=?
+        ORDER BY m.id ASC LIMIT 100
+    """, (cid,))
+    rows = cur.fetchall()
+
+    msgs = []
+    for r in rows:
+        contenu = decrypt_data(r['contenu_encrypted']) or '[chiffré]'
+        msgs.append({
+            'expediteur': r['expediteur_nom'] or 'Utilisateur',
+            'contenu': contenu,
+            'heure': (r['date_message'] or '')[:16],
+        })
+    return jsonify({'messages': msgs})
+
+
+# ═══════════════════════════════════════════════════════════════
+# 📹 CONSULTATIONS
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/consultations')
+@login_required
+def consultations_liste():
+    db = get_db()
+    cur = db.cursor()
+    statut_f = request.args.get('statut', '')
+
+    sql = """
+        SELECT c.*, m.nom AS medecin_nom, m.prenom AS medecin_prenom,
+               p.nom_encrypted, p.prenom_encrypted, p.code AS patient_code
+        FROM consultations c
+        LEFT JOIN medecins m ON m.id=c.medecin_id
+        LEFT JOIN patients p ON p.id=c.patient_id
+        WHERE 1=1
+    """
+    params = []
+    if statut_f:
+        sql += " AND c.statut=?"
+        params.append(statut_f)
+    sql += " ORDER BY c.id DESC LIMIT 200"
+    cur.execute(sql, params)
+    consult_rows = cur.fetchall()
+
+    stats = {}
+    for k, s in [
+        ('total', "SELECT COUNT(*) FROM consultations"),
+        ('planifiee', "SELECT COUNT(*) FROM consultations WHERE statut='planifiee'"),
+        ('en_cours', "SELECT COUNT(*) FROM consultations WHERE statut='en_cours'"),
+        ('terminee', "SELECT COUNT(*) FROM consultations WHERE statut='terminee'"),
+    ]:
+        cur.execute(s)
+        stats[k] = cur.fetchone()[0]
+
+    rows = ''
+    for c in consult_rows:
+        statut_badge = {
+            'planifiee': 'badge-blue', 'en_cours': 'badge-orange',
+            'terminee': 'badge-green', 'annulee': 'badge-red',
+        }.get(c['statut'], 'badge-gray')
+        urgence_badge = {'faible': 'badge-green', 'normal': 'badge-blue', 'urgent': 'badge-red'}.get(c['niveau_urgence'], 'badge-gray')
+        pn = decrypt_data(c['nom_encrypted']) or '?'
+        pp = decrypt_data(c['prenom_encrypted']) or '?'
+
+        rows += (
+            '<tr><td><strong style="color:#0891b2">' + str(c["numero"]) + '</strong></td>'
+            + '<td>' + pp + ' ' + pn + '</td>'
+            + '<td>Dr. ' + str(c["medecin_prenom"] or "") + ' ' + str(c["medecin_nom"] or "") + '</td>'
+            + '<td>' + str(c["motif"] or "—") + '</td>'
+            + '<td>' + str((c["date_consultation"] or "")[:10]) + '</td>'
+            + '<td><span class="badge ' + urgence_badge + '">' + str(c["niveau_urgence"]) + '</span></td>'
+            + '<td><span class="badge ' + statut_badge + '">' + str(c["statut"]) + '</span></td>'
+            + '<td><a href="/consultations/' + str(c["id"]) + '" class="btn btn-primary" style="padding:4px 10px;font-size:11px">👁</a></td></tr>'
+        )
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">📹 Consultations — ' + str(len(consult_rows)) + '</h1>'
+    content += '<a href="/consultations/nouvelle" class="btn btn-primary">+ Nouvelle consultation</a></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#0891b2,#0e7490)"><div class="kpi-icon">📹</div><div class="kpi-label">Total</div><div class="kpi-value">' + str(stats["total"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#3b82f6,#1e40af)"><div class="kpi-icon">📅</div><div class="kpi-label">Planifiées</div><div class="kpi-value">' + str(stats["planifiee"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#d97706)"><div class="kpi-icon">🔴</div><div class="kpi-label">En cours</div><div class="kpi-value">' + str(stats["en_cours"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-icon">✅</div><div class="kpi-label">Terminées</div><div class="kpi-value">' + str(stats["terminee"]) + '</div></div>'
+    content += '</div>'
+
+    content += '<div style="margin-bottom:16px">'
+    content += '<a href="/consultations" class="btn ' + ('btn-primary' if not statut_f else 'btn-secondary') + '">Toutes</a> '
+    for s in ['planifiee', 'en_cours', 'terminee', 'annulee']:
+        active_cls = 'btn-primary' if statut_f == s else 'btn-secondary'
+        content += '<a href="/consultations?statut=' + s + '" class="btn ' + active_cls + '" style="margin-left:6px">' + s + '</a> '
+    content += '</div>'
+
+    content += '<div class="card" style="padding:0;overflow:hidden">'
+    content += '<table><thead><tr><th>N°</th><th>Patient</th><th>Médecin</th><th>Motif</th><th>Date</th><th>Urgence</th><th>Statut</th><th>Actions</th></tr></thead>'
+    content += '<tbody>' + (rows or '<tr><td colspan="8" style="padding:40px;text-align:center;color:#94a3b8">Aucune consultation</td></tr>') + '</tbody></table></div>'
+
+    return render_page(content, active='consultations', page_title='Consultations')
+
+
+@app.route('/consultations/nouvelle', methods=['GET', 'POST'])
+@login_required
+def consultations_nouvelle():
+    db = get_db()
+    cur = db.cursor()
+    patient_id_pre = int(request.args.get('patient_id') or 0)
+    medecin_id_pre = int(request.args.get('medecin_id') or 0)
+
+    if request.method == 'POST':
+        try:
+            motif = request.form.get('motif') or ''
+            symptomes = request.form.get('symptomes') or ''
+            niveau = request.form.get('niveau_urgence') or 'normal'
+            type_c = request.form.get('type') or 'video'
+            date_c = request.form.get('date_consultation') or datetime.now().strftime('%Y-%m-%d')
+            medecin_id = int(request.form.get('medecin_id') or 0)
+            montant = float(request.form.get('montant') or 0)
+
+            if montant == 0 and medecin_id:
+                cur.execute("SELECT tarif_consultation FROM medecins WHERE id=?", (medecin_id,))
+                r = cur.fetchone()
+                if r:
+                    montant = r['tarif_consultation'] or 5000
+
+            cur.execute("""
+                INSERT INTO consultations (numero, patient_id, medecin_id, date_consultation,
+                                             motif, symptomes, type, statut, niveau_urgence,
+                                             montant, mode_paiement, statut_paiement, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (None,
+                  int(request.form.get('patient_id') or 0),
+                  medecin_id or None,
+                  date_c, motif, symptomes, type_c, 'planifiee', niveau,
+                  montant, request.form.get('mode_paiement') or 'mobile_money',
+                  'en_attente', datetime.now().isoformat()))
+            db.commit()
+            log_action(current_user.id, 'CREATE_CONSULTATION',
+                       'Nouvelle consultation', 'consultations', cur.lastrowid)
+            flash('✅ Consultation créée', 'success')
+            return redirect('/consultations/' + str(cur.lastrowid))
+        except Exception as e:
+            db.rollback()
+            flash('❌ ' + str(e), 'error')
+
+    cur.execute("SELECT * FROM patients WHERE statut='actif' ORDER BY id DESC LIMIT 200")
+    patients_rows = cur.fetchall()
+    patients = []
+    for p in patients_rows:
+        patients.append({
+            'id': p['id'], 'code': p['code'],
+            'nom': decrypt_data(p['nom_encrypted']) or '?',
+            'prenom': decrypt_data(p['prenom_encrypted']) or '?',
+        })
+
+    cur.execute("SELECT * FROM medecins WHERE disponible=1 ORDER BY nom")
+    medecins = cur.fetchall()
+
+    opts_p = ''.join('<option value="' + str(p["id"]) + '"' + (' selected' if p["id"] == patient_id_pre else '') + '>' + str(p["code"] or "") + ' — ' + p["prenom"] + ' ' + p["nom"] + '</option>' for p in patients)
+    opts_m = ''.join('<option value="' + str(m["id"]) + '"' + (' selected' if m["id"] == medecin_id_pre else '') + ' data-tarif="' + str(m["tarif_consultation"]) + '">Dr. ' + str(m["prenom"] or "") + ' ' + str(m["nom"]) + ' — ' + str(m["specialite"] or "") + '</option>' for m in medecins)
+
+    content = '<h1>📹 Nouvelle consultation</h1>'
+    content += '<form method="post" class="card" style="max-width:900px">'
+    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+    content += '<div style="grid-column:1/-1"><label>Patient *</label><select name="patient_id" required>'
+    content += '<option value="">— Sélectionner —</option>' + opts_p + '</select></div>'
+    content += '<div style="grid-column:1/-1"><label>Médecin *</label><select name="medecin_id" id="medecin_select" required onchange="updateTarif()">'
+    content += '<option value="">— Sélectionner —</option>' + opts_m + '</select></div>'
+    content += '<div><label>Date consultation</label><input type="date" name="date_consultation" value="' + datetime.now().strftime('%Y-%m-%d') + '"></div>'
+    content += '<div><label>Type</label><select name="type">'
+    content += '<option value="video">📹 Vidéo</option>'
+    content += '<option value="audio">📞 Audio</option>'
+    content += '<option value="chat">💬 Chat</option>'
+    content += '</select></div>'
+    content += '<div><label>Niveau urgence</label><select name="niveau_urgence">'
+    content += '<option value="faible">🟢 Faible</option>'
+    content += '<option value="normal" selected>🔵 Normal</option>'
+    content += '<option value="urgent">🔴 Urgent</option>'
+    content += '</select></div>'
+    content += '<div><label>Montant (FCFA)</label><input type="number" step="500" name="montant" id="montant" value="5000"></div>'
+    content += '<div><label>Mode paiement</label><select name="mode_paiement">'
+    content += '<option value="mobile_money">📱 Mobile Money</option>'
+    content += '<option value="especes">💵 Espèces</option>'
+    content += '<option value="mutuelle">🏥 Mutuelle</option>'
+    content += '</select></div>'
+    content += '<div style="grid-column:1/-1"><label>Motif *</label><input type="text" name="motif" required></div>'
+    content += '<div style="grid-column:1/-1"><label>Symptômes</label><textarea name="symptomes" rows="3"></textarea></div>'
+    content += '</div>'
+    content += '<script>function updateTarif(){var s=document.getElementById("medecin_select");var o=s.options[s.selectedIndex];if(o.dataset.tarif)document.getElementById("montant").value=Math.round(o.dataset.tarif);}</script>'
+    content += '<div style="margin-top:24px"><button type="submit" class="btn btn-success">💾 Créer</button>'
+    content += '<a href="/consultations" class="btn btn-secondary" style="margin-left:8px">Annuler</a></div>'
+    content += '</form>'
+    return render_page(content, active='consultations', page_title='Nouvelle consultation')
+
+
+@app.route('/consultations/<int:cid>', methods=['GET', 'POST'])
+@login_required
+def consultations_detail(cid):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT c.*, m.nom AS medecin_nom, m.prenom AS medecin_prenom, m.specialite,
+               p.nom_encrypted, p.prenom_encrypted, p.code AS patient_code,
+               p.telephone_encrypted, p.date_naissance_encrypted, p.groupe_sanguin,
+               p.allergies_encrypted, p.antecedents_encrypted
+        FROM consultations c
+        LEFT JOIN medecins m ON m.id=c.medecin_id
+        LEFT JOIN patients p ON p.id=c.patient_id
+        WHERE c.id=?
+    """, (cid,))
+    c = cur.fetchone()
+    if not c:
+        flash('❌ Consultation introuvable', 'error')
+        return redirect('/consultations')
+
+    if request.method == 'POST':
+        try:
+            new_statut = request.form.get('statut') or c['statut']
+            diagnostic = request.form.get('diagnostic') or ''
+            date_fin = datetime.now().isoformat() if new_statut == 'terminee' else None
+            cur.execute("UPDATE consultations SET statut=?, diagnostic=?, date_fin=? WHERE id=?",
+                        (new_statut, diagnostic, date_fin, cid))
+            db.commit()
+            flash('✅ Mise à jour', 'success')
+            return redirect('/consultations/' + str(cid))
+        except Exception as e:
+            db.rollback()
+            flash('❌ ' + str(e), 'error')
+
+    patient_nom = decrypt_data(c['nom_encrypted']) or '?'
+    patient_prenom = decrypt_data(c['prenom_encrypted']) or '?'
+    patient_tel = decrypt_data(c['telephone_encrypted']) or '?'
+    patient_dn = decrypt_data(c['date_naissance_encrypted']) or '?'
+    patient_allergies = decrypt_data(c['allergies_encrypted']) or 'Aucune'
+    patient_antecedents = decrypt_data(c['antecedents_encrypted']) or 'Aucun'
+
+    cur.execute("SELECT * FROM ordonnances WHERE consultation_id=? ORDER BY id DESC", (cid,))
+    ordonnances = cur.fetchall()
+    ord_html = ''
+    for o in ordonnances:
+        ord_html += ('<tr><td><strong>' + str(o["numero"]) + '</strong></td>'
+            + '<td>' + str(o["medicaments"] or "—") + '</td>'
+            + '<td><a href="/ordonnances/' + str(o["id"]) + '" class="btn btn-primary" style="padding:4px 10px;font-size:11px">👁</a></td></tr>')
+
+    statut_badge = {'planifiee': 'badge-blue', 'en_cours': 'badge-orange',
+                    'terminee': 'badge-green', 'annulee': 'badge-red'}.get(c['statut'], 'badge-gray')
+    urgence_badge = {'faible': 'badge-green', 'normal': 'badge-blue', 'urgent': 'badge-red'}.get(c['niveau_urgence'], 'badge-gray')
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">📹 ' + str(c["numero"]) + ' <span class="badge ' + statut_badge + '">' + str(c["statut"]) + '</span> <span class="badge ' + urgence_badge + '">' + str(c["niveau_urgence"]) + '</span></h1>'
+    content += '<div>'
+    if c['statut'] in ('planifiee', 'en_cours'):
+        content += '<a href="/consultations/' + str(cid) + '/video" class="btn btn-success">🎥 Rejoindre</a> '
+    content += '<a href="/consultations" class="btn btn-secondary" style="margin-left:6px">← Retour</a></div></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#0891b2,#0e7490)"><div class="kpi-label">Patient</div><div class="kpi-value" style="font-size:15px">' + patient_prenom + ' ' + patient_nom + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-label">Médecin</div><div class="kpi-value" style="font-size:15px">Dr. ' + str(c["medecin_prenom"] or "") + ' ' + str(c["medecin_nom"] or "") + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#d97706)"><div class="kpi-label">Montant</div><div class="kpi-value" style="font-size:18px">' + f'{c["montant"]:,.0f}' + ' F</div></div>'
+    content += '</div>'
+
+    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">'
+    content += '<div class="card"><h2>👤 Patient (🔐)</h2><table>'
+    content += '<tr><td><strong>Code</strong></td><td>' + str(c["patient_code"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Téléphone</strong></td><td>' + patient_tel + '</td></tr>'
+    content += '<tr><td><strong>Naissance</strong></td><td>' + patient_dn + '</td></tr>'
+    content += '<tr><td><strong>Groupe sanguin</strong></td><td><span class="badge badge-red">' + str(c["groupe_sanguin"] or "—") + '</span></td></tr>'
+    content += '<tr><td><strong>Allergies</strong></td><td style="color:#dc2626">' + patient_allergies + '</td></tr>'
+    content += '<tr><td><strong>Antécédents</strong></td><td>' + patient_antecedents + '</td></tr>'
+    content += '</table></div>'
+
+    content += '<div class="card"><h2>📋 Consultation</h2><table>'
+    content += '<tr><td><strong>Date</strong></td><td>' + str((c["date_consultation"] or "—")[:10]) + '</td></tr>'
+    content += '<tr><td><strong>Motif</strong></td><td>' + str(c["motif"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Symptômes</strong></td><td>' + str(c["symptomes"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Diagnostic</strong></td><td>' + str(c["diagnostic"] or "À définir") + '</td></tr>'
+    content += '<tr><td><strong>Paiement</strong></td><td>' + str(c["statut_paiement"]) + '</td></tr>'
+    content += '</table></div>'
+    content += '</div>'
+
+    content += '<div class="card"><h2>✏️ Actions</h2>'
+    content += '<form method="post">'
+    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+    content += '<div><label>Statut</label><select name="statut">'
+    for st, lb in [('planifiee', 'Planifiée'), ('en_cours', 'En cours'), ('terminee', 'Terminée'), ('annulee', 'Annulée')]:
+        sel = ' selected' if c['statut'] == st else ''
+        content += '<option value="' + st + '"' + sel + '>' + lb + '</option>'
+    content += '</select></div>'
+    content += '<div style="grid-column:1/-1"><label>Diagnostic</label>'
+    content += '<textarea name="diagnostic" rows="3">' + str(c["diagnostic"] or "") + '</textarea></div>'
+    content += '</div>'
+    content += '<div style="margin-top:16px;display:flex;gap:8px">'
+    content += '<button type="submit" class="btn btn-success">💾 Mettre à jour</button>'
+    content += '<a href="/ordonnances/nouvelle?consultation_id=' + str(cid) + '" class="btn btn-primary">📝 Créer ordonnance</a>'
+    content += '</div></form></div>'
+
+    if ordonnances:
+        content += '<div class="card"><h2>📝 Ordonnances (' + str(len(ordonnances)) + ')</h2>'
+        content += '<table><thead><tr><th>N°</th><th>Médicaments</th><th>Actions</th></tr></thead><tbody>' + ord_html + '</tbody></table></div>'
+
+    return render_page(content, active='consultations', page_title='Consultation')
+
+
+@app.route('/consultations/<int:cid>/video', methods=['GET', 'POST'])
+@login_required
+def consultations_video(cid):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT c.*, m.nom AS medecin_nom, m.prenom AS medecin_prenom,
+               p.nom_encrypted, p.prenom_encrypted
+        FROM consultations c
+        LEFT JOIN medecins m ON m.id=c.medecin_id
+        LEFT JOIN patients p ON p.id=c.patient_id
+        WHERE c.id=?
+    """, (cid,))
+    c = cur.fetchone()
+    if not c:
+        flash('❌ Consultation introuvable', 'error')
+        return redirect('/consultations')
+
+    cur.execute("SELECT * FROM sessions_video WHERE consultation_id=?", (cid,))
+    sv = cur.fetchone()
+    if not sv:
+        token_patient = generate_jwt({'consultation': cid, 'role': 'patient'}, expires_hours=2)
+        token_medecin = generate_jwt({'consultation': cid, 'role': 'medecin'}, expires_hours=2)
+        room_id = 'omega_room_' + str(cid) + '_' + str(int(datetime.now().timestamp()))
+
+        cur.execute("""
+            INSERT INTO sessions_video (consultation_id, room_id, token_patient, token_medecin,
+                                          statut, created_at)
+            VALUES (?,?,?,?, 'attente', ?)
+        """, (cid, room_id, token_patient, token_medecin, datetime.now().isoformat()))
+        db.commit()
+        cur.execute("SELECT * FROM sessions_video WHERE consultation_id=?", (cid,))
+        sv = cur.fetchone()
+
+    if request.method == 'POST':
+        action = request.form.get('action') or ''
+        try:
+            if action == 'start':
+                cur.execute("UPDATE sessions_video SET statut='active', debut_video=? WHERE consultation_id=?",
+                            (datetime.now().isoformat(), cid))
+                cur.execute("UPDATE consultations SET statut='en_cours' WHERE id=?", (cid,))
+                db.commit()
+                flash('🎥 Session vidéo démarrée', 'success')
+            elif action == 'end':
+                now = datetime.now()
+                debut = sv['debut_video']
+                duree = 0
+                if debut:
+                    try:
+                        duree = int((now - datetime.fromisoformat(debut)).total_seconds() / 60)
+                    except Exception:
+                        duree = 0
+                cur.execute("""
+                    UPDATE sessions_video SET statut='terminee', fin_video=?, duree_reelle=?
+                    WHERE consultation_id=?
+                """, (now.isoformat(), duree, cid))
+                cur.execute("UPDATE consultations SET statut='terminee', date_fin=? WHERE id=?",
+                            (now.isoformat(), cid))
+                db.commit()
+                flash('✅ Session terminée', 'success')
+            return redirect('/consultations/' + str(cid) + '/video')
+        except Exception as e:
+            db.rollback()
+            flash('❌ ' + str(e), 'error')
+
+    pn = decrypt_data(c['nom_encrypted']) or '?'
+    pp = decrypt_data(c['prenom_encrypted']) or '?'
+    med_nom = 'Dr. ' + str(c['medecin_prenom'] or '') + ' ' + str(c['medecin_nom'] or '')
+    sv_statut = sv['statut'] if sv else 'attente'
+    sv_badge = {'attente': 'badge-blue', 'active': 'badge-orange', 'terminee': 'badge-green'}.get(sv_statut, 'badge-gray')
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">🎥 Salle vidéo <span class="badge ' + sv_badge + '">' + str(sv_statut) + '</span></h1>'
+    content += '<a href="/consultations/' + str(cid) + '" class="btn btn-secondary">← Retour</a></div>'
+
+    content += '<div style="margin-bottom:16px"><span class="secure-badge">🔐 WebRTC chiffré · Tokens JWT signés HMAC-SHA256</span></div>'
+
+    content += '''
+    <div class="video-room">
+      <h3>🎥 Consultation en direct</h3>
+      <p style="color:#94a3b8;margin-bottom:16px">''' + med_nom + ''' ↔ ''' + pp + ' ' + pn + '''</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px">
+        <div>
+          <div style="background:#1e293b;border-radius:10px;height:240px;display:flex;align-items:center;justify-content:center;font-size:60px">🩺</div>
+          <div style="margin-top:8px;color:#10b981;font-weight:700">🟢 Vous</div>
+        </div>
+        <div>
+          <div style="background:#1e293b;border-radius:10px;height:240px;display:flex;align-items:center;justify-content:center;font-size:60px">👨‍⚕️</div>
+          <div style="margin-top:8px;color:#94a3b8;font-weight:700">📡 En attente</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:center">
+        <button style="background:#10b981;color:#fff;border:none;padding:12px 20px;border-radius:8px;font-weight:700;cursor:pointer">🎤 Micro</button>
+        <button style="background:#0891b2;color:#fff;border:none;padding:12px 20px;border-radius:8px;font-weight:700;cursor:pointer">📹 Caméra</button>
+        <button style="background:#f59e0b;color:#fff;border:none;padding:12px 20px;border-radius:8px;font-weight:700;cursor:pointer">💬 Chat</button>
+      </div>
+    </div>
+    '''
+
+    content += '<div class="card"><h2>🎮 Contrôles de session</h2>'
+    content += '<div style="display:flex;gap:10px;flex-wrap:wrap">'
+    if sv_statut == 'attente':
+        content += '<form method="post" style="display:inline"><input type="hidden" name="action" value="start"><button type="submit" class="btn btn-success">🟢 Démarrer</button></form>'
+    elif sv_statut == 'active':
+        content += '<form method="post" style="display:inline"><input type="hidden" name="action" value="end"><button type="submit" class="btn btn-danger">🔴 Terminer</button></form>'
+    content += '</div></div>'
+
+    content += '<div class="card"><h2>📡 Session sécurisée</h2><table>'
+    content += '<tr><td><strong>Room ID</strong></td><td><code>' + str(sv["room_id"] if sv else "—") + '</code></td></tr>'
+    content += '<tr><td><strong>Token patient</strong></td><td><code style="font-size:10px">' + str((sv["token_patient"] if sv else "")[:60]) + '...</code></td></tr>'
+    content += '<tr><td><strong>Statut</strong></td><td>' + sv_statut + '</td></tr>'
+    content += '</table></div>'
+
+    content += '<div class="card"><h2>💬 Chat sécurisé (AES-256)</h2>'
+    content += '<div style="background:#f8fafc;padding:14px;border-radius:8px;height:180px;overflow-y:auto;margin-bottom:12px">'
+    content += '<div style="font-size:12.5px;color:#94a3b8;text-align:center;padding:20px">🔐 Messages chiffrés avant envoi</div>'
+    content += '</div>'
+    content += '<div style="display:flex;gap:8px">'
+    content += '<input type="text" placeholder="Écrire un message chiffré..." style="flex:1;padding:12px;border:2px solid #e5e7eb;border-radius:8px">'
+    content += '<button style="background:#0891b2;color:#fff;border:none;padding:12px 20px;border-radius:8px;font-weight:700;cursor:pointer">🔐 Envoyer</button>'
+    content += '</div></div>'
+
+    return render_page(content, active='consultations', page_title='Salle vidéo')

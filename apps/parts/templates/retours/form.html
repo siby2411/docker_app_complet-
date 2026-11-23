@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Nouveau retour{% endblock %}
+{% block page_title %}↩️ Nouveau retour{% endblock %}
+{% block content %}
+<form method="POST" class="card-premium">
+  <div class="row g-3">
+    <div class="col-md-6"><label class="form-label">Vente d'origine *</label>
+      <select name="vente_id" id="vente-select" class="form-select" required onchange="loadLignes()">
+        <option value="">— Choisir une vente —</option>
+        {% for v in ventes %}<option value="{{ v.id }}" {% if request.args.get('vente_id')|int == v.id %}selected{% endif %}>{{ v.numero }} — {{ v.client_prenom or '' }} {{ v.client_nom or 'Passage' }} ({{ v.date_vente|dte }})</option>{% endfor %}
+      </select>
+    </div>
+    <div class="col-md-6"><label class="form-label">Pièce à retourner *</label>
+      <select name="piece_id" id="piece-select" class="form-select" required>
+        <option value="">— Sélectionner la vente d'abord —</option>
+      </select>
+    </div>
+    <div class="col-md-3"><label class="form-label">Quantité *</label><input type="number" name="quantite" class="form-control" required min="1" value="1"></div>
+    <div class="col-md-3"><label class="form-label">Type retour</label>
+      <select name="type_retour" class="form-select">
+        <option value="remboursement">Remboursement</option>
+        <option value="echange">Échange</option>
+        <option value="avoir">Avoir</option>
+      </select>
+    </div>
+    <div class="col-12"><label class="form-label">Motif *</label><textarea name="motif" class="form-control" rows="2" required></textarea></div>
+  </div>
+  <div class="mt-4 d-flex gap-2">
+    <button class="btn btn-accent"><i class="bi bi-check-lg"></i> Créer le retour</button>
+    <a href="{{ url_for('retours_list') }}" class="btn btn-light">Annuler</a>
+  </div>
+</form>
+<script>
+async function loadLignes() {
+  const vid = document.getElementById('vente-select').value;
+  const sel = document.getElementById('piece-select');
+  sel.innerHTML = '<option value="">— Pièce —</option>';
+  if (!vid) return;
+  const r = await fetch(`/api/vente/${vid}/lignes`);
+  const data = await r.json();
+  data.forEach(l => {
+    const o = document.createElement('option');
+    o.value = l.piece_id;
+    o.textContent = `${l.sku} — ${l.piece_nom.substring(0, 40)} (Qté: ${l.quantite})`;
+    sel.appendChild(o);
+  });
+}
+window.addEventListener('DOMContentLoaded', loadLignes);
+</script>
+{% endblock %}

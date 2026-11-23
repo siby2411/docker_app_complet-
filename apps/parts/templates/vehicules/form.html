@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Modifier' if vehicule else 'Nouveau' }} véhicule{% endblock %}
+{% block page_title %}{{ '✏️ Modifier' if vehicule else '➕ Nouveau' }} véhicule{% endblock %}
+{% block content %}
+
+<form method="POST" enctype="multipart/form-data" class="card-premium p-4">
+  <div class="row g-3">
+
+    <div class="col-md-4">
+      <label class="form-label">👤 Client propriétaire</label>
+      <select name="client_id" class="form-select">
+        <option value="">— Aucun —</option>
+        {% for c in clients %}
+          <option value="{{ c.id }}" {% if vehicule and vehicule.client_id==c.id %}selected{% endif %}>
+            {{ c.prenom or '' }} {{ c.nom }} — {{ c.telephone }}
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="col-md-4">
+      <label class="form-label">🔢 Immatriculation *</label>
+      <input type="text" name="immatriculation" class="form-control" required
+             style="text-transform:uppercase"
+             value="{{ vehicule.immatriculation if vehicule else '' }}">
+    </div>
+
+    <div class="col-md-4">
+      <label class="form-label">VIN / Châssis</label>
+      <input type="text" name="vin_chassis" class="form-control"
+             style="text-transform:uppercase"
+             value="{{ vehicule.vin_chassis if vehicule else '' }}">
+    </div>
+
+    <div class="col-md-3"><label class="form-label">Marque *</label>
+      <input type="text" name="marque" class="form-control" required
+             value="{{ vehicule.marque if vehicule else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Modèle *</label>
+      <input type="text" name="modele" class="form-control" required
+             value="{{ vehicule.modele if vehicule else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Version</label>
+      <input type="text" name="version" class="form-control"
+             value="{{ vehicule.version if vehicule else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Année</label>
+      <input type="number" name="annee" class="form-control" min="1950" max="2099"
+             value="{{ vehicule.annee if vehicule else '' }}"></div>
+
+    <div class="col-md-3"><label class="form-label">Carburant</label>
+      <select name="carburant" class="form-select">
+        {% set carb = vehicule.carburant if vehicule else '' %}
+        <option value="essence" {% if carb=='essence' %}selected{% endif %}>Essence</option>
+        <option value="diesel" {% if carb=='diesel' %}selected{% endif %}>Diesel</option>
+        <option value="hybride" {% if carb=='hybride' %}selected{% endif %}>Hybride</option>
+        <option value="electrique" {% if carb=='electrique' %}selected{% endif %}>Électrique</option>
+        <option value="gpl" {% if carb=='gpl' %}selected{% endif %}>GPL</option>
+      </select>
+    </div>
+    <div class="col-md-3"><label class="form-label">Transmission</label>
+      <select name="transmission" class="form-select">
+        {% set tr = vehicule.transmission if vehicule else '' %}
+        <option value="manuelle" {% if tr=='manuelle' %}selected{% endif %}>Manuelle</option>
+        <option value="automatique" {% if tr=='automatique' %}selected{% endif %}>Automatique</option>
+      </select>
+    </div>
+    <div class="col-md-3"><label class="form-label">Couleur</label>
+      <input type="text" name="couleur" class="form-control"
+             value="{{ vehicule.couleur if vehicule else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Kilométrage</label>
+      <input type="number" name="kilometrage" class="form-control" min="0"
+             value="{{ vehicule.kilometrage if vehicule else 0 }}"></div>
+
+    <div class="col-md-3"><label class="form-label">Nb portes</label>
+      <input type="number" name="nb_portes" class="form-control"
+             value="{{ vehicule.nb_portes if vehicule else 4 }}"></div>
+    <div class="col-md-3"><label class="form-label">Nb places</label>
+      <input type="number" name="nb_places" class="form-control"
+             value="{{ vehicule.nb_places if vehicule else 5 }}"></div>
+    <div class="col-md-3"><label class="form-label">Puissance (ch)</label>
+      <input type="number" name="puissance_ch" class="form-control"
+             value="{{ vehicule.puissance_ch if vehicule else 0 }}"></div>
+    <div class="col-md-3"><label class="form-label">Cylindrée (cm³)</label>
+      <input type="number" name="cylindree_cm3" class="form-control"
+             value="{{ vehicule.cylindree_cm3 if vehicule else 0 }}"></div>
+
+    <div class="col-md-3"><label class="form-label">Mise en circulation</label>
+      <input type="date" name="date_mise_en_circulation" class="form-control"
+             value="{{ vehicule.date_mise_en_circulation if vehicule else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Date achat</label>
+      <input type="date" name="date_achat" class="form-control"
+             value="{{ vehicule.date_achat if vehicule else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">N° carte grise</label>
+      <input type="text" name="numero_carte_grise" class="form-control"
+             value="{{ vehicule.numero_carte_grise if vehicule else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Statut</label>
+      <select name="statut" class="form-select">
+        {% set st = vehicule.statut if vehicule else 'actif' %}
+        <option value="actif" {% if st=='actif' %}selected{% endif %}>Actif</option>
+        <option value="vendu" {% if st=='vendu' %}selected{% endif %}>Vendu</option>
+        <option value="archive" {% if st=='archive' %}selected{% endif %}>Archivé</option>
+      </select>
+    </div>
+
+    <div class="col-md-6"><label class="form-label">Assurance — Compagnie</label>
+      <input type="text" name="assurance_compagnie" class="form-control"
+             value="{{ vehicule.assurance_compagnie if vehicule else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">N° police</label>
+      <input type="text" name="assurance_police" class="form-control"
+             value="{{ vehicule.assurance_police if vehicule else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Expiration assurance</label>
+      <input type="date" name="assurance_expiration" class="form-control"
+             value="{{ vehicule.assurance_expiration if vehicule else '' }}"></div>
+
+    <div class="col-md-3"><label class="form-label">Expiration visite technique</label>
+      <input type="date" name="visite_technique_expiration" class="form-control"
+             value="{{ vehicule.visite_technique_expiration if vehicule else '' }}"></div>
+
+    <div class="col-md-6"><label class="form-label">Photo</label>
+      <input type="file" name="photo_principale" class="form-control" accept="image/*">
+      {% if vehicule and vehicule.photo_principale %}
+        <img src="{{ url_for('uploaded_file', subpath='parts', filename=vehicule.photo_principale) }}"
+             style="max-width:120px;margin-top:6px;border-radius:8px">
+      {% endif %}
+    </div>
+
+    <div class="col-12"><label class="form-label">Notes</label>
+      <textarea name="notes" class="form-control" rows="3">{{ vehicule.notes if vehicule else '' }}</textarea></div>
+
+  </div>
+
+  <div class="mt-4 d-flex gap-2">
+    <button class="btn btn-success">💾 Enregistrer</button>
+    <a href="{{ url_for('vehicules_list') }}" class="btn btn-secondary">Annuler</a>
+  </div>
+</form>
+
+{% endblock %}

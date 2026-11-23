@@ -1,0 +1,2534 @@
+from flask import Flask, render_template_string, request, redirect, url_for, flash, jsonify, Response
+from werkzeug.middleware.proxy_fix import ProxyFix
+from flask_login import current_user, login_required
+import sqlite3
+from datetime import datetime
+import os
+
+# ==================== IMPORTS MODULES ====================
+from auth import init_auth, log_action, admin_required, prof_or_admin_required
+
+try:
+    from init_db_v2 import generate_bulletins_for_student
+except ImportError:
+    def generate_bulletins_for_student(etudiant_id, classe_id):
+        print("[WARN] generate_bulletins_for_student absent")
+        return 0
+
+try:
+    from pdf_generator import (
+        generer_bulletin_pdf, generer_attestation_scolarite_pdf,
+        generer_attestation_reussite_pdf
+    )
+    PDF_AVAILABLE = True
+except ImportError as ex:
+    print(f"[WARN] pdf_generator absent: {ex}")
+    PDF_AVAILABLE = False
+
+try:
+    from communication import (
+        envoyer_sms, envoyer_email, notifier_absence, notifier_paiement,
+        notifier_notes_publiees
+    )
+    COMM_AVAILABLE = True
+except ImportError as ex:
+    print(f"[WARN] communication absent: {ex}")
+    COMM_AVAILABLE = False
+
+try:
+    from excel_export import (
+        exporter_etudiants, exporter_notes_classe,
+        exporter_paiements, exporter_bulletin_etudiant
+    )
+    EXCEL_AVAILABLE = True
+except ImportError as ex:
+    print(f"[WARN] excel_export absent: {ex}")
+    EXCEL_AVAILABLE = False
+
+
+app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'omega_ecole_lmd_2026_secure_change_me')
+
+
+# ==================== MIDDLEWARE PRÉFIXE ====================
+class PrefixMiddleware:
+    def __init__(self, app, prefix='/ecole'):
+        self.app = app
+        self.prefix = prefix
+
+    def __call__(self, environ, start_response):
+        path = environ.get('PATH_INFO', '')
+        if path.startswith(self.prefix + '/'):
+            environ['PATH_INFO'] = path[len(self.prefix):]
+        elif path == self.prefix:
+            environ['PATH_INFO'] = '/'
+        return self.app(environ, start_response)
+
+
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+app.wsgi_app = PrefixMiddleware(app.wsgi_app, prefix='/ecole')
+
+init_auth(app)
+
+DB_PATH = "/app/data/ecole.db"
+
+
+# ==================== DB ====================
+def get_db():
+    os.makedirs("/app/data", exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
+
+
+# ==================== HELPERS ====================
+def generer_code(prefix, table, champ):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute(f"SELECT COUNT(*) FROM {table}")
+    n = c.fetchone()[0] + 1
+    conn.close()
+    return f"{prefix}{n:04d}"
+
+
+def _float_or_none(v):
+    if v is None or v == '':
+        return None
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return None
+
+
+def calculer_moyenne_etudiant(etudiant_id, semestre_id=None):
+    conn = get_db()
+    c = conn.cursor()
+    try:
+        if semestre_id:
+            c.execute("""SELECT SUM(n.note_finale * m.coefficient) / SUM(m.coefficient),
+                    COUNT(*),
+                    SUM(CASE WHEN n.note_finale >= 10 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN n.note_finale IS NOT NULL AND n.note_finale < 10 THEN 1 ELSE 0 END)
+                FROM notes n JOIN matieres m ON n.matiere_id = m.id
+                WHERE n.etudiant_id = ? AND n.semestre_id = ?
+                AND n.note_finale IS NOT NULL""", (etudiant_id, semestre_id))
+        else:
+            c.execute("""SELECT SUM(n.note_finale * m.coefficient) / SUM(m.coefficient),
+                    COUNT(*),
+                    SUM(CASE WHEN n.note_finale >= 10 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN n.note_finale IS NOT NULL AND n.note_finale < 10 THEN 1 ELSE 0 END)
+                FROM notes n JOIN matieres m ON n.matiere_id = m.id
+                WHERE n.etudiant_id = ? AND n.note_finale IS NOT NULL""", (etudiant_id,))
+        r = c.fetchone()
+        if r and r[0] is not None:
+            conn.close()
+            return {'moyenne': round(r[0] or 0, 2), 'nb_matieres': r[1] or 0,
+                    'validees': r[2] or 0, 'echecs': r[3] or 0}
+    except sqlite3.OperationalError:
+        pass
+
+    c.execute("""SELECT SUM(b.note_finale * m.coefficient) / SUM(m.coefficient),
+            COUNT(*),
+            SUM(CASE WHEN b.note_finale >= 10 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN b.note_finale < 10 AND b.note_finale > 0 THEN 1 ELSE 0 END)
+        FROM bulletins b JOIN matieres m ON b.matiere_id = m.id
+        WHERE b.etudiant_id = ?""", (etudiant_id,))
+    r = c.fetchone()
+    conn.close()
+    return {'moyenne': round(r[0] or 0, 2), 'nb_matieres': r[1] or 0,
+            'validees': r[2] or 0, 'echecs': r[3] or 0}
+
+
+def get_classement(etudiant_id, semestre_id=None):
+    conn = get_db()
+    c = conn.cursor()
+    try:
+        if semestre_id:
+            c.execute("""SELECT e.id,
+                (SELECT SUM(n.note_finale * m.coefficient) / SUM(m.coefficient)
+                 FROM notes n JOIN matieres m ON n.matiere_id = m.id
+                 WHERE n.etudiant_id = e.id AND n.semestre_id = ?
+                 AND n.note_finale IS NOT NULL)
+                FROM etudiants e
+                WHERE e.classe_id = (SELECT classe_id FROM etudiants WHERE id = ?)
+                ORDER BY 2 DESC""", (semestre_id, etudiant_id))
+        else:
+            raise sqlite3.OperationalError("no")
+    except sqlite3.OperationalError:
+        c.execute("""SELECT e.id, (SELECT AVG(b.note_finale * m.coefficient) / AVG(m.coefficient)
+                FROM bulletins b JOIN matieres m ON b.matiere_id = m.id
+                WHERE b.etudiant_id = e.id)
+            FROM etudiants e
+            WHERE e.classe_id = (SELECT classe_id FROM etudiants WHERE id = ?)
+            ORDER BY 2 DESC""", (etudiant_id,))
+    classement = c.fetchall()
+    conn.close()
+    for i, e in enumerate(classement):
+        if e[0] == etudiant_id:
+            return i + 1, len(classement)
+    return 0, 0
+
+
+def _recalculer_rangs(cursor, classe_id, semestre_id):
+    try:
+        cursor.execute("""SELECT n.etudiant_id,
+                SUM(n.note_finale * m.coefficient) / SUM(m.coefficient) as moy
+            FROM notes n JOIN matieres m ON n.matiere_id = m.id
+            WHERE n.classe_id = ? AND n.semestre_id = ? AND n.note_finale IS NOT NULL
+            GROUP BY n.etudiant_id ORDER BY moy DESC""", (classe_id, semestre_id))
+        for i, (etu_id, _) in enumerate(cursor.fetchall(), 1):
+            cursor.execute("""UPDATE notes SET rang = ?
+                WHERE etudiant_id = ? AND semestre_id = ? AND classe_id = ?""",
+                (i, etu_id, semestre_id, classe_id))
+    except sqlite3.OperationalError:
+        pass
+
+
+# ==================== TEMPLATE BASE ====================
+HTML_BASE = """
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Omega Ecole - Systeme LMD</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; font-family:'Segoe UI',sans-serif; }
+        body { background:#f0f4f8; }
+        .header { background:linear-gradient(135deg,#1a1a2e,#0f3460); padding:15px 30px;
+            display:flex; justify-content:space-between; align-items:center;
+            border-bottom:4px solid #e94560; flex-wrap:wrap; gap:10px; }
+        .header h1 { color:white; font-size:1.5rem; }
+        .header h1 span { color:#e94560; }
+        .header .user-zone { display:flex; align-items:center; gap:15px; color:white; font-size:0.85rem; }
+        .header .user-zone a { color:#e94560; text-decoration:none; }
+        .header .role-badge { background:rgba(233,69,96,0.3); padding:3px 10px;
+            border-radius:20px; font-size:0.7rem; text-transform:uppercase; }
+        .nav { background:white; padding:0 20px; display:flex; gap:2px;
+            border-bottom:2px solid #e2e8f0; flex-wrap:wrap; }
+        .nav a { padding:12px 15px; color:#4a5568; text-decoration:none;
+            border-bottom:3px solid transparent; transition:0.3s; font-size:0.85rem;
+            display:flex; align-items:center; gap:5px; }
+        .nav a:hover, .nav a.active { color:#e94560; border-bottom-color:#e94560; background:#f7fafc; }
+        .container { max-width:1400px; margin:20px auto; padding:0 20px; }
+        .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+            gap:15px; margin-bottom:20px; }
+        .stat-card { background:white; padding:15px; border-radius:12px;
+            border-left:4px solid #e94560; box-shadow:0 2px 8px rgba(0,0,0,0.05); }
+        .stat-card .num { font-size:1.8rem; font-weight:700; color:#1a1a2e; }
+        .stat-card .label { color:#718096; font-size:0.8rem; text-transform:uppercase; }
+        .stat-card .icon { float:right; font-size:2rem; color:#e94560; opacity:0.2; }
+        .card { background:white; border-radius:12px; padding:20px;
+            box-shadow:0 2px 8px rgba(0,0,0,0.05); margin-top:20px; overflow-x:auto; }
+        .card-header { display:flex; justify-content:space-between; align-items:center;
+            flex-wrap:wrap; gap:10px; margin-bottom:15px; }
+        .card-header h2 { font-size:1.2rem; color:#1a1a2e; }
+        .btn { padding:8px 16px; border:none; border-radius:6px; cursor:pointer;
+            font-weight:600; display:inline-flex; align-items:center; gap:6px;
+            text-decoration:none; transition:0.3s; font-size:0.85rem; }
+        .btn-primary { background:#e94560; color:white; }
+        .btn-primary:hover { background:#c73652; }
+        .btn-success { background:#2ecc71; color:white; }
+        .btn-success:hover { background:#27ae60; }
+        .btn-warning { background:#f39c12; color:white; }
+        .btn-warning:hover { background:#e67e22; }
+        .btn-danger { background:#e74c3c; color:white; }
+        .btn-danger:hover { background:#c0392b; }
+        .btn-info { background:#3498db; color:white; }
+        .btn-info:hover { background:#2980b9; }
+        .btn-sm { padding:4px 10px; font-size:0.75rem; }
+        table { width:100%; border-collapse:collapse; }
+        th, td { padding:10px 12px; text-align:left; border-bottom:1px solid #e2e8f0; font-size:0.9rem; }
+        th { background:#f7fafc; color:#4a5568; font-size:0.75rem; text-transform:uppercase; }
+        tr:hover { background:#f7fafc; }
+        .badge { padding:3px 10px; border-radius:20px; font-size:0.7rem; font-weight:600; }
+        .badge-success { background:#d1fae5; color:#065f46; }
+        .badge-warning { background:#fef3c7; color:#92400e; }
+        .badge-danger { background:#fee2e2; color:#991b1b; }
+        .badge-info { background:#dbeafe; color:#1e40af; }
+        .form-container { background:white; border-radius:12px; padding:25px;
+            max-width:800px; margin:0 auto; box-shadow:0 2px 8px rgba(0,0,0,0.05); }
+        .form-group { margin-bottom:12px; }
+        .form-group label { display:block; font-weight:600; color:#4a5568;
+            margin-bottom:4px; font-size:0.9rem; }
+        .form-group input, .form-group select, .form-group textarea {
+            width:100%; padding:8px 12px; border:2px solid #e2e8f0;
+            border-radius:6px; font-size:0.9rem; }
+        .form-group input:focus, .form-group select:focus { outline:none; border-color:#e94560; }
+        .form-row { display:grid; grid-template-columns:1fr 1fr; gap:15px; }
+        .footer { background:#1a1a2e; color:#a8b2d1; text-align:center;
+            padding:15px; margin-top:30px; border-top:4px solid #e94560; font-size:0.85rem; }
+        .footer span { color:#e94560; }
+        .flash { padding:10px 15px; border-radius:6px; margin-bottom:10px; }
+        .flash-success { background:#d1fae5; color:#065f46; }
+        .flash-danger { background:#fee2e2; color:#991b1b; }
+        .flash-warning { background:#fef3c7; color:#92400e; }
+        @media (max-width:768px){ .form-row{ grid-template-columns:1fr; }
+            .header{ flex-direction:column; } .stats{ grid-template-columns:1fr 1fr; } }
+        @media print { .nav, .header, .footer, .btn, .flash { display:none !important; } }
+    </style>
+</head>
+<body>
+<header class="header">
+    <div><h1>🎓 OMEGA <span>CONSULTING</span></h1></div>
+    <div class="user-zone">
+        <span><i class="fas fa-user-circle"></i> {CURRENT_USER}</span>
+        <span class="role-badge">{CURRENT_ROLE}</span>
+        <a href="/logout"><i class="fas fa-sign-out-alt"></i> Déconnexion</a>
+    </div>
+</header>
+<nav class="nav">
+    <a href="/" class="{{ 'active' if active=='dashboard' else '' }}"><i class="fas fa-home"></i> Dashboard</a>
+    <a href="/etudiants" class="{{ 'active' if active=='etudiants' else '' }}"><i class="fas fa-users"></i> Étudiants</a>
+    <a href="/inscription" class="{{ 'active' if active=='inscription' else '' }}"><i class="fas fa-user-plus"></i> Inscription</a>
+    <a href="/classes" class="{{ 'active' if active=='classes' else '' }}"><i class="fas fa-chalkboard"></i> Classes</a>
+    <a href="/matieres" class="{{ 'active' if active=='matieres' else '' }}"><i class="fas fa-book"></i> Matières</a>
+    <a href="/professeurs" class="{{ 'active' if active=='professeurs' else '' }}"><i class="fas fa-chalkboard-teacher"></i> Profs</a>
+    <a href="/notes/saisie" class="{{ 'active' if active=='notes' else '' }}"><i class="fas fa-pen"></i> Notes</a>
+    <a href="/presences" class="{{ 'active' if active=='presences' else '' }}"><i class="fas fa-calendar-check"></i> Présences</a>
+    <a href="/emploi-temps" class="{{ 'active' if active=='emploi_temps' else '' }}"><i class="fas fa-calendar-alt"></i> Emploi du temps</a>
+    <a href="/bulletins" class="{{ 'active' if active=='bulletins' else '' }}"><i class="fas fa-file-alt"></i> Bulletins</a>
+    <a href="/deliberations" class="{{ 'active' if active=='deliberations' else '' }}"><i class="fas fa-gavel"></i> Délibérations</a>
+    <a href="/scolarite" class="{{ 'active' if active=='scolarite' else '' }}"><i class="fas fa-money-bill-wave"></i> Scolarité</a>
+    <a href="/communication" class="{{ 'active' if active=='communication' else '' }}"><i class="fas fa-comments"></i> Communication</a>
+    <a href="/analytics" class="{{ 'active' if active=='analytics' else '' }}"><i class="fas fa-chart-line"></i> Analytics</a>
+</nav>
+<div class="container">
+    {FLASH_MESSAGES}
+    {CONTENT}
+</div>
+<footer class="footer">&copy; 2026 <span>Omega Consulting</span> — Tous droits réservés</footer>
+</body>
+</html>
+"""
+
+
+def render_page(content, active='dashboard'):
+    flash_html = """
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}{% for cat, msg in messages %}
+            <div class="flash flash-{{ cat }}">{{ msg }}</div>
+        {% endfor %}{% endif %}
+    {% endwith %}
+    """
+    page = HTML_BASE.replace("{CONTENT}", content).replace("{FLASH_MESSAGES}", flash_html)
+    if current_user.is_authenticated:
+        page = page.replace("{CURRENT_USER}", current_user.username)
+        page = page.replace("{CURRENT_ROLE}", current_user.role)
+    else:
+        page = page.replace("{CURRENT_USER}", "Anonyme")
+        page = page.replace("{CURRENT_ROLE}", "")
+    page = page.replace("{{ 'active' if active=='" + active + "' else '' }}", "active")
+    return render_template_string(page, active=active)
+
+
+# ==================== DASHBOARD ====================
+@app.route("/")
+@login_required
+def index():
+    conn = get_db()
+    c = conn.cursor()
+    total = c.execute("SELECT COUNT(*) FROM etudiants").fetchone()[0]
+    actifs = c.execute("SELECT COUNT(*) FROM etudiants WHERE statut='Actif'").fetchone()[0]
+    classes_count = c.execute("SELECT COUNT(*) FROM classes").fetchone()[0]
+    profs = c.execute("SELECT COUNT(*) FROM professeurs WHERE statut='Actif'").fetchone()[0]
+    matieres_count = c.execute("SELECT COUNT(*) FROM matieres").fetchone()[0]
+    scolarite_total = c.execute("SELECT SUM(montant) FROM scolarite WHERE statut='Payé'").fetchone()[0] or 0
+
+    c.execute("""SELECT e.*, c.nom as classe_nom,
+        (SELECT AVG(b.note_finale * m.coefficient) / AVG(m.coefficient)
+        FROM bulletins b JOIN matieres m ON b.matiere_id = m.id
+        WHERE b.etudiant_id = e.id) as moyenne
+        FROM etudiants e JOIN classes c ON e.classe_id = c.id
+        ORDER BY e.id DESC LIMIT 15""")
+    etudiants = c.fetchall()
+    conn.close()
+
+    content = f"""
+    <div class="stats">
+        <div class="stat-card"><div class="icon"><i class="fas fa-users"></i></div><div class="num">{total}</div><div class="label">Étudiants</div></div>
+        <div class="stat-card" style="border-left-color:#2ecc71;"><div class="icon"><i class="fas fa-user-check"></i></div><div class="num">{actifs}</div><div class="label">Actifs</div></div>
+        <div class="stat-card" style="border-left-color:#3498db;"><div class="icon"><i class="fas fa-chalkboard"></i></div><div class="num">{classes_count}</div><div class="label">Classes</div></div>
+        <div class="stat-card" style="border-left-color:#9b59b6;"><div class="icon"><i class="fas fa-chalkboard-teacher"></i></div><div class="num">{profs}</div><div class="label">Professeurs</div></div>
+        <div class="stat-card" style="border-left-color:#e67e22;"><div class="icon"><i class="fas fa-book"></i></div><div class="num">{matieres_count}</div><div class="label">Matières</div></div>
+        <div class="stat-card" style="border-left-color:#f39c12;"><div class="icon"><i class="fas fa-money-bill-wave"></i></div><div class="num">{scolarite_total:,.0f}</div><div class="label">Scolarité FCFA</div></div>
+    </div>
+    <div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-users"></i> Derniers Étudiants</h2>
+            <a href="/inscription" class="btn btn-primary"><i class="fas fa-plus"></i> Inscrire</a>
+        </div>
+        <table>
+            <thead><tr><th>Matricule</th><th>Nom & Prénom</th><th>Classe</th><th>Moyenne</th><th>Statut</th><th>Actions</th></tr></thead>
+            <tbody>
+    """
+    for e in etudiants:
+        content += f"""<tr>
+            <td><strong>{e['matricule']}</strong></td>
+            <td>{e['nom']} {e['prenom']}</td>
+            <td>{e['classe_nom']}</td>
+            <td>{round(e['moyenne'], 2) if e['moyenne'] else '-'}</td>
+            <td><span class="badge badge-success">{e['statut']}</span></td>
+            <td>
+                <a href="/etudiant/{e['id']}" class="btn btn-info btn-sm"><i class="fas fa-eye"></i></a>
+                <a href="/bulletin/{e['id']}" class="btn btn-primary btn-sm"><i class="fas fa-file-alt"></i></a>
+                <a href="/notes/saisie?etudiant_id={e['id']}" class="btn btn-success btn-sm"><i class="fas fa-star"></i></a>
+            </td>
+        </tr>"""
+    content += "</tbody></table></div>"
+    return render_page(content, active='dashboard')
+
+
+# ==================== CLASSES ====================
+@app.route("/classes")
+@login_required
+def classes():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT c.*, f.nom as filiere, n.nom as niveau FROM classes c
+        JOIN filieres f ON c.filiere_id = f.id
+        JOIN niveaux n ON c.niveau_id = n.id ORDER BY n.ordre, f.nom""")
+    rows = c.fetchall()
+    conn.close()
+
+    content = """<div class="card"><div class="card-header">
+        <h2><i class="fas fa-chalkboard"></i> Classes</h2>
+        <a href="/classes/ajouter" class="btn btn-primary"><i class="fas fa-plus"></i> Ajouter</a>
+    </div><table><thead><tr><th>Code</th><th>Nom</th><th>Filière</th><th>Niveau</th><th>Effectif</th><th>Capacité</th><th>Actions</th></tr></thead><tbody>"""
+    for cl in rows:
+        content += f"""<tr>
+            <td><strong>{cl['code']}</strong></td>
+            <td>{cl['nom']}</td>
+            <td>{cl['filiere']}</td>
+            <td>{cl['niveau']}</td>
+            <td>{cl['effectif'] or 0}</td>
+            <td>{cl['capacite']}</td>
+            <td>
+                <a href="/classes/{cl['id']}/edit" class="btn btn-warning btn-sm"><i class="fas fa-edit"></i></a>
+                <a href="/classes/{cl['id']}/delete" class="btn btn-danger btn-sm" onclick="return confirm('Supprimer ?')"><i class="fas fa-trash"></i></a>
+            </td>
+        </tr>"""
+    content += "</tbody></table></div>"
+    return render_page(content, active='classes')
+
+
+@app.route("/classes/ajouter", methods=["GET", "POST"])
+@prof_or_admin_required
+def ajouter_classe():
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        code = generer_code("CL-", "classes", "code")
+        c.execute("""INSERT INTO classes (code, nom, niveau_id, filiere_id, annee_academique, capacite)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (code, request.form['nom'], int(request.form['niveau_id']),
+             int(request.form['filiere_id']), request.form['annee_academique'],
+             int(request.form['capacite'])))
+        conn.commit()
+        log_action(current_user.id, 'CREATE', 'classes', c.lastrowid, f"{code}", request.remote_addr)
+        conn.close()
+        flash("Classe ajoutée", "success")
+        return redirect("/classes")
+
+    niveaux = c.execute("SELECT id, nom FROM niveaux ORDER BY ordre").fetchall()
+    filieres = c.execute("SELECT id, nom FROM filieres ORDER BY nom").fetchall()
+    conn.close()
+    no = "".join(f'<option value="{n["id"]}">{n["nom"]}</option>' for n in niveaux)
+    fo = "".join(f'<option value="{f["id"]}">{f["nom"]}</option>' for f in filieres)
+
+    content = f"""<div class="form-container">
+        <h2><i class="fas fa-plus"></i> Ajouter une Classe</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Nom *</label><input type="text" name="nom" required></div>
+                <div class="form-group"><label>Année académique *</label><input type="text" name="annee_academique" value="2025-2026" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Niveau *</label><select name="niveau_id" required>{no}</select></div>
+                <div class="form-group"><label>Filière *</label><select name="filiere_id" required>{fo}</select></div>
+            </div>
+            <div class="form-group"><label>Capacité *</label><input type="number" name="capacite" value="30" required></div>
+            <button type="submit" class="btn btn-success" style="width:100%;"><i class="fas fa-save"></i> Enregistrer</button>
+        </form>
+        <br><a href="/classes" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>"""
+    return render_page(content, active='classes')
+
+
+@app.route("/classes/<int:id>/edit", methods=["GET", "POST"])
+@prof_or_admin_required
+def edit_classe(id):
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        c.execute("""UPDATE classes SET nom=?, niveau_id=?, filiere_id=?, annee_academique=?, capacite=? WHERE id=?""",
+            (request.form['nom'], int(request.form['niveau_id']), int(request.form['filiere_id']),
+             request.form['annee_academique'], int(request.form['capacite']), id))
+        conn.commit()
+        log_action(current_user.id, 'UPDATE', 'classes', id, 'OK', request.remote_addr)
+        conn.close()
+        flash("Classe mise à jour", "success")
+        return redirect("/classes")
+
+    cl = c.execute("SELECT * FROM classes WHERE id=?", (id,)).fetchone()
+    niveaux = c.execute("SELECT id, nom FROM niveaux ORDER BY ordre").fetchall()
+    filieres = c.execute("SELECT id, nom FROM filieres ORDER BY nom").fetchall()
+    conn.close()
+    no = "".join(f'<option value="{n["id"]}" {"selected" if n["id"]==cl["niveau_id"] else ""}>{n["nom"]}</option>' for n in niveaux)
+    fo = "".join(f'<option value="{f["id"]}" {"selected" if f["id"]==cl["filiere_id"] else ""}>{f["nom"]}</option>' for f in filieres)
+
+    content = f"""<div class="form-container">
+        <h2><i class="fas fa-edit"></i> Modifier {cl['code']}</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Nom *</label><input type="text" name="nom" value="{cl['nom']}" required></div>
+                <div class="form-group"><label>Année *</label><input type="text" name="annee_academique" value="{cl['annee_academique']}" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Niveau *</label><select name="niveau_id" required>{no}</select></div>
+                <div class="form-group"><label>Filière *</label><select name="filiere_id" required>{fo}</select></div>
+            </div>
+            <div class="form-group"><label>Capacité *</label><input type="number" name="capacite" value="{cl['capacite']}" required></div>
+            <button type="submit" class="btn btn-primary" style="width:100%;"><i class="fas fa-save"></i> Mettre à jour</button>
+        </form>
+        <br><a href="/classes" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>"""
+    return render_page(content, active='classes')
+
+
+@app.route("/classes/<int:id>/delete")
+@admin_required
+def delete_classe(id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM classes WHERE id=?", (id,))
+    conn.commit()
+    log_action(current_user.id, 'DELETE', 'classes', id, 'OK', request.remote_addr)
+    conn.close()
+    flash("Classe supprimée", "success")
+    return redirect("/classes")
+
+
+# ==================== MATIÈRES ====================
+@app.route("/matieres")
+@login_required
+def matieres():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT m.*, n.nom as niveau_nom FROM matieres m
+        JOIN niveaux n ON m.niveau_id = n.id ORDER BY n.ordre, m.nom""")
+    rows = c.fetchall()
+    conn.close()
+
+    content = """<div class="card"><div class="card-header">
+        <h2><i class="fas fa-book"></i> Matières</h2>
+        <a href="/matieres/ajouter" class="btn btn-primary"><i class="fas fa-plus"></i> Ajouter</a>
+    </div><table><thead><tr><th>Code</th><th>Nom</th><th>Niveau</th><th>Coeff</th><th>Crédits</th><th>Heures</th><th>Actions</th></tr></thead><tbody>"""
+    for m in rows:
+        content += f"""<tr>
+            <td><strong>{m['code']}</strong></td><td>{m['nom']}</td><td>{m['niveau_nom']}</td>
+            <td>{m['coefficient']}</td><td>{m['credit']}</td><td>{m['heures_cours']}h</td>
+            <td>
+                <a href="/matieres/{m['id']}/edit" class="btn btn-warning btn-sm"><i class="fas fa-edit"></i></a>
+                <a href="/matieres/{m['id']}/delete" class="btn btn-danger btn-sm" onclick="return confirm('Supprimer ?')"><i class="fas fa-trash"></i></a>
+            </td>
+        </tr>"""
+    content += "</tbody></table></div>"
+    return render_page(content, active='matieres')
+
+
+@app.route("/matieres/ajouter", methods=["GET", "POST"])
+@prof_or_admin_required
+def ajouter_matiere():
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        code = generer_code("MAT-", "matieres", "code")
+        c.execute("""INSERT INTO matieres (code, nom, niveau_id, coefficient, credit, heures_cours, heures_td, heures_tp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (code, request.form['nom'], int(request.form['niveau_id']),
+             int(request.form['coefficient']), int(request.form['credit']),
+             int(request.form.get('heures_cours', 0)), int(request.form.get('heures_td', 0)),
+             int(request.form.get('heures_tp', 0))))
+        conn.commit()
+        log_action(current_user.id, 'CREATE', 'matieres', c.lastrowid, code, request.remote_addr)
+        conn.close()
+        flash("Matière ajoutée", "success")
+        return redirect("/matieres")
+
+    niveaux = c.execute("SELECT id, nom FROM niveaux ORDER BY ordre").fetchall()
+    conn.close()
+    no = "".join(f'<option value="{n["id"]}">{n["nom"]}</option>' for n in niveaux)
+
+    content = f"""<div class="form-container">
+        <h2><i class="fas fa-plus"></i> Ajouter une Matière</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Nom *</label><input type="text" name="nom" required></div>
+                <div class="form-group"><label>Niveau *</label><select name="niveau_id" required>{no}</select></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Coefficient *</label><input type="number" name="coefficient" value="1" required></div>
+                <div class="form-group"><label>Crédits *</label><input type="number" name="credit" value="3" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Heures Cours</label><input type="number" name="heures_cours" value="0"></div>
+                <div class="form-group"><label>Heures TD</label><input type="number" name="heures_td" value="0"></div>
+            </div>
+            <div class="form-group"><label>Heures TP</label><input type="number" name="heures_tp" value="0"></div>
+            <button type="submit" class="btn btn-success" style="width:100%;"><i class="fas fa-save"></i> Enregistrer</button>
+        </form>
+        <br><a href="/matieres" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>"""
+    return render_page(content, active='matieres')
+
+
+@app.route("/matieres/<int:id>/edit", methods=["GET", "POST"])
+@prof_or_admin_required
+def edit_matiere(id):
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        c.execute("""UPDATE matieres SET nom=?, niveau_id=?, coefficient=?, credit=?, heures_cours=?, heures_td=?, heures_tp=? WHERE id=?""",
+            (request.form['nom'], int(request.form['niveau_id']), int(request.form['coefficient']),
+             int(request.form['credit']), int(request.form.get('heures_cours', 0)),
+             int(request.form.get('heures_td', 0)), int(request.form.get('heures_tp', 0)), id))
+        conn.commit()
+        log_action(current_user.id, 'UPDATE', 'matieres', id, 'OK', request.remote_addr)
+        conn.close()
+        flash("Matière mise à jour", "success")
+        return redirect("/matieres")
+
+    m = c.execute("SELECT * FROM matieres WHERE id=?", (id,)).fetchone()
+    niveaux = c.execute("SELECT id, nom FROM niveaux ORDER BY ordre").fetchall()
+    conn.close()
+    no = "".join(f'<option value="{n["id"]}" {"selected" if n["id"]==m["niveau_id"] else ""}>{n["nom"]}</option>' for n in niveaux)
+
+    content = f"""<div class="form-container">
+        <h2><i class="fas fa-edit"></i> Modifier {m['code']}</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Nom *</label><input type="text" name="nom" value="{m['nom']}" required></div>
+                <div class="form-group"><label>Niveau *</label><select name="niveau_id" required>{no}</select></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Coeff *</label><input type="number" name="coefficient" value="{m['coefficient']}" required></div>
+                <div class="form-group"><label>Crédits *</label><input type="number" name="credit" value="{m['credit']}" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Heures Cours</label><input type="number" name="heures_cours" value="{m['heures_cours']}"></div>
+                <div class="form-group"><label>Heures TD</label><input type="number" name="heures_td" value="{m['heures_td']}"></div>
+            </div>
+            <div class="form-group"><label>Heures TP</label><input type="number" name="heures_tp" value="{m['heures_tp']}"></div>
+            <button type="submit" class="btn btn-primary" style="width:100%;"><i class="fas fa-save"></i> Mettre à jour</button>
+        </form>
+        <br><a href="/matieres" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>"""
+    return render_page(content, active='matieres')
+
+
+@app.route("/matieres/<int:id>/delete")
+@admin_required
+def delete_matiere(id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM matieres WHERE id=?", (id,))
+    conn.commit()
+    log_action(current_user.id, 'DELETE', 'matieres', id, 'OK', request.remote_addr)
+    conn.close()
+    flash("Matière supprimée", "success")
+    return redirect("/matieres")
+
+
+# ==================== PROFESSEURS ====================
+@app.route("/professeurs")
+@login_required
+def professeurs():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT * FROM professeurs ORDER BY nom")
+    rows = c.fetchall()
+    conn.close()
+
+    content = """<div class="card"><div class="card-header">
+        <h2><i class="fas fa-chalkboard-teacher"></i> Professeurs</h2>
+        <a href="/professeurs/ajouter" class="btn btn-primary"><i class="fas fa-plus"></i> Ajouter</a>
+    </div><table><thead><tr><th>Code</th><th>Nom</th><th>Spécialité</th><th>Téléphone</th><th>Email</th><th>Statut</th><th>Actions</th></tr></thead><tbody>"""
+    for p in rows:
+        content += f"""<tr>
+            <td><strong>{p['code']}</strong></td>
+            <td>{p['nom']} {p['prenom']}</td>
+            <td>{p['specialite'] or '-'}</td>
+            <td>{p['telephone']}</td>
+            <td>{p['email']}</td>
+            <td><span class="badge badge-success">{p['statut']}</span></td>
+            <td>
+                <a href="/professeurs/{p['id']}/edit" class="btn btn-warning btn-sm"><i class="fas fa-edit"></i></a>
+                <a href="/professeurs/{p['id']}/delete" class="btn btn-danger btn-sm" onclick="return confirm('Supprimer ?')"><i class="fas fa-trash"></i></a>
+            </td>
+        </tr>"""
+    content += "</tbody></table></div>"
+    return render_page(content, active='professeurs')
+
+
+@app.route("/professeurs/ajouter", methods=["GET", "POST"])
+@admin_required
+def ajouter_professeur():
+    if request.method == "POST":
+        conn = get_db()
+        c = conn.cursor()
+        code = generer_code("P", "professeurs", "code")
+        c.execute("""INSERT INTO professeurs (code, nom, prenom, telephone, email, specialite, date_embauche, statut)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'Actif')""",
+            (code, request.form['nom'], request.form['prenom'], request.form['telephone'],
+             request.form['email'], request.form.get('specialite', ''),
+             request.form.get('date_embauche', datetime.now().strftime('%Y-%m-%d'))))
+        conn.commit()
+        log_action(current_user.id, 'CREATE', 'professeurs', c.lastrowid, code, request.remote_addr)
+        conn.close()
+        flash("Professeur ajouté", "success")
+        return redirect("/professeurs")
+
+    content = """<div class="form-container">
+        <h2><i class="fas fa-plus"></i> Ajouter un Professeur</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Nom *</label><input type="text" name="nom" required></div>
+                <div class="form-group"><label>Prénom *</label><input type="text" name="prenom" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Téléphone *</label><input type="text" name="telephone" required></div>
+                <div class="form-group"><label>Email *</label><input type="email" name="email" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Spécialité</label><input type="text" name="specialite"></div>
+                <div class="form-group"><label>Date embauche</label><input type="date" name="date_embauche" value="2025-01-01"></div>
+            </div>
+            <button type="submit" class="btn btn-success" style="width:100%;"><i class="fas fa-save"></i> Enregistrer</button>
+        </form>
+        <br><a href="/professeurs" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>"""
+    return render_page(content, active='professeurs')
+
+
+@app.route("/professeurs/<int:id>/edit", methods=["GET", "POST"])
+@admin_required
+def edit_professeur(id):
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        c.execute("""UPDATE professeurs SET nom=?, prenom=?, telephone=?, email=?, specialite=?, date_embauche=? WHERE id=?""",
+            (request.form['nom'], request.form['prenom'], request.form['telephone'],
+             request.form['email'], request.form.get('specialite', ''),
+             request.form.get('date_embauche', ''), id))
+        conn.commit()
+        log_action(current_user.id, 'UPDATE', 'professeurs', id, 'OK', request.remote_addr)
+        conn.close()
+        flash("Professeur mis à jour", "success")
+        return redirect("/professeurs")
+
+    p = c.execute("SELECT * FROM professeurs WHERE id=?", (id,)).fetchone()
+    conn.close()
+
+    content = f"""<div class="form-container">
+        <h2><i class="fas fa-edit"></i> Modifier {p['code']}</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Nom *</label><input type="text" name="nom" value="{p['nom']}" required></div>
+                <div class="form-group"><label>Prénom *</label><input type="text" name="prenom" value="{p['prenom']}" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Téléphone *</label><input type="text" name="telephone" value="{p['telephone']}" required></div>
+                <div class="form-group"><label>Email *</label><input type="email" name="email" value="{p['email']}" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Spécialité</label><input type="text" name="specialite" value="{p['specialite'] or ''}"></div>
+                <div class="form-group"><label>Date embauche</label><input type="date" name="date_embauche" value="{p['date_embauche']}"></div>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%;"><i class="fas fa-save"></i> Mettre à jour</button>
+        </form>
+        <br><a href="/professeurs" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>"""
+    return render_page(content, active='professeurs')
+
+
+@app.route("/professeurs/<int:id>/delete")
+@admin_required
+def delete_professeur(id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM professeurs WHERE id=?", (id,))
+    conn.commit()
+    log_action(current_user.id, 'DELETE', 'professeurs', id, 'OK', request.remote_addr)
+    conn.close()
+    flash("Professeur supprimé", "success")
+    return redirect("/professeurs")
+
+
+# ==================== ÉTUDIANTS ====================
+@app.route("/etudiants")
+@login_required
+def liste_etudiants():
+    conn = get_db()
+    c = conn.cursor()
+    if current_user.is_etudiant and current_user.etudiant_id:
+        c.execute("""SELECT e.*, c.nom as classe_nom,
+            (SELECT AVG(b.note_finale * m.coefficient) / AVG(m.coefficient)
+            FROM bulletins b JOIN matieres m ON b.matiere_id = m.id
+            WHERE b.etudiant_id = e.id) as moyenne
+            FROM etudiants e JOIN classes c ON e.classe_id = c.id WHERE e.id=?""",
+            (current_user.etudiant_id,))
+    else:
+        c.execute("""SELECT e.*, c.nom as classe_nom,
+            (SELECT AVG(b.note_finale * m.coefficient) / AVG(m.coefficient)
+            FROM bulletins b JOIN matieres m ON b.matiere_id = m.id
+            WHERE b.etudiant_id = e.id) as moyenne
+            FROM etudiants e JOIN classes c ON e.classe_id = c.id ORDER BY e.nom""")
+    etudiants = c.fetchall()
+    conn.close()
+
+    content = """<div class="card"><div class="card-header">
+        <h2><i class="fas fa-users"></i> Étudiants</h2>
+        <div>
+            <a href="/export/etudiants" class="btn btn-success"><i class="fas fa-file-excel"></i> Excel</a>
+            <a href="/inscription" class="btn btn-primary"><i class="fas fa-plus"></i> Inscrire</a>
+        </div>
+    </div><table><thead><tr><th>Matricule</th><th>Nom</th><th>Classe</th><th>Téléphone</th><th>Moyenne</th><th>Statut</th><th>Actions</th></tr></thead><tbody>"""
+    for e in etudiants:
+        content += f"""<tr>
+            <td><strong>{e['matricule']}</strong></td>
+            <td>{e['nom']} {e['prenom']}</td>
+            <td>{e['classe_nom']}</td>
+            <td>{e['telephone']}</td>
+            <td>{round(e['moyenne'], 2) if e['moyenne'] else '-'}</td>
+            <td><span class="badge badge-success">{e['statut']}</span></td>
+            <td>
+                <a href="/etudiant/{e['id']}" class="btn btn-info btn-sm"><i class="fas fa-eye"></i></a>
+                <a href="/etudiant/{e['id']}/edit" class="btn btn-warning btn-sm"><i class="fas fa-edit"></i></a>
+                <a href="/etudiant/{e['id']}/delete" class="btn btn-danger btn-sm" onclick="return confirm('Supprimer ?')"><i class="fas fa-trash"></i></a>
+            </td>
+        </tr>"""
+    content += "</tbody></table></div>"
+    return render_page(content, active='etudiants')
+
+
+@app.route("/inscription", methods=["GET", "POST"])
+@prof_or_admin_required
+def inscription():
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        matricule = generer_code("E", "etudiants", "matricule")
+        c.execute("""INSERT INTO etudiants (matricule, nom, prenom, date_naissance, lieu_naissance,
+            sexe, telephone, email, adresse, classe_id, date_inscription, statut)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Actif')""",
+            (matricule, request.form['nom'], request.form['prenom'], request.form['date_naissance'],
+             request.form.get('lieu_naissance', ''), request.form['sexe'], request.form['telephone'],
+             request.form['email'], request.form.get('adresse', ''),
+             int(request.form['classe_id']), datetime.now().isoformat()))
+        etudiant_id = c.lastrowid
+        conn.commit()
+        conn.close()
+
+        nb = generate_bulletins_for_student(etudiant_id, int(request.form['classe_id']))
+        log_action(current_user.id, 'CREATE', 'etudiants', etudiant_id,
+                   f"{matricule} — {nb} bulletins", request.remote_addr)
+        flash(f"✅ {matricule} inscrit — {nb} lignes de bulletin générées", "success")
+        return redirect("/etudiants")
+
+    classes_rows = c.execute("""SELECT c.id, c.code, c.nom, n.nom as niveau, f.nom as filiere
+        FROM classes c JOIN niveaux n ON c.niveau_id = n.id
+        JOIN filieres f ON c.filiere_id = f.id ORDER BY n.ordre""").fetchall()
+    conn.close()
+    co = "".join(f'<option value="{cl["id"]}">{cl["code"]} — {cl["niveau"]} / {cl["filiere"]}</option>' for cl in classes_rows)
+
+    content = f"""<div class="form-container">
+        <h2><i class="fas fa-user-plus"></i> Inscription Étudiant</h2>
+        <p style="color:#718096; margin-bottom:15px; font-size:0.85rem;">
+            <i class="fas fa-info-circle"></i> Le bulletin est généré automatiquement selon la maquette.
+        </p>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Nom *</label><input type="text" name="nom" required></div>
+                <div class="form-group"><label>Prénom *</label><input type="text" name="prenom" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Date de naissance *</label><input type="date" name="date_naissance" required></div>
+                <div class="form-group"><label>Lieu de naissance</label><input type="text" name="lieu_naissance"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Sexe *</label>
+                    <select name="sexe" required>
+                        <option value="M">Masculin</option>
+                        <option value="F">Féminin</option>
+                    </select>
+                </div>
+                <div class="form-group"><label>Téléphone *</label><input type="text" name="telephone" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Email *</label><input type="email" name="email" required></div>
+                <div class="form-group"><label>Adresse</label><input type="text" name="adresse"></div>
+            </div>
+            <div class="form-group"><label>Classe *</label>
+                <select name="classe_id" required>
+                    <option value="">-- Sélectionner --</option>
+                    {co}
+                </select>
+            </div>
+            <button type="submit" class="btn btn-success" style="width:100%;"><i class="fas fa-save"></i> Inscrire & Générer Bulletin</button>
+        </form>
+        <br><a href="/etudiants" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>"""
+    return render_page(content, active='inscription')
+
+
+@app.route("/etudiant/<int:id>")
+@login_required
+def detail_etudiant(id):
+    if current_user.is_etudiant and current_user.etudiant_id != id:
+        flash("Accès refusé", "danger")
+        return redirect("/etudiants")
+
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT e.*, c.nom as classe_nom, n.nom as niveau_nom, f.nom as filiere_nom
+        FROM etudiants e JOIN classes c ON e.classe_id = c.id
+        JOIN niveaux n ON c.niveau_id = n.id
+        JOIN filieres f ON c.filiere_id = f.id WHERE e.id=?""", (id,))
+    e = c.fetchone()
+    if not e:
+        conn.close()
+        return redirect("/etudiants")
+
+    c.execute("""SELECT b.*, m.nom as matiere_nom, m.coefficient FROM bulletins b
+        JOIN matieres m ON b.matiere_id = m.id WHERE b.etudiant_id=? ORDER BY m.nom""", (id,))
+    notes = c.fetchall()
+    conn.close()
+
+    stats = calculer_moyenne_etudiant(id)
+    rang, total = get_classement(id)
+
+    content = f"""<div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-user"></i> {e['nom']} {e['prenom']} ({e['matricule']})</h2>
+            <div>
+                <a href="/bulletin/{id}" class="btn btn-primary"><i class="fas fa-file-alt"></i> Bulletin</a>
+                <a href="/bulletin/{id}/pdf" target="_blank" class="btn btn-danger"><i class="fas fa-file-pdf"></i> PDF</a>
+                <a href="/attestation/{id}/scolarite" class="btn btn-info"><i class="fas fa-certificate"></i> Attestation</a>
+            </div>
+        </div>
+        <div class="stats">
+            <div class="stat-card"><div class="num">{e['classe_nom']}</div><div class="label">Classe</div></div>
+            <div class="stat-card" style="border-left-color:#9b59b6;"><div class="num">{stats['moyenne']}</div><div class="label">Moyenne</div></div>
+            <div class="stat-card" style="border-left-color:#2ecc71;"><div class="num">{rang}/{total}</div><div class="label">Rang</div></div>
+        </div>
+        <table><thead><tr><th>Matière</th><th>Coeff</th><th>CC</th><th>TP</th><th>Examen</th><th>Note finale</th><th>Statut</th></tr></thead><tbody>"""
+    for n in notes:
+        b = "badge-success" if n['note_finale'] >= 10 else "badge-warning"
+        content += f"""<tr>
+            <td>{n['matiere_nom']}</td><td>{n['coefficient']}</td>
+            <td>{n['note_cc']}</td><td>{n['note_tp']}</td><td>{n['note_examen']}</td>
+            <td><strong>{n['note_finale']}</strong></td>
+            <td><span class="badge {b}">{n['statut']}</span></td>
+        </tr>"""
+    content += "</tbody></table></div>"
+    return render_page(content, active='etudiants')
+
+
+@app.route("/etudiant/<int:id>/edit", methods=["GET", "POST"])
+@prof_or_admin_required
+def edit_etudiant(id):
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        c.execute("""UPDATE etudiants SET nom=?, prenom=?, date_naissance=?, lieu_naissance=?,
+            sexe=?, telephone=?, email=?, adresse=?, classe_id=?, statut=? WHERE id=?""",
+            (request.form['nom'], request.form['prenom'], request.form['date_naissance'],
+             request.form.get('lieu_naissance', ''), request.form['sexe'], request.form['telephone'],
+             request.form['email'], request.form.get('adresse', ''),
+             int(request.form['classe_id']), request.form['statut'], id))
+        conn.commit()
+        log_action(current_user.id, 'UPDATE', 'etudiants', id, 'OK', request.remote_addr)
+        conn.close()
+        flash("Étudiant mis à jour", "success")
+        return redirect(f"/etudiant/{id}")
+
+    e = c.execute("SELECT * FROM etudiants WHERE id=?", (id,)).fetchone()
+    classes_rows = c.execute("SELECT id, code, nom FROM classes ORDER BY code").fetchall()
+    conn.close()
+    co = "".join(f'<option value="{cl["id"]}" {"selected" if cl["id"]==e["classe_id"] else ""}>{cl["code"]} — {cl["nom"]}</option>' for cl in classes_rows)
+
+    content = f"""<div class="form-container">
+        <h2><i class="fas fa-edit"></i> Modifier {e['matricule']}</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Nom *</label><input type="text" name="nom" value="{e['nom']}" required></div>
+                <div class="form-group"><label>Prénom *</label><input type="text" name="prenom" value="{e['prenom']}" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Date de naissance *</label><input type="date" name="date_naissance" value="{e['date_naissance']}" required></div>
+                <div class="form-group"><label>Lieu naissance</label><input type="text" name="lieu_naissance" value="{e['lieu_naissance'] or ''}"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Sexe *</label>
+                    <select name="sexe" required>
+                        <option value="M" {"selected" if e['sexe']=="M" else ""}>Masculin</option>
+                        <option value="F" {"selected" if e['sexe']=="F" else ""}>Féminin</option>
+                    </select>
+                </div>
+                <div class="form-group"><label>Téléphone *</label><input type="text" name="telephone" value="{e['telephone']}" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Email *</label><input type="email" name="email" value="{e['email']}" required></div>
+                <div class="form-group"><label>Adresse</label><input type="text" name="adresse" value="{e['adresse'] or ''}"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Classe *</label><select name="classe_id" required>{co}</select></div>
+                <div class="form-group"><label>Statut *</label>
+                    <select name="statut" required>
+                        {''.join(f'<option value="{s}" {"selected" if e["statut"]==s else ""}>{s}</option>' for s in ["Actif", "Inactif", "Diplômé"])}
+                    </select>
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%;"><i class="fas fa-save"></i> Mettre à jour</button>
+        </form>
+        <br><a href="/etudiants" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>"""
+    return render_page(content, active='etudiants')
+
+
+@app.route("/etudiant/<int:id>/delete")
+@admin_required
+def delete_etudiant(id):
+    conn = get_db()
+    c = conn.cursor()
+    for t in ['bulletins', 'notes', 'scolarite']:
+        try:
+            c.execute(f"DELETE FROM {t} WHERE etudiant_id=?", (id,))
+        except sqlite3.OperationalError:
+            pass
+    c.execute("DELETE FROM etudiants WHERE id=?", (id,))
+    conn.commit()
+    log_action(current_user.id, 'DELETE', 'etudiants', id, 'OK', request.remote_addr)
+    conn.close()
+    flash("Étudiant supprimé", "success")
+    return redirect("/etudiants")
+
+
+# ==================== NOTES DYNAMIQUE ====================
+@app.route("/notes/saisie", methods=["GET", "POST"])
+@prof_or_admin_required
+def saisie_notes():
+    conn = get_db()
+    c = conn.cursor()
+
+    if request.method == "POST":
+        etudiant_id = int(request.form.get('etudiant_id', 0))
+        semestre_id = int(request.form.get('semestre_id', 1))
+        if not etudiant_id:
+            flash("Sélectionnez un étudiant", "danger")
+            return redirect("/notes/saisie")
+
+        row = c.execute("SELECT classe_id FROM etudiants WHERE id=?", (etudiant_id,)).fetchone()
+        classe_id = row[0] if row else None
+
+        updated = 0
+        for key, val in request.form.items():
+            if key.startswith("cc1_"):
+                nid = int(key.replace("cc1_", ""))
+                cc1 = _float_or_none(val)
+                cc2 = _float_or_none(request.form.get(f"cc2_{nid}"))
+                tp = _float_or_none(request.form.get(f"tp_{nid}"))
+                ex = _float_or_none(request.form.get(f"examen_{nid}"))
+
+                parts = []
+                if cc1 is not None: parts.append((cc1, 0.20))
+                if cc2 is not None: parts.append((cc2, 0.20))
+                if tp is not None: parts.append((tp, 0.10))
+                if ex is not None: parts.append((ex, 0.50))
+
+                if parts:
+                    tw = sum(w for _, w in parts)
+                    nf = round(sum(v * w for v, w in parts) / tw, 2)
+                else:
+                    nf = None
+
+                statut = 'Validé' if (nf is not None and nf >= 10) else (
+                    'Échec' if nf is not None else 'Non saisi')
+
+                c.execute("""UPDATE notes SET cc1=?, cc2=?, tp=?, examen=?, note_finale=?,
+                    statut=?, date_saisie=?, saisi_par=? WHERE id=?""",
+                    (cc1, cc2, tp, ex, nf, statut, datetime.now().isoformat(),
+                     current_user.id, nid))
+                updated += 1
+
+        if classe_id:
+            _recalculer_rangs(c, classe_id, semestre_id)
+
+        conn.commit()
+        log_action(current_user.id, 'UPDATE', 'notes', etudiant_id,
+                   f"{updated} notes", request.remote_addr)
+        conn.close()
+        flash(f"✅ {updated} notes enregistrées", "success")
+        return redirect(f"/notes/saisie?etudiant_id={etudiant_id}&semestre_id={semestre_id}")
+
+    etudiant_id = request.args.get('etudiant_id', type=int)
+    semestre_id = request.args.get('semestre_id', type=int, default=1)
+
+    semestres_rows = c.execute("SELECT id, code, nom FROM semestres ORDER BY code").fetchall()
+    etudiant_info = None
+    notes_rows = []
+
+    if etudiant_id:
+        c.execute("""SELECT e.*, c.nom as classe_nom, c.code as classe_code FROM etudiants e
+            JOIN classes c ON e.classe_id=c.id WHERE e.id=?""", (etudiant_id,))
+        etudiant_info = c.fetchone()
+        try:
+            c.execute("""SELECT n.*, m.nom as matiere_nom, m.code as matiere_code,
+                m.coefficient, m.credit, s.nom as semestre_nom
+                FROM notes n JOIN matieres m ON n.matiere_id = m.id
+                JOIN semestres s ON n.semestre_id = s.id
+                WHERE n.etudiant_id=? AND n.semestre_id=?
+                ORDER BY m.nom""", (etudiant_id, semestre_id))
+            notes_rows = c.fetchall()
+        except sqlite3.OperationalError:
+            pass
+
+    conn.close()
+    semestres_opts = "".join(f'<option value="{s["id"]}" {"selected" if s["id"]==semestre_id else ""}>{s["nom"]}</option>' for s in semestres_rows)
+
+    content = f"""<div class="card">
+        <div class="card-header"><h2><i class="fas fa-pen"></i> Saisie dynamique des notes</h2></div>
+        <p style="color:#718096; margin-bottom:15px;">
+            Recherchez un étudiant par <strong>matricule</strong> ou <strong>nom</strong>, choisissez le semestre.
+        </p>
+        <div style="display:grid; grid-template-columns:1fr 1fr auto; gap:10px; align-items:end; margin-bottom:20px;">
+            <div class="form-group"><label>Semestre</label><select id="semestre_select">{semestres_opts}</select></div>
+            <div class="form-group">
+                <label>Rechercher</label>
+                <input type="text" id="search_etudiant" placeholder="E001 ou Sarr..." onkeyup="filterEtudiants()" autocomplete="off">
+                <select id="etudiant_select" style="margin-top:5px;"><option value="">-- Chargement... --</option></select>
+            </div>
+            <button class="btn btn-primary" onclick="chargerNotes()"><i class="fas fa-search"></i> Charger</button>
+        </div>
+    """
+
+    if etudiant_info and notes_rows:
+        content += f"""<div style="background:#f7fafc; padding:15px; border-radius:8px; margin-bottom:15px;">
+            <strong><i class="fas fa-user"></i> {etudiant_info['nom']} {etudiant_info['prenom']}</strong>
+            ({etudiant_info['matricule']}) — <strong>{etudiant_info['classe_nom']}</strong>
+        </div>
+        <form method="POST">
+            <input type="hidden" name="etudiant_id" value="{etudiant_id}">
+            <input type="hidden" name="semestre_id" value="{semestre_id}">
+            <table><thead><tr>
+                <th>Matière</th><th>Coef</th><th>CC1</th><th>CC2</th><th>TP</th><th>Examen</th><th>Finale</th><th>Statut</th>
+            </tr></thead><tbody>"""
+        for n in notes_rows:
+            b = "badge-success" if n['statut'] == 'Validé' else ("badge-danger" if n['statut'] == 'Échec' else "badge-warning")
+            content += f"""<tr>
+                <td><strong>{n['matiere_nom']}</strong><br><small style="color:#a0aec0;">{n['matiere_code']}</small></td>
+                <td>{n['coefficient']}</td>
+                <td><input type="number" step="0.25" min="0" max="20" name="cc1_{n['id']}" value="{n['cc1'] if n['cc1'] is not None else ''}" style="width:70px; padding:4px;"></td>
+                <td><input type="number" step="0.25" min="0" max="20" name="cc2_{n['id']}" value="{n['cc2'] if n['cc2'] is not None else ''}" style="width:70px; padding:4px;"></td>
+                <td><input type="number" step="0.25" min="0" max="20" name="tp_{n['id']}" value="{n['tp'] if n['tp'] is not None else ''}" style="width:70px; padding:4px;"></td>
+                <td><input type="number" step="0.25" min="0" max="20" name="examen_{n['id']}" value="{n['examen'] if n['examen'] is not None else ''}" style="width:70px; padding:4px;"></td>
+                <td><strong>{n['note_finale'] if n['note_finale'] is not None else '-'}</strong></td>
+                <td><span class="badge {b}">{n['statut']}</span></td>
+            </tr>"""
+        content += """</tbody></table><br>
+            <button type="submit" class="btn btn-success"><i class="fas fa-save"></i> Enregistrer</button>
+        </form>"""
+    elif etudiant_info:
+        content += '<div class="flash flash-warning">⚠️ Aucune matière pour cet étudiant au semestre sélectionné.</div>'
+    else:
+        content += '<div style="background:#f7fafc; padding:30px; text-align:center; border-radius:8px; color:#718096;"><i class="fas fa-info-circle" style="font-size:2rem; margin-bottom:10px;"></i><p>Sélectionnez un étudiant.</p></div>'
+
+    content += """</div>
+    <script>
+    fetch('/api/etudiants').then(r => r.json()).then(data => {
+        const sel = document.getElementById('etudiant_select');
+        sel.innerHTML = '<option value="">-- Sélectionner --</option>';
+        const cur = new URLSearchParams(window.location.search).get('etudiant_id');
+        data.forEach(e => {
+            const opt = document.createElement('option');
+            opt.value = e.id;
+            opt.text = e.matricule + ' — ' + e.nom + ' ' + e.prenom;
+            if (cur && e.id == cur) opt.selected = true;
+            sel.appendChild(opt);
+        });
+    });
+    function filterEtudiants() {
+        const f = document.getElementById('search_etudiant').value.toUpperCase();
+        const sel = document.getElementById('etudiant_select');
+        for (let i = 0; i < sel.options.length; i++) {
+            const t = sel.options[i].text.toUpperCase();
+            sel.options[i].style.display = t.indexOf(f) > -1 ? '' : 'none';
+        }
+    }
+    function chargerNotes() {
+        const id = document.getElementById('etudiant_select').value;
+        const sem = document.getElementById('semestre_select').value;
+        if (!id) { alert('Sélectionnez un étudiant'); return; }
+        window.location.href = '/notes/saisie?etudiant_id=' + id + '&semestre_id=' + sem;
+    }
+    </script>"""
+    return render_page(content, active='notes')
+
+
+# ==================== API ====================
+@app.route("/api/etudiants")
+@login_required
+def api_etudiants():
+    conn = get_db()
+    c = conn.cursor()
+    classe_id = request.args.get('classe_id', type=int)
+    if classe_id:
+        c.execute("SELECT id, matricule, nom, prenom FROM etudiants WHERE classe_id=? ORDER BY nom", (classe_id,))
+    else:
+        c.execute("SELECT id, matricule, nom, prenom FROM etudiants ORDER BY nom")
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return jsonify(rows)
+
+
+# ==================== BULLETINS ====================
+@app.route("/bulletins")
+@login_required
+def bulletins_list():
+    conn = get_db()
+    c = conn.cursor()
+    if current_user.is_etudiant and current_user.etudiant_id:
+        c.execute("""SELECT e.id, e.matricule, e.nom, e.prenom, c.nom as classe_nom,
+            (SELECT AVG(b.note_finale * m.coefficient) / AVG(m.coefficient)
+            FROM bulletins b JOIN matieres m ON b.matiere_id = m.id
+            WHERE b.etudiant_id = e.id) as moyenne
+            FROM etudiants e JOIN classes c ON e.classe_id = c.id WHERE e.id=?""",
+            (current_user.etudiant_id,))
+    else:
+        c.execute("""SELECT e.id, e.matricule, e.nom, e.prenom, c.nom as classe_nom,
+            (SELECT AVG(b.note_finale * m.coefficient) / AVG(m.coefficient)
+            FROM bulletins b JOIN matieres m ON b.matiere_id = m.id
+            WHERE b.etudiant_id = e.id) as moyenne
+            FROM etudiants e JOIN classes c ON e.classe_id = c.id ORDER BY e.nom""")
+    etudiants = c.fetchall()
+    conn.close()
+
+    content = """<div class="card"><div class="card-header"><h2><i class="fas fa-file-alt"></i> Bulletins</h2></div>
+    <table><thead><tr><th>Matricule</th><th>Nom</th><th>Classe</th><th>Moyenne</th><th>Actions</th></tr></thead><tbody>"""
+    for e in etudiants:
+        b = "badge-success" if (e['moyenne'] or 0) >= 10 else "badge-danger"
+        content += f"""<tr>
+            <td><strong>{e['matricule']}</strong></td>
+            <td>{e['nom']} {e['prenom']}</td>
+            <td>{e['classe_nom']}</td>
+            <td><span class="badge {b}">{round(e['moyenne'], 2) if e['moyenne'] else '-'}</span></td>
+            <td>
+                <a href="/bulletin/{e['id']}" class="btn btn-info btn-sm"><i class="fas fa-eye"></i> HTML</a>
+                <a href="/bulletin/{e['id']}/pdf" target="_blank" class="btn btn-danger btn-sm"><i class="fas fa-file-pdf"></i> PDF</a>
+            </td>
+        </tr>"""
+    content += "</tbody></table></div>"
+    return render_page(content, active='bulletins')
+
+
+@app.route("/bulletin/<int:etudiant_id>")
+@login_required
+def bulletin(etudiant_id):
+    if current_user.is_etudiant and current_user.etudiant_id != etudiant_id:
+        flash("Accès refusé", "danger")
+        return redirect("/etudiants")
+
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT e.*, c.nom as classe_nom, n.nom as niveau_nom, f.nom as filiere_nom
+        FROM etudiants e JOIN classes c ON e.classe_id = c.id
+        JOIN niveaux n ON c.niveau_id = n.id
+        JOIN filieres f ON c.filiere_id = f.id WHERE e.id=?""", (etudiant_id,))
+    e = c.fetchone()
+    if not e:
+        conn.close()
+        return redirect("/etudiants")
+
+    c.execute("""SELECT b.*, m.nom as matiere_nom, m.coefficient, m.credit
+        FROM bulletins b JOIN matieres m ON b.matiere_id = m.id
+        WHERE b.etudiant_id=? ORDER BY m.nom""", (etudiant_id,))
+    notes = c.fetchall()
+    conn.close()
+
+    stats = calculer_moyenne_etudiant(etudiant_id)
+    rang, total = get_classement(etudiant_id)
+    mention = "Passable"
+    if stats['moyenne'] >= 16: mention = "Très Bien"
+    elif stats['moyenne'] >= 14: mention = "Bien"
+    elif stats['moyenne'] >= 12: mention = "Assez Bien"
+    elif stats['moyenne'] < 10: mention = "Insuffisant"
+
+    content = f"""<div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-file-alt"></i> Bulletin — {e['nom']} {e['prenom']}</h2>
+            <a href="/bulletin/{etudiant_id}/pdf" target="_blank" class="btn btn-danger"><i class="fas fa-file-pdf"></i> PDF</a>
+        </div>
+        <div class="stats">
+            <div class="stat-card"><div class="num">{e['matricule']}</div><div class="label">Matricule</div></div>
+            <div class="stat-card" style="border-left-color:#3498db;"><div class="num">{e['classe_nom']}</div><div class="label">Classe</div></div>
+            <div class="stat-card" style="border-left-color:#9b59b6;"><div class="num">{stats['moyenne']}/20</div><div class="label">Moyenne</div></div>
+            <div class="stat-card" style="border-left-color:#2ecc71;"><div class="num">{rang}/{total}</div><div class="label">Rang</div></div>
+            <div class="stat-card" style="border-left-color:#e67e22;"><div class="num">{mention}</div><div class="label">Mention</div></div>
+        </div>
+        <table><thead><tr><th>Matière</th><th>Coeff</th><th>Crédits</th><th>CC</th><th>TP</th><th>Examen</th><th>Moyenne</th><th>Statut</th></tr></thead><tbody>"""
+    for n in notes:
+        b = "badge-success" if n['note_finale'] >= 10 else "badge-danger"
+        content += f"""<tr>
+            <td>{n['matiere_nom']}</td><td>{n['coefficient']}</td><td>{n['credit']}</td>
+            <td>{n['note_cc']}</td><td>{n['note_tp']}</td><td>{n['note_examen']}</td>
+            <td><strong>{n['note_finale']}/20</strong></td>
+            <td><span class="badge {b}">{n['statut']}</span></td>
+        </tr>"""
+    content += "</tbody></table></div>"
+    return render_page(content, active='bulletins')
+
+
+@app.route("/bulletin/<int:etudiant_id>/pdf")
+@login_required
+def bulletin_pdf(etudiant_id):
+    if not PDF_AVAILABLE:
+        flash("PDF indisponible", "danger")
+        return redirect(f"/bulletin/{etudiant_id}")
+
+    if current_user.is_etudiant and current_user.etudiant_id != etudiant_id:
+        flash("Accès refusé", "danger")
+        return redirect("/etudiants")
+
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT e.*, c.nom as classe_nom, n.nom as niveau_nom, f.nom as filiere_nom
+        FROM etudiants e JOIN classes c ON e.classe_id = c.id
+        JOIN niveaux n ON c.niveau_id = n.id
+        JOIN filieres f ON c.filiere_id = f.id WHERE e.id=?""", (etudiant_id,))
+    e = c.fetchone()
+    if not e:
+        conn.close()
+        flash("Étudiant introuvable", "danger")
+        return redirect("/etudiants")
+
+    c.execute("""SELECT b.*, m.nom as matiere_nom, m.coefficient, m.credit
+        FROM bulletins b JOIN matieres m ON b.matiere_id = m.id
+        WHERE b.etudiant_id=? ORDER BY m.nom""", (etudiant_id,))
+    notes = c.fetchall()
+    conn.close()
+
+    stats = calculer_moyenne_etudiant(etudiant_id)
+    rang, total = get_classement(etudiant_id)
+
+    try:
+        pdf_bytes, hash_v = generer_bulletin_pdf(
+            dict(e), [dict(n) for n in notes], stats, rang, total)
+
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""INSERT OR IGNORE INTO bulletins_verifications
+            (code_verification, etudiant_id, moyenne, mention) VALUES (?, ?, ?, ?)""",
+            (hash_v, etudiant_id, stats['moyenne'], "Auto"))
+        conn.commit()
+        conn.close()
+
+        log_action(current_user.id, 'EXPORT_PDF', 'bulletins', etudiant_id,
+                   f"PDF {hash_v}", request.remote_addr)
+
+        return Response(pdf_bytes, mimetype='application/pdf',
+            headers={'Content-Disposition': f'inline; filename="bulletin_{e["matricule"]}_{hash_v}.pdf"'})
+    except Exception as ex:
+        print(f"[PDF] {ex}")
+        import traceback
+        traceback.print_exc()
+        flash(f"Erreur PDF : {ex}", "danger")
+        return redirect(f"/bulletin/{etudiant_id}")
+
+
+@app.route("/verifier/<code>")
+def verifier_bulletin(code):
+    conn = get_db()
+    c = conn.cursor()
+    row = None
+    try:
+        c.execute("""SELECT v.*, e.nom, e.prenom, e.matricule FROM bulletins_verifications v
+            JOIN etudiants e ON v.etudiant_id = e.id
+            WHERE v.code_verification=?""", (code,))
+        row = c.fetchone()
+    except sqlite3.OperationalError:
+        pass
+    conn.close()
+
+    if row:
+        content = f"""<div class="card" style="max-width:600px; margin:50px auto; text-align:center;">
+            <i class="fas fa-shield-alt" style="font-size:4rem; color:#2ecc71; margin-bottom:20px;"></i>
+            <h1 style="color:#1a1a2e;">Bulletin Authentique ✅</h1>
+            <div style="background:#f7fafc; padding:20px; border-radius:8px; text-align:left;">
+                <p><strong>Code :</strong> {code}</p>
+                <p><strong>Étudiant :</strong> {row['nom']} {row['prenom']} ({row['matricule']})</p>
+                <p><strong>Moyenne :</strong> {row['moyenne']}/20</p>
+                <p><strong>Émis le :</strong> {row['date_generation']}</p>
+            </div>
+        </div>"""
+    else:
+        content = f"""<div class="card" style="max-width:600px; margin:50px auto; text-align:center;">
+            <i class="fas fa-exclamation-triangle" style="font-size:4rem; color:#e74c3c; margin-bottom:20px;"></i>
+            <h1>Code Inconnu ❌</h1>
+            <p>Le code <strong>{code}</strong> n'existe pas.</p>
+        </div>"""
+    return render_page(content, active='verification')
+
+
+# ==================== SCOLARITÉ ====================
+@app.route("/scolarite")
+@login_required
+def scolarite():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT s.*, e.nom, e.prenom, e.matricule FROM scolarite s
+        JOIN etudiants e ON s.etudiant_id = e.id ORDER BY s.date_paiement DESC""")
+    paiements = c.fetchall()
+    tp = c.execute("SELECT SUM(montant) FROM scolarite WHERE statut='Payé'").fetchone()[0] or 0
+    ta = c.execute("SELECT SUM(montant) FROM scolarite WHERE statut='En attente'").fetchone()[0] or 0
+    conn.close()
+
+    content = f"""<div class="stats">
+        <div class="stat-card" style="border-left-color:#2ecc71;"><div class="num">{tp:,.0f} FCFA</div><div class="label">Payé</div></div>
+        <div class="stat-card" style="border-left-color:#f39c12;"><div class="num">{ta:,.0f} FCFA</div><div class="label">En attente</div></div>
+    </div>
+    <div class="card"><div class="card-header">
+        <h2><i class="fas fa-money-bill-wave"></i> Scolarité</h2>
+        <div>
+            <a href="/export/paiements" class="btn btn-success"><i class="fas fa-file-excel"></i> Excel</a>
+            <a href="/scolarite/ajouter" class="btn btn-primary"><i class="fas fa-plus"></i> Nouveau</a>
+        </div>
+    </div><table><thead><tr><th>Étudiant</th><th>Matricule</th><th>Montant</th><th>Mois</th><th>Mode</th><th>Date</th><th>Statut</th><th>Actions</th></tr></thead><tbody>"""
+    for p in paiements:
+        b = "badge-success" if p['statut'] == "Payé" else "badge-warning"
+        content += f"""<tr>
+            <td>{p['nom']} {p['prenom']}</td><td>{p['matricule']}</td>
+            <td><strong>{p['montant']:,.0f} FCFA</strong></td>
+            <td>{p['mois']}</td><td>{p['mode_paiement'] or '-'}</td>
+            <td>{p['date_paiement'][:10] if p['date_paiement'] else '-'}</td>
+            <td><span class="badge {b}">{p['statut']}</span></td>
+            <td>
+                <a href="/scolarite/{p['id']}/edit" class="btn btn-warning btn-sm"><i class="fas fa-edit"></i></a>
+                <a href="/scolarite/{p['id']}/delete" class="btn btn-danger btn-sm" onclick="return confirm('Supprimer ?')"><i class="fas fa-trash"></i></a>
+            </td>
+        </tr>"""
+    content += "</tbody></table></div>"
+    return render_page(content, active='scolarite')
+
+
+@app.route("/scolarite/ajouter", methods=["GET", "POST"])
+@prof_or_admin_required
+def ajouter_scolarite():
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        c.execute("""INSERT INTO scolarite (etudiant_id, montant, mois, date_paiement, mode_paiement, reference, statut)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (int(request.form['etudiant_id']), float(request.form['montant']),
+             request.form['mois'], datetime.now().isoformat(),
+             request.form.get('mode_paiement', 'Espèces'),
+             request.form.get('reference', ''), request.form.get('statut', 'En attente')))
+        conn.commit()
+        log_action(current_user.id, 'CREATE', 'scolarite', c.lastrowid, 'OK', request.remote_addr)
+        conn.close()
+
+        # Notifier
+        if COMM_AVAILABLE and request.form.get('statut') == 'Payé':
+            try:
+                notifier_paiement(int(request.form['etudiant_id']),
+                                  float(request.form['montant']),
+                                  request.form['mois'], 'Payé')
+            except Exception as ex:
+                print(f"[NOTIF] {ex}")
+
+        flash("Paiement enregistré", "success")
+        return redirect("/scolarite")
+
+    etudiants = c.execute("SELECT id, matricule, nom, prenom FROM etudiants ORDER BY nom").fetchall()
+    conn.close()
+    eo = "".join(f'<option value="{e["id"]}">{e["matricule"]} — {e["nom"]} {e["prenom"]}</option>' for e in etudiants)
+
+    content = f"""<div class="form-container">
+        <h2><i class="fas fa-plus"></i> Nouveau Paiement</h2>
+        <form method="POST">
+            <div class="form-group">
+                <label>Étudiant *</label>
+                <input type="text" id="search_etudiant" placeholder="Rechercher..." onkeyup="filterEtudiants()">
+                <select name="etudiant_id" id="etudiant_select" required style="margin-top:5px;">
+                    <option value="">-- Sélectionner --</option>
+                    {eo}
+                </select>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Montant (FCFA) *</label><input type="number" name="montant" value="150000" required></div>
+                <div class="form-group"><label>Mois *</label>
+                    <select name="mois" required>
+                        {''.join(f'<option>{m}</option>' for m in ["Octobre","Novembre","Décembre","Janvier","Février","Mars","Avril","Mai","Juin"])}
+                    </select>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Mode</label>
+                    <select name="mode_paiement">
+                        {''.join(f'<option value="{m}">{m}</option>' for m in ["Wave","Orange Money","Espèces","Virement"])}
+                    </select>
+                </div>
+                <div class="form-group"><label>Référence</label><input type="text" name="reference"></div>
+            </div>
+            <div class="form-group"><label>Statut</label>
+                <select name="statut">
+                    <option value="En attente">En attente</option>
+                    <option value="Payé">Payé</option>
+                </select>
+            </div>
+            <button type="submit" class="btn btn-success" style="width:100%;"><i class="fas fa-save"></i> Enregistrer</button>
+        </form>
+        <br><a href="/scolarite" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>
+    <script>
+        function filterEtudiants() {{
+            const f = document.getElementById('search_etudiant').value.toUpperCase();
+            const sel = document.getElementById('etudiant_select');
+            for (let i = 0; i < sel.options.length; i++) {{
+                const t = sel.options[i].text.toUpperCase();
+                sel.options[i].style.display = t.indexOf(f) > -1 ? '' : 'none';
+            }}
+        }}
+    </script>"""
+    return render_page(content, active='scolarite')
+
+
+@app.route("/scolarite/<int:id>/edit", methods=["GET", "POST"])
+@prof_or_admin_required
+def edit_scolarite(id):
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        c.execute("""UPDATE scolarite SET montant=?, mois=?, mode_paiement=?, reference=?, statut=? WHERE id=?""",
+            (float(request.form['montant']), request.form['mois'],
+             request.form.get('mode_paiement', ''), request.form.get('reference', ''),
+             request.form['statut'], id))
+        conn.commit()
+        log_action(current_user.id, 'UPDATE', 'scolarite', id, 'OK', request.remote_addr)
+        conn.close()
+        flash("Paiement mis à jour", "success")
+        return redirect("/scolarite")
+
+    p = c.execute("""SELECT s.*, e.nom, e.prenom FROM scolarite s
+        JOIN etudiants e ON s.etudiant_id=e.id WHERE s.id=?""", (id,)).fetchone()
+    conn.close()
+
+    content = f"""<div class="form-container">
+        <h2><i class="fas fa-edit"></i> Modifier paiement — {p['nom']} {p['prenom']}</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Montant *</label><input type="number" name="montant" value="{p['montant']}" required></div>
+                <div class="form-group"><label>Mois *</label><input type="text" name="mois" value="{p['mois']}" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Mode</label>
+                    <select name="mode_paiement">
+                        {''.join(f'<option value="{m}" {"selected" if p["mode_paiement"]==m else ""}>{m}</option>' for m in ["Wave","Orange Money","Espèces","Virement"])}
+                    </select>
+                </div>
+                <div class="form-group"><label>Référence</label><input type="text" name="reference" value="{p['reference'] or ''}"></div>
+            </div>
+            <div class="form-group"><label>Statut</label>
+                <select name="statut">
+                    <option value="En attente" {"selected" if p['statut']=="En attente" else ""}>En attente</option>
+                    <option value="Payé" {"selected" if p['statut']=="Payé" else ""}>Payé</option>
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%;"><i class="fas fa-save"></i> Mettre à jour</button>
+        </form>
+        <br><a href="/scolarite" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>"""
+    return render_page(content, active='scolarite')
+
+
+@app.route("/scolarite/<int:id>/delete")
+@admin_required
+def delete_scolarite(id):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM scolarite WHERE id=?", (id,))
+    conn.commit()
+    log_action(current_user.id, 'DELETE', 'scolarite', id, 'OK', request.remote_addr)
+    conn.close()
+    flash("Paiement supprimé", "success")
+    return redirect("/scolarite")
+
+
+# ==================== PRÉSENCES ====================
+@app.route("/presences")
+@login_required
+def presences_liste():
+    conn = get_db()
+    c = conn.cursor()
+    classe_id = request.args.get('classe_id', type=int)
+    date_f = request.args.get('date', datetime.now().strftime('%Y-%m-%d'))
+
+    classes_rows = c.execute("""SELECT c.id, c.code, c.nom, n.nom as niveau FROM classes c
+        JOIN niveaux n ON c.niveau_id=n.id ORDER BY n.ordre""").fetchall()
+
+    q = """SELECT p.*, e.nom, e.prenom, e.matricule, c.nom as classe_nom, m.nom as matiere_nom
+        FROM presences p JOIN etudiants e ON p.etudiant_id=e.id
+        JOIN classes c ON p.classe_id=c.id
+        LEFT JOIN matieres m ON p.matiere_id=m.id
+        WHERE p.date_presence=?"""
+    params = [date_f]
+    if classe_id:
+        q += " AND p.classe_id=?"
+        params.append(classe_id)
+    q += " ORDER BY e.nom"
+    presences = c.execute(q, params).fetchall()
+
+    stats = c.execute("""SELECT 
+        SUM(CASE WHEN statut='Présent' THEN 1 ELSE 0 END) as presents,
+        SUM(CASE WHEN statut='Absent' THEN 1 ELSE 0 END) as absents,
+        SUM(CASE WHEN statut='Retard' THEN 1 ELSE 0 END) as retards,
+        COUNT(*) as total FROM presences WHERE date_presence=?""", (date_f,)).fetchone()
+    conn.close()
+
+    co = "".join(f'<option value="{cl["id"]}" {"selected" if cl["id"]==classe_id else ""}>{cl["code"]} — {cl["niveau"]}</option>' for cl in classes_rows)
+    pr = stats['presents'] or 0
+    ab = stats['absents'] or 0
+    rt = stats['retards'] or 0
+    tot = stats['total'] or 0
+    tx = round(pr / tot * 100, 1) if tot else 0
+
+    content = f"""<div class="stats">
+        <div class="stat-card" style="border-left-color:#2ecc71;"><div class="num">{pr}</div><div class="label">Présents</div></div>
+        <div class="stat-card" style="border-left-color:#e74c3c;"><div class="num">{ab}</div><div class="label">Absents</div></div>
+        <div class="stat-card" style="border-left-color:#f39c12;"><div class="num">{rt}</div><div class="label">Retards</div></div>
+        <div class="stat-card" style="border-left-color:#3498db;"><div class="num">{tx}%</div><div class="label">Taux</div></div>
+    </div>
+    <div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-calendar-check"></i> Présences du {date_f}</h2>
+            <a href="/presences/saisie" class="btn btn-primary"><i class="fas fa-plus"></i> Saisir</a>
+        </div>
+        <form method="GET" style="display:grid; grid-template-columns:1fr 1fr auto; gap:10px; margin-bottom:15px;">
+            <div class="form-group" style="margin:0;"><label>Classe</label>
+                <select name="classe_id"><option value="">-- Toutes --</option>{co}</select>
+            </div>
+            <div class="form-group" style="margin:0;"><label>Date</label>
+                <input type="date" name="date" value="{date_f}">
+            </div>
+            <button class="btn btn-info" style="align-self:end;"><i class="fas fa-search"></i></button>
+        </form>
+        <table><thead><tr><th>Étudiant</th><th>Matricule</th><th>Classe</th><th>Matière</th><th>Heure</th><th>Statut</th><th>Motif</th><th>Actions</th></tr></thead><tbody>"""
+    for p in presences:
+        b = {'Présent':'badge-success','Absent':'badge-danger','Retard':'badge-warning','Excusé':'badge-info'}.get(p['statut'],'badge-warning')
+        content += f"""<tr>
+            <td>{p['nom']} {p['prenom']}</td>
+            <td><strong>{p['matricule']}</strong></td>
+            <td>{p['classe_nom']}</td>
+            <td>{p['matiere_nom'] or '-'}</td>
+            <td>{p['heure_debut'] or '-'} → {p['heure_fin'] or '-'}</td>
+            <td><span class="badge {b}">{p['statut']}</span></td>
+            <td>{p['motif'] or '-'}</td>
+            <td><a href="/presences/{p['id']}/edit" class="btn btn-warning btn-sm"><i class="fas fa-edit"></i></a></td>
+        </tr>"""
+    if not presences:
+        content += '<tr><td colspan="8" style="text-align:center; color:#718096; padding:30px;">Aucune présence.</td></tr>'
+    content += "</tbody></table></div>"
+    return render_page(content, active='presences')
+
+
+@app.route("/presences/saisie", methods=["GET", "POST"])
+@prof_or_admin_required
+def presences_saisie():
+    conn = get_db()
+    c = conn.cursor()
+
+    if request.method == "POST":
+        classe_id = int(request.form.get('classe_id', 0))
+        date_p = request.form.get('date_presence', datetime.now().strftime('%Y-%m-%d'))
+        matiere_id = request.form.get('matiere_id', type=int)
+        hd = request.form.get('heure_debut', '')
+        hf = request.form.get('heure_fin', '')
+
+        if not classe_id:
+            flash("Sélectionnez une classe", "danger")
+            return redirect("/presences/saisie")
+
+        etudiants = c.execute("SELECT id FROM etudiants WHERE classe_id=? AND statut='Actif'", (classe_id,)).fetchall()
+        count = 0
+        for e in etudiants:
+            statut = request.form.get(f'statut_{e["id"]}', 'Présent')
+            motif = request.form.get(f'motif_{e["id"]}', '')
+            justif = 1 if request.form.get(f'justif_{e["id"]}') else 0
+
+            existing = c.execute("""SELECT id FROM presences 
+                WHERE etudiant_id=? AND date_presence=? AND COALESCE(matiere_id,0)=COALESCE(?,0)""",
+                (e['id'], date_p, matiere_id)).fetchone()
+
+            if existing:
+                c.execute("""UPDATE presences SET statut=?, motif=?, justificatif=?,
+                    heure_debut=?, heure_fin=?, saisi_par=? WHERE id=?""",
+                    (statut, motif, justif, hd, hf, current_user.id, existing['id']))
+            else:
+                c.execute("""INSERT INTO presences (etudiant_id, classe_id, matiere_id,
+                    date_presence, heure_debut, heure_fin, statut, motif, justificatif, saisi_par)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (e['id'], classe_id, matiere_id, date_p, hd, hf, statut, motif, justif, current_user.id))
+                count += 1
+
+            if statut == 'Absent' and COMM_AVAILABLE:
+                m = c.execute("SELECT nom FROM matieres WHERE id=?", (matiere_id,)).fetchone() if matiere_id else None
+                mn = m['nom'] if m else 'Cours'
+                try:
+                    notifier_absence(e['id'], date_p, mn, 'Absent')
+                except Exception as ex:
+                    print(f"[NOTIF] {ex}")
+
+        conn.commit()
+        log_action(current_user.id, 'CREATE', 'presences', classe_id,
+                   f"{count} présences {date_p}", request.remote_addr)
+        conn.close()
+        flash(f"✅ {count} présences enregistrées", "success")
+        return redirect(f"/presences?classe_id={classe_id}&date={date_p}")
+
+    classe_id = request.args.get('classe_id', type=int)
+    date_p = request.args.get('date', datetime.now().strftime('%Y-%m-%d'))
+
+    classes_rows = c.execute("""SELECT c.id, c.code, c.nom, n.nom as niveau FROM classes c
+        JOIN niveaux n ON c.niveau_id=n.id ORDER BY n.ordre""").fetchall()
+
+    matieres_rows = []
+    etudiants_rows = []
+    classe_info = None
+
+    if classe_id:
+        classe_info = c.execute("""SELECT c.*, f.nom as filiere, n.nom as niveau FROM classes c
+            JOIN filieres f ON c.filiere_id=f.id
+            JOIN niveaux n ON c.niveau_id=n.id WHERE c.id=?""", (classe_id,)).fetchone()
+        matieres_rows = c.execute("""SELECT id, nom, code FROM matieres
+            WHERE niveau_id=(SELECT niveau_id FROM classes WHERE id=?) ORDER BY nom""",
+            (classe_id,)).fetchall()
+        etudiants_rows = c.execute("""SELECT e.*, 
+            (SELECT statut FROM presences WHERE etudiant_id=e.id AND date_presence=? LIMIT 1) as statut_existant,
+            (SELECT motif FROM presences WHERE etudiant_id=e.id AND date_presence=? LIMIT 1) as motif_existant
+            FROM etudiants e WHERE e.classe_id=? AND e.statut='Actif' ORDER BY e.nom""",
+            (date_p, date_p, classe_id)).fetchall()
+
+    conn.close()
+    co = "".join(f'<option value="{cl["id"]}" {"selected" if cl["id"]==classe_id else ""}>{cl["code"]} — {cl["niveau"]}</option>' for cl in classes_rows)
+    mo = "".join(f'<option value="{m["id"]}">{m["nom"]}</option>' for m in matieres_rows)
+
+    content = f"""<div class="card">
+        <div class="card-header"><h2><i class="fas fa-clipboard-check"></i> Saisie des présences</h2></div>
+        <form method="GET" style="display:grid; grid-template-columns:1fr 1fr auto; gap:10px; margin-bottom:20px;">
+            <div class="form-group" style="margin:0;"><label>Classe *</label>
+                <select name="classe_id" onchange="this.form.submit()">
+                    <option value="">-- Sélectionner --</option>{co}
+                </select>
+            </div>
+            <div class="form-group" style="margin:0;"><label>Date</label>
+                <input type="date" name="date" value="{date_p}" onchange="this.form.submit()">
+            </div>
+            <button class="btn btn-info" style="align-self:end;"><i class="fas fa-sync"></i></button>
+        </form>"""
+
+    if classe_info and etudiants_rows:
+        content += f"""<form method="POST">
+            <input type="hidden" name="classe_id" value="{classe_id}">
+            <input type="hidden" name="date_presence" value="{date_p}">
+            <div style="background:#f7fafc; padding:15px; border-radius:8px; margin-bottom:15px;
+                display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px;">
+                <div class="form-group" style="margin:0;"><label>Matière</label>
+                    <select name="matiere_id"><option value="">-- Général --</option>{mo}</select></div>
+                <div class="form-group" style="margin:0;"><label>Début</label>
+                    <input type="time" name="heure_debut" value="08:00"></div>
+                <div class="form-group" style="margin:0;"><label>Fin</label>
+                    <input type="time" name="heure_fin" value="10:00"></div>
+            </div>
+            <table id="table_presences"><thead><tr>
+                <th>Matricule</th><th>Étudiant</th><th>Statut</th><th>Motif</th><th>Justif.</th>
+            </tr></thead><tbody>"""
+        for e in etudiants_rows:
+            sa = e['statut_existant'] or 'Présent'
+            ma = e['motif_existant'] or ''
+            content += f"""<tr>
+                <td><strong>{e['matricule']}</strong></td>
+                <td>{e['nom']} {e['prenom']}</td>
+                <td><div style="display:flex; gap:5px;">
+                    <button type="button" class="btn btn-sm {'btn-success' if sa=='Présent' else 'btn-info'}" onclick="setStatut({e['id']},'Présent',this)">P</button>
+                    <button type="button" class="btn btn-sm {'btn-danger' if sa=='Absent' else 'btn-info'}" onclick="setStatut({e['id']},'Absent',this)">A</button>
+                    <button type="button" class="btn btn-sm {'btn-warning' if sa=='Retard' else 'btn-info'}" onclick="setStatut({e['id']},'Retard',this)">R</button>
+                    <button type="button" class="btn btn-sm {'btn-primary' if sa=='Excusé' else 'btn-info'}" onclick="setStatut({e['id']},'Excusé',this)">E</button>
+                </div>
+                <input type="hidden" name="statut_{e['id']}" id="statut_{e['id']}" value="{sa}"></td>
+                <td><input type="text" name="motif_{e['id']}" value="{ma}" placeholder="Raison..." style="width:150px; padding:4px;"></td>
+                <td style="text-align:center;"><input type="checkbox" name="justif_{e['id']}"></td>
+            </tr>"""
+        content += f"""</tbody></table><br>
+        <div style="display:flex; gap:10px; flex-wrap:wrap;">
+            <button type="submit" class="btn btn-success"><i class="fas fa-save"></i> Enregistrer</button>
+            <button type="button" class="btn btn-info" onclick="toutPresent()"><i class="fas fa-check-double"></i> Tous présents</button>
+            <a href="/presences?classe_id={classe_id}&date={date_p}" class="btn btn-primary"><i class="fas fa-list"></i> Voir la liste</a>
+        </div></form>
+        <script>
+        function setStatut(id, s, btn) {{
+            document.getElementById('statut_' + id).value = s;
+            const p = btn.parentElement;
+            p.querySelectorAll('button').forEach(b => b.className = 'btn btn-sm btn-info');
+            const cl = {{'Présent':'btn-success','Absent':'btn-danger','Retard':'btn-warning','Excusé':'btn-primary'}};
+            btn.className = 'btn btn-sm ' + cl[s];
+        }}
+        function toutPresent() {{
+            document.querySelectorAll('input[id^="statut_"]').forEach(i => i.value = 'Présent');
+            document.querySelectorAll('#table_presences button').forEach(b => {{
+                b.className = b.textContent.trim() === 'P' ? 'btn btn-sm btn-success' : 'btn btn-sm btn-info';
+            }});
+        }}
+        </script>"""
+    elif classe_id:
+        content += '<div class="flash flash-warning">Aucun étudiant dans cette classe.</div>'
+    else:
+        content += '<div style="text-align:center; padding:40px; color:#718096;">Sélectionnez une classe.</div>'
+    content += "</div>"
+    return render_page(content, active='presences')
+
+
+@app.route("/presences/<int:id>/edit", methods=["GET", "POST"])
+@prof_or_admin_required
+def edit_presence(id):
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        c.execute("""UPDATE presences SET statut=?, motif=?, justificatif=? WHERE id=?""",
+            (request.form['statut'], request.form.get('motif', ''),
+             1 if request.form.get('justificatif') else 0, id))
+        conn.commit()
+        log_action(current_user.id, 'UPDATE', 'presences', id, 'OK', request.remote_addr)
+        conn.close()
+        flash("Présence mise à jour", "success")
+        return redirect("/presences")
+
+    p = c.execute("""SELECT p.*, e.nom, e.prenom FROM presences p
+        JOIN etudiants e ON p.etudiant_id=e.id WHERE p.id=?""", (id,)).fetchone()
+    conn.close()
+    if not p:
+        return redirect("/presences")
+
+    content = f"""<div class="form-container">
+        <h2><i class="fas fa-edit"></i> Modifier — {p['nom']} {p['prenom']}</h2>
+        <form method="POST">
+            <div class="form-group"><label>Statut *</label>
+                <select name="statut" required>
+                    {''.join(f'<option value="{s}" {"selected" if p["statut"]==s else ""}>{s}</option>' for s in ["Présent","Absent","Retard","Excusé"])}
+                </select>
+            </div>
+            <div class="form-group"><label>Motif</label><input type="text" name="motif" value="{p['motif'] or ''}"></div>
+            <div class="form-group"><label><input type="checkbox" name="justificatif" {"checked" if p['justificatif'] else ""}> Justificatif fourni</label></div>
+            <button type="submit" class="btn btn-success" style="width:100%;"><i class="fas fa-save"></i> Enregistrer</button>
+        </form>
+        <br><a href="/presences" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>"""
+    return render_page(content, active='presences')
+
+
+# ==================== EMPLOI DU TEMPS ====================
+@app.route("/emploi-temps")
+@login_required
+def emploi_temps():
+    conn = get_db()
+    c = conn.cursor()
+    classe_id = request.args.get('classe_id', type=int)
+    semestre_id = request.args.get('semestre_id', type=int, default=1)
+
+    classes_rows = c.execute("""SELECT c.id, c.code, c.nom, n.nom as niveau FROM classes c
+        JOIN niveaux n ON c.niveau_id=n.id ORDER BY n.ordre""").fetchall()
+    semestres_rows = c.execute("SELECT id, nom FROM semestres ORDER BY code").fetchall()
+
+    creneaux = []
+    classe_info = None
+    if classe_id:
+        classe_info = c.execute("""SELECT c.*, f.nom as filiere, n.nom as niveau FROM classes c
+            JOIN filieres f ON c.filiere_id=f.id
+            JOIN niveaux n ON c.niveau_id=n.id WHERE c.id=?""", (classe_id,)).fetchone()
+        creneaux = c.execute("""SELECT et.*, m.nom as matiere_nom, p.nom as prof_nom, p.prenom as prof_prenom
+            FROM emploi_temps et JOIN matieres m ON et.matiere_id=m.id
+            LEFT JOIN professeurs p ON et.professeur_id=p.id
+            WHERE et.classe_id=? AND et.semestre_id=?""", (classe_id, semestre_id)).fetchall()
+    conn.close()
+
+    co = "".join(f'<option value="{cl["id"]}" {"selected" if cl["id"]==classe_id else ""}>{cl["code"]} — {cl["niveau"]}</option>' for cl in classes_rows)
+    so = "".join(f'<option value="{s["id"]}" {"selected" if s["id"]==semestre_id else ""}>{s["nom"]}</option>' for s in semestres_rows)
+
+    jours = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"]
+    heures = ["08:00", "10:00", "12:00", "14:00", "16:00", "18:00"]
+
+    content = f"""<div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-calendar-alt"></i> Emploi du temps</h2>
+            <a href="/emploi-temps/ajouter" class="btn btn-primary"><i class="fas fa-plus"></i> Ajouter</a>
+        </div>
+        <form method="GET" style="display:grid; grid-template-columns:1fr 1fr auto; gap:10px; margin-bottom:20px;">
+            <div class="form-group" style="margin:0;"><label>Classe</label>
+                <select name="classe_id" onchange="this.form.submit()">
+                    <option value="">-- Sélectionner --</option>{co}
+                </select>
+            </div>
+            <div class="form-group" style="margin:0;"><label>Semestre</label>
+                <select name="semestre_id" onchange="this.form.submit()">{so}</select>
+            </div>
+            <button class="btn btn-info" style="align-self:end;"><i class="fas fa-sync"></i></button>
+        </form>"""
+
+    if classe_info:
+        grille = {j: {h: [] for h in heures} for j in jours}
+        for cr in creneaux:
+            h = cr['heure_debut'][:5]
+            hk = heures[0]
+            for hh in heures:
+                if hh <= h:
+                    hk = hh
+            if cr['jour'] in grille:
+                grille[cr['jour']][hk].append(cr)
+
+        content += f"""<div style="background:#f7fafc; padding:15px; border-radius:8px; margin-bottom:15px;">
+            <strong>{classe_info['code']}</strong> — {classe_info['nom']}
+            ({classe_info['niveau']} / {classe_info['filiere']})
+        </div>
+        <div style="overflow-x:auto;">
+        <table style="min-width:900px;"><thead><tr>
+            <th style="width:100px;">Heure</th>
+            {''.join(f'<th style="text-align:center;">{j}</th>' for j in jours)}
+        </tr></thead><tbody>"""
+        for h in heures:
+            content += f'<tr><td style="background:#f7fafc; font-weight:600;">{h}</td>'
+            for j in jours:
+                cells = grille[j][h]
+                if cells:
+                    content += '<td style="padding:5px;">'
+                    for cr in cells:
+                        prof = f"{cr['prof_nom']} {cr['prof_prenom']}" if cr['prof_nom'] else '-'
+                        content += f"""<div style="background:linear-gradient(135deg,#e94560,#c73652);
+                            color:white; padding:8px; border-radius:6px; font-size:0.75rem; margin-bottom:3px;">
+                            <strong>{cr['matiere_nom']}</strong><br>
+                            <small>{cr['heure_debut'][:5]} - {cr['heure_fin'][:5]}</small><br>
+                            <small><i class="fas fa-user"></i> {prof}</small><br>
+                            <small><i class="fas fa-door-open"></i> {cr['salle'] or '-'}</small>
+                            <div style="margin-top:5px; display:flex; gap:3px;">
+                                <a href="/emploi-temps/{cr['id']}/edit" style="background:rgba(255,255,255,0.2); color:white; padding:2px 6px; font-size:0.7rem; border-radius:3px; text-decoration:none;"><i class="fas fa-edit"></i></a>
+                                <a href="/emploi-temps/{cr['id']}/delete" style="background:rgba(255,255,255,0.2); color:white; padding:2px 6px; font-size:0.7rem; border-radius:3px; text-decoration:none;" onclick="return confirm('Supprimer ?')"><i class="fas fa-trash"></i></a>
+                            </div>
+                        </div>"""
+                    content += '</td>'
+                else:
+                    content += '<td style="background:#fafbfc; padding:5px;"></td>'
+            content += "</tr>"
+        content += "</tbody></table></div>"
+    else:
+        content += '<div style="text-align:center; padding:40px; color:#718096;">Sélectionnez une classe.</div>'
+    content += "</div>"
+    return render_page(content, active='emploi_temps')
+
+
+@app.route("/emploi-temps/ajouter", methods=["GET", "POST"])
+@prof_or_admin_required
+def ajouter_emploi_temps():
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        c.execute("""INSERT INTO emploi_temps (classe_id, matiere_id, professeur_id,
+            semestre_id, jour, heure_debut, heure_fin, salle, annee_academique, saisi_par)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (int(request.form['classe_id']), int(request.form['matiere_id']),
+             int(request.form['professeur_id']) if request.form.get('professeur_id') else None,
+             int(request.form['semestre_id']), request.form['jour'],
+             request.form['heure_debut'], request.form['heure_fin'],
+             request.form.get('salle', ''), '2025-2026', current_user.id))
+        conn.commit()
+        log_action(current_user.id, 'CREATE', 'emploi_temps', c.lastrowid, 'OK', request.remote_addr)
+        conn.close()
+        flash("Créneau ajouté", "success")
+        return redirect(f"/emploi-temps?classe_id={request.form['classe_id']}")
+
+    classes = c.execute("""SELECT c.id, c.code, c.nom FROM classes c ORDER BY c.code""").fetchall()
+    matieres = c.execute("SELECT id, code, nom FROM matieres ORDER BY nom").fetchall()
+    profs = c.execute("SELECT id, nom, prenom FROM professeurs WHERE statut='Actif' ORDER BY nom").fetchall()
+    semestres = c.execute("SELECT id, code, nom FROM semestres ORDER BY code").fetchall()
+    conn.close()
+
+    content = f"""<div class="form-container">
+        <h2><i class="fas fa-plus"></i> Ajouter un créneau</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Classe *</label>
+                    <select name="classe_id" required>
+                        {''.join(f'<option value="{c["id"]}">{c["code"]} — {c["nom"]}</option>' for c in classes)}
+                    </select>
+                </div>
+                <div class="form-group"><label>Semestre *</label>
+                    <select name="semestre_id" required>
+                        {''.join(f'<option value="{s["id"]}">{s["nom"]}</option>' for s in semestres)}
+                    </select>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Matière *</label>
+                    <select name="matiere_id" required>
+                        {''.join(f'<option value="{m["id"]}">{m["code"]} — {m["nom"]}</option>' for m in matieres)}
+                    </select>
+                </div>
+                <div class="form-group"><label>Professeur</label>
+                    <select name="professeur_id">
+                        <option value="">-- Non assigné --</option>
+                        {''.join(f'<option value="{p["id"]}">{p["nom"]} {p["prenom"]}</option>' for p in profs)}
+                    </select>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Jour *</label>
+                    <select name="jour" required>
+                        {''.join(f'<option>{j}</option>' for j in ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi"])}
+                    </select>
+                </div>
+                <div class="form-group"><label>Salle</label><input type="text" name="salle" placeholder="A1"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Début *</label><input type="time" name="heure_debut" value="08:00" required></div>
+                <div class="form-group"><label>Fin *</label><input type="time" name="heure_fin" value="10:00" required></div>
+            </div>
+            <button type="submit" class="btn btn-success" style="width:100%;"><i class="fas fa-save"></i> Enregistrer</button>
+        </form>
+        <br><a href="/emploi-temps" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>"""
+    return render_page(content, active='emploi_temps')
+
+
+@app.route("/emploi-temps/<int:id>/edit", methods=["GET", "POST"])
+@prof_or_admin_required
+def edit_emploi_temps(id):
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        c.execute("""UPDATE emploi_temps SET classe_id=?, matiere_id=?, professeur_id=?,
+            semestre_id=?, jour=?, heure_debut=?, heure_fin=?, salle=? WHERE id=?""",
+            (int(request.form['classe_id']), int(request.form['matiere_id']),
+             int(request.form['professeur_id']) if request.form.get('professeur_id') else None,
+             int(request.form['semestre_id']), request.form['jour'],
+             request.form['heure_debut'], request.form['heure_fin'],
+             request.form.get('salle', ''), id))
+        conn.commit()
+        log_action(current_user.id, 'UPDATE', 'emploi_temps', id, 'OK', request.remote_addr)
+        conn.close()
+        flash("Créneau mis à jour", "success")
+        return redirect(f"/emploi-temps?classe_id={request.form['classe_id']}")
+
+    et = c.execute("SELECT * FROM emploi_temps WHERE id=?", (id,)).fetchone()
+    if not et:
+        conn.close()
+        return redirect("/emploi-temps")
+    classes = c.execute("SELECT id, code, nom FROM classes ORDER BY code").fetchall()
+    matieres = c.execute("SELECT id, code, nom FROM matieres ORDER BY nom").fetchall()
+    profs = c.execute("SELECT id, nom, prenom FROM professeurs ORDER BY nom").fetchall()
+    semestres = c.execute("SELECT id, code, nom FROM semestres ORDER BY code").fetchall()
+    conn.close()
+
+    content = f"""<div class="form-container">
+        <h2><i class="fas fa-edit"></i> Modifier créneau</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Classe *</label>
+                    <select name="classe_id" required>
+                        {''.join(f'<option value="{c["id"]}" {"selected" if c["id"]==et["classe_id"] else ""}>{c["code"]}</option>' for c in classes)}
+                    </select>
+                </div>
+                <div class="form-group"><label>Semestre *</label>
+                    <select name="semestre_id" required>
+                        {''.join(f'<option value="{s["id"]}" {"selected" if s["id"]==et["semestre_id"] else ""}>{s["nom"]}</option>' for s in semestres)}
+                    </select>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Matière *</label>
+                    <select name="matiere_id" required>
+                        {''.join(f'<option value="{m["id"]}" {"selected" if m["id"]==et["matiere_id"] else ""}>{m["code"]} — {m["nom"]}</option>' for m in matieres)}
+                    </select>
+                </div>
+                <div class="form-group"><label>Professeur</label>
+                    <select name="professeur_id">
+                        <option value="">-- Non assigné --</option>
+                        {''.join(f'<option value="{p["id"]}" {"selected" if p["id"]==et["professeur_id"] else ""}>{p["nom"]} {p["prenom"]}</option>' for p in profs)}
+                    </select>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Jour *</label>
+                    <select name="jour" required>
+                        {''.join(f'<option {"selected" if et["jour"]==j else ""}>{j}</option>' for j in ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi"])}
+                    </select>
+                </div>
+                <div class="form-group"><label>Salle</label><input type="text" name="salle" value="{et['salle'] or ''}"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Début *</label><input type="time" name="heure_debut" value="{et['heure_debut']}" required></div>
+                <div class="form-group"><label>Fin *</label><input type="time" name="heure_fin" value="{et['heure_fin']}" required></div>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%;"><i class="fas fa-save"></i> Mettre à jour</button>
+        </form>
+        <br><a href="/emploi-temps" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>"""
+    return render_page(content, active='emploi_temps')
+
+
+@app.route("/emploi-temps/<int:id>/delete")
+@admin_required
+def delete_emploi_temps(id):
+    conn = get_db()
+    c = conn.cursor()
+    row = c.execute("SELECT classe_id FROM emploi_temps WHERE id=?", (id,)).fetchone()
+    c.execute("DELETE FROM emploi_temps WHERE id=?", (id,))
+    conn.commit()
+    log_action(current_user.id, 'DELETE', 'emploi_temps', id, 'OK', request.remote_addr)
+    conn.close()
+    flash("Créneau supprimé", "success")
+    return redirect(f"/emploi-temps?classe_id={row['classe_id']}" if row else "/emploi-temps")
+
+
+# ==================== DÉLIBÉRATIONS ====================
+@app.route("/deliberations")
+@prof_or_admin_required
+def deliberations_liste():
+    conn = get_db()
+    c = conn.cursor()
+    rows = c.execute("""SELECT d.*, e.nom, e.prenom, e.matricule, cl.nom as classe_nom, s.nom as semestre_nom
+        FROM deliberations d JOIN etudiants e ON d.etudiant_id=e.id
+        JOIN classes cl ON d.classe_id=cl.id JOIN semestres s ON d.semestre_id=s.id
+        ORDER BY d.date_deliberation DESC LIMIT 100""").fetchall()
+    conn.close()
+
+    content = """<div class="card"><div class="card-header">
+        <h2><i class="fas fa-gavel"></i> Délibérations</h2>
+        <a href="/deliberations/calculer" class="btn btn-primary"><i class="fas fa-calculator"></i> Lancer</a>
+    </div><table><thead><tr>
+        <th>Étudiant</th><th>Matricule</th><th>Classe</th><th>Semestre</th>
+        <th>Moyenne</th><th>Rang</th><th>Décision</th><th>Mention</th><th>Date</th>
+    </tr></thead><tbody>"""
+    for d in rows:
+        b = "badge-success" if d['decision'] == 'Admis' else "badge-danger"
+        content += f"""<tr>
+            <td>{d['nom']} {d['prenom']}</td><td>{d['matricule']}</td>
+            <td>{d['classe_nom']}</td><td>{d['semestre_nom']}</td>
+            <td><strong>{d['moyenne']}/20</strong></td><td>{d['rang']}</td>
+            <td><span class="badge {b}">{d['decision']}</span></td>
+            <td>{d['mention']}</td>
+            <td>{d['date_deliberation'][:10] if d['date_deliberation'] else '-'}</td>
+        </tr>"""
+    if not rows:
+        content += '<tr><td colspan="9" style="text-align:center; color:#718096; padding:30px;">Aucune délibération.</td></tr>'
+    content += "</tbody></table></div>"
+    return render_page(content, active='deliberations')
+
+
+@app.route("/deliberations/calculer", methods=["GET", "POST"])
+@admin_required
+def deliberations_calculer():
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        classe_id = int(request.form['classe_id'])
+        semestre_id = int(request.form['semestre_id'])
+        etudiants = c.execute("SELECT id, nom, prenom FROM etudiants WHERE classe_id=? AND statut='Actif'",
+            (classe_id,)).fetchall()
+        resultats = []
+        for e in etudiants:
+            r = c.execute("""SELECT SUM(n.note_finale * m.coefficient) / SUM(m.coefficient) as moy,
+                    SUM(m.credit) as ct, SUM(CASE WHEN n.note_finale >= 10 THEN m.credit ELSE 0 END) as cv
+                FROM notes n JOIN matieres m ON n.matiere_id=m.id
+                WHERE n.etudiant_id=? AND n.semestre_id=? AND n.note_finale IS NOT NULL""",
+                (e['id'], semestre_id)).fetchone()
+            moy = round(r['moy'] or 0, 2) if r and r['moy'] else 0
+            resultats.append({'etudiant_id': e['id'], 'moyenne': moy,
+                              'credits_valides': r['cv'] or 0 if r else 0,
+                              'credits_total': r['ct'] or 0 if r else 0})
+
+        resultats.sort(key=lambda x: x['moyenne'], reverse=True)
+        for rang, r in enumerate(resultats, 1):
+            moy = r['moyenne']
+            decision = "Admis" if moy >= 10 else ("Ajourné" if moy >= 7 else "Redouble")
+            mention = "Insuffisant"
+            if moy >= 16: mention = "Très Bien"
+            elif moy >= 14: mention = "Bien"
+            elif moy >= 12: mention = "Assez Bien"
+            elif moy >= 10: mention = "Passable"
+            c.execute("""INSERT OR REPLACE INTO deliberations
+                (etudiant_id, classe_id, semestre_id, moyenne, rang, decision, mention,
+                 credits_valides, credits_total, valide_par)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (r['etudiant_id'], classe_id, semestre_id, moy, rang, decision, mention,
+                 r['credits_valides'], r['credits_total'], current_user.id))
+
+        conn.commit()
+        log_action(current_user.id, 'CREATE', 'deliberations', classe_id,
+                   f"{len(resultats)} étudiants", request.remote_addr)
+        conn.close()
+        flash(f"✅ Délibération calculée pour {len(resultats)} étudiants", "success")
+        return redirect("/deliberations")
+
+    classes = c.execute("""SELECT c.id, c.code, c.nom FROM classes c ORDER BY c.code""").fetchall()
+    semestres = c.execute("SELECT id, code, nom FROM semestres ORDER BY code").fetchall()
+    conn.close()
+
+    content = f"""<div class="form-container">
+        <h2><i class="fas fa-calculator"></i> Lancer une délibération</h2>
+        <form method="POST">
+            <div class="form-group"><label>Classe *</label>
+                <select name="classe_id" required>
+                    <option value="">-- Sélectionner --</option>
+                    {''.join(f'<option value="{c["id"]}">{c["code"]} — {c["nom"]}</option>' for c in classes)}
+                </select>
+            </div>
+            <div class="form-group"><label>Semestre *</label>
+                <select name="semestre_id" required>
+                    {''.join(f'<option value="{s["id"]}">{s["nom"]}</option>' for s in semestres)}
+                </select>
+            </div>
+            <button type="submit" class="btn btn-success" style="width:100%;" onclick="return confirm('Lancer la délibération ?')">
+                <i class="fas fa-gavel"></i> Calculer & Enregistrer
+            </button>
+        </form>
+        <br><a href="/deliberations" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>"""
+    return render_page(content, active='deliberations')
+
+
+# ==================== COMMUNICATION ====================
+@app.route("/communication")
+@admin_required
+def communication():
+    if not COMM_AVAILABLE:
+        flash("Module communication indisponible", "danger")
+        return redirect("/")
+
+    conn = get_db()
+    c = conn.cursor()
+    notifs = c.execute("SELECT * FROM notifications ORDER BY date_creation DESC LIMIT 100").fetchall()
+    stats = c.execute("""SELECT 
+        SUM(CASE WHEN type='SMS' THEN 1 ELSE 0 END) as s,
+        SUM(CASE WHEN type='EMAIL' THEN 1 ELSE 0 END) as e,
+        SUM(CASE WHEN statut='Envoyé' THEN 1 ELSE 0 END) as ok,
+        SUM(CASE WHEN statut='Échec' THEN 1 ELSE 0 END) as ko
+        FROM notifications""").fetchone()
+    conn.close()
+
+    content = f"""<div class="stats">
+        <div class="stat-card"><div class="num">{stats['s'] or 0}</div><div class="label">SMS</div></div>
+        <div class="stat-card" style="border-left-color:#3498db;"><div class="num">{stats['e'] or 0}</div><div class="label">Emails</div></div>
+        <div class="stat-card" style="border-left-color:#2ecc71;"><div class="num">{stats['ok'] or 0}</div><div class="label">Succès</div></div>
+        <div class="stat-card" style="border-left-color:#e74c3c;"><div class="num">{stats['ko'] or 0}</div><div class="label">Échecs</div></div>
+    </div>
+    <div class="card"><div class="card-header">
+        <h2><i class="fas fa-comments"></i> Communication</h2>
+        <div>
+            <a href="/communication/config" class="btn btn-info"><i class="fas fa-cog"></i> Config</a>
+            <a href="/communication/envoyer" class="btn btn-primary"><i class="fas fa-paper-plane"></i> Envoyer</a>
+        </div>
+    </div><table><thead><tr>
+        <th>Date</th><th>Type</th><th>Destinataire</th><th>Contenu</th><th>Statut</th><th>Provider</th>
+    </tr></thead><tbody>"""
+    for n in notifs:
+        b = "badge-success" if n['statut'] == "Envoyé" else ("badge-danger" if n['statut'] == "Échec" else "badge-warning")
+        cc = (n['contenu'] or '')[:80] + ('...' if len(n['contenu'] or '') > 80 else '')
+        content += f"""<tr>
+            <td>{n['date_creation'][:16] if n['date_creation'] else '-'}</td>
+            <td><span class="badge badge-info">{n['type']}</span></td>
+            <td>{n['destinataire']}</td>
+            <td>{n['sujet'] or cc}</td>
+            <td><span class="badge {b}">{n['statut']}</span></td>
+            <td>{n['provider'] or '-'}</td>
+        </tr>"""
+    if not notifs:
+        content += '<tr><td colspan="6" style="text-align:center; color:#718096; padding:30px;">Aucune notification.</td></tr>'
+    content += "</tbody></table></div>"
+    return render_page(content, active='communication')
+
+
+@app.route("/communication/config", methods=["GET", "POST"])
+@admin_required
+def communication_config():
+    conn = get_db()
+    c = conn.cursor()
+    if request.method == "POST":
+        for k, v in request.form.items():
+            if k.startswith("cfg_"):
+                c.execute("UPDATE config_communication SET valeur=?, date_modification=CURRENT_TIMESTAMP WHERE cle=?",
+                          (v, k[4:]))
+        conn.commit()
+        log_action(current_user.id, 'UPDATE', 'config_communication', None, 'OK', request.remote_addr)
+        conn.close()
+        flash("Configuration mise à jour", "success")
+        return redirect("/communication")
+
+    configs = c.execute("SELECT * FROM config_communication ORDER BY cle").fetchall()
+    conn.close()
+
+    rows = "".join(f"""<tr>
+        <td><strong>{cfg['cle']}</strong><br><small style="color:#a0aec0;">{cfg['description'] or ''}</small></td>
+        <td><input type="text" name="cfg_{cfg['cle']}" value="{cfg['valeur'] or ''}" style="width:100%; padding:6px;"></td>
+    </tr>""" for cfg in configs)
+
+    content = f"""<div class="card">
+        <div class="card-header"><h2><i class="fas fa-cog"></i> Configuration</h2></div>
+        <form method="POST">
+            <table><thead><tr><th>Paramètre</th><th>Valeur</th></tr></thead><tbody>{rows}</tbody></table>
+            <br><button type="submit" class="btn btn-success"><i class="fas fa-save"></i> Enregistrer</button>
+            <a href="/communication" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+        </form>
+    </div>"""
+    return render_page(content, active='communication')
+
+
+@app.route("/communication/envoyer", methods=["GET", "POST"])
+@admin_required
+def communication_envoyer():
+    if not COMM_AVAILABLE:
+        flash("Module indisponible", "danger")
+        return redirect("/communication")
+
+    if request.method == "POST":
+        type_n = request.form.get('type', 'SMS')
+        dest = request.form.get('destinataire', '').strip()
+        sujet = request.form.get('sujet', '')
+        contenu = request.form.get('contenu', '').strip()
+
+        if not dest or not contenu:
+            flash("Destinataire et contenu requis", "danger")
+            return redirect("/communication/envoyer")
+
+        if type_n == 'SMS':
+            ok, msg = envoyer_sms(dest, contenu)
+        else:
+            ok, msg = envoyer_email(dest, sujet or "Message Omega",
+                                     f"<div style='font-family:Arial; padding:20px;'>{contenu}</div>", contenu)
+
+        flash(f"{'✅' if ok else '❌'} {msg}", "success" if ok else "danger")
+        return redirect("/communication")
+
+    content = """<div class="card">
+        <div class="card-header"><h2><i class="fas fa-paper-plane"></i> Envoyer</h2></div>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Type *</label>
+                    <select name="type" required>
+                        <option value="SMS">SMS</option>
+                        <option value="EMAIL">Email</option>
+                    </select>
+                </div>
+                <div class="form-group"><label>Destinataire *</label>
+                    <input type="text" name="destinataire" required placeholder="771234567 ou email">
+                </div>
+            </div>
+            <div class="form-group"><label>Sujet (email)</label><input type="text" name="sujet"></div>
+            <div class="form-group"><label>Contenu *</label><textarea name="contenu" rows="5" required></textarea></div>
+            <button type="submit" class="btn btn-success"><i class="fas fa-paper-plane"></i> Envoyer</button>
+            <a href="/communication" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+        </form>
+    </div>"""
+    return render_page(content, active='communication')
+
+
+# ==================== EXPORTS EXCEL ====================
+@app.route("/export/etudiants")
+@prof_or_admin_required
+def export_etudiants_xlsx():
+    if not EXCEL_AVAILABLE:
+        flash("Export Excel indisponible", "danger")
+        return redirect("/etudiants")
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT e.*, cl.nom as classe_nom FROM etudiants e
+        JOIN classes cl ON e.classe_id=cl.id ORDER BY e.nom""")
+    etudiants = [dict(r) for r in c.fetchall()]
+    conn.close()
+    xlsx = exporter_etudiants(etudiants)
+    return Response(xlsx,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': f'attachment; filename="etudiants_{datetime.now().strftime("%Y%m%d")}.xlsx"'})
+
+
+@app.route("/export/paiements")
+@prof_or_admin_required
+def export_paiements_xlsx():
+    if not EXCEL_AVAILABLE:
+        flash("Export indisponible", "danger")
+        return redirect("/scolarite")
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT s.*, e.nom, e.prenom, e.matricule FROM scolarite s
+        JOIN etudiants e ON s.etudiant_id=e.id ORDER BY s.date_paiement DESC""")
+    paiements = [dict(r) for r in c.fetchall()]
+    conn.close()
+    xlsx = exporter_paiements(paiements)
+    return Response(xlsx,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': f'attachment; filename="paiements_{datetime.now().strftime("%Y%m%d")}.xlsx"'})
+
+
+@app.route("/export/notes/<int:classe_id>")
+@prof_or_admin_required
+def export_notes_xlsx(classe_id):
+    if not EXCEL_AVAILABLE:
+        flash("Export indisponible", "danger")
+        return redirect("/classes")
+    conn = get_db()
+    c = conn.cursor()
+    cl = c.execute("SELECT code, nom FROM classes WHERE id=?", (classe_id,)).fetchone()
+    if not cl:
+        conn.close()
+        return redirect("/classes")
+    c.execute("""SELECT e.matricule, e.nom, e.prenom, m.nom as matiere_nom,
+        m.coefficient, n.cc1 as note_cc, n.examen as note_examen,
+        n.note_finale, n.statut FROM notes n
+        JOIN etudiants e ON n.etudiant_id=e.id JOIN matieres m ON n.matiere_id=m.id
+        WHERE n.classe_id=? ORDER BY e.nom, m.nom""", (classe_id,))
+    notes = [dict(r) for r in c.fetchall()]
+    conn.close()
+    xlsx = exporter_notes_classe(cl['nom'], notes)
+    return Response(xlsx,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': f'attachment; filename="notes_{cl["code"]}.xlsx"'})
+
+
+# ==================== ATTESTATIONS ====================
+@app.route("/attestation/<int:etudiant_id>/<type_att>")
+@prof_or_admin_required
+def generer_attestation(etudiant_id, type_att):
+    if not PDF_AVAILABLE:
+        flash("PDF indisponible", "danger")
+        return redirect(f"/etudiant/{etudiant_id}")
+
+    import hashlib
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""SELECT e.*, cl.nom as classe_nom, n.nom as niveau_nom, f.nom as filiere_nom
+        FROM etudiants e JOIN classes cl ON e.classe_id=cl.id
+        JOIN niveaux n ON cl.niveau_id=n.id
+        JOIN filieres f ON cl.filiere_id=f.id WHERE e.id=?""", (etudiant_id,))
+    e = c.fetchone()
+    if not e:
+        conn.close()
+        flash("Étudiant introuvable", "danger")
+        return redirect("/etudiants")
+
+    code = hashlib.sha256(f"{e['matricule']}{type_att}{datetime.now().isoformat()}".encode()).hexdigest()[:16].upper()
+    c.execute("""INSERT INTO attestations (etudiant_id, type, code_verification, emis_par)
+        VALUES (?, ?, ?, ?)""", (etudiant_id, type_att, code, current_user.id))
+    conn.commit()
+    conn.close()
+
+    e_dict = dict(e)
+
+    if type_att == "scolarite":
+        pdf = generer_attestation_scolarite_pdf(e_dict, code)
+        fn = f"attestation_scolarite_{e['matricule']}.pdf"
+    elif type_att == "reussite":
+        stats = calculer_moyenne_etudiant(etudiant_id)
+        mention = "Passable"
+        if stats['moyenne'] >= 16: mention = "Très Bien"
+        elif stats['moyenne'] >= 14: mention = "Bien"
+        elif stats['moyenne'] >= 12: mention = "Assez Bien"
+        elif stats['moyenne'] < 10: mention = "Insuffisant"
+        pdf = generer_attestation_reussite_pdf(e_dict, stats['moyenne'], mention, code)
+        fn = f"attestation_reussite_{e['matricule']}.pdf"
+    else:
+        flash("Type inconnu", "danger")
+        return redirect(f"/etudiant/{etudiant_id}")
+
+    log_action(current_user.id, 'EXPORT_PDF', 'attestations', etudiant_id, type_att, request.remote_addr)
+    return Response(pdf, mimetype='application/pdf',
+        headers={'Content-Disposition': f'inline; filename="{fn}"'})
+
+
+# ==================== ANALYTICS ====================
+@app.route("/analytics")
+@prof_or_admin_required
+def analytics():
+    conn = get_db()
+    c = conn.cursor()
+
+    filieres_stats = c.execute("""SELECT f.nom as filiere, COUNT(e.id) as nb
+        FROM filieres f LEFT JOIN classes cl ON cl.filiere_id=f.id
+        LEFT JOIN etudiants e ON e.classe_id=cl.id
+        GROUP BY f.id ORDER BY nb DESC""").fetchall()
+
+    paiements_mois = c.execute("""SELECT mois, SUM(montant) as total FROM scolarite
+        WHERE statut='Payé' GROUP BY mois""").fetchall()
+
+    reussite_classes = c.execute("""SELECT cl.nom as classe,
+        ROUND(AVG(CASE WHEN n.note_finale >= 10 THEN 100.0 ELSE 0 END), 1) as taux
+        FROM classes cl LEFT JOIN notes n ON n.classe_id=cl.id AND n.note_finale IS NOT NULL
+        GROUP BY cl.id ORDER BY taux DESC""").fetchall()
+
+    moyennes_classes = c.execute("""SELECT cl.nom as classe, ROUND(AVG(n.note_finale), 2) as moyenne
+        FROM classes cl LEFT JOIN notes n ON n.classe_id=cl.id AND n.note_finale IS NOT NULL
+        GROUP BY cl.id""").fetchall()
+
+    conn.close()
+
+    import json
+    fl = json.dumps([f['filiere'] for f in filieres_stats])
+    fd = json.dumps([f['nb'] for f in filieres_stats])
+    pl = json.dumps([p['mois'] for p in paiements_mois])
+    pd = json.dumps([p['total'] for p in paiements_mois])
+    rl = json.dumps([r['classe'] for r in reussite_classes])
+    rd = json.dumps([r['taux'] or 0 for r in reussite_classes])
+    ml = json.dumps([m['classe'] for m in moyennes_classes])
+    md = json.dumps([m['moyenne'] or 0 for m in moyennes_classes])
+
+    total_etu = sum(f['nb'] for f in filieres_stats)
+    total_fcfa = sum(p['total'] or 0 for p in paiements_mois)
+    nb_classes = len(reussite_classes)
+    tx_global = round(sum(r['taux'] or 0 for r in reussite_classes) / nb_classes, 1) if nb_classes else 0
+
+    content = f"""<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <div class="stats">
+        <div class="stat-card"><div class="num">{total_etu}</div><div class="label">Étudiants</div></div>
+        <div class="stat-card" style="border-left-color:#2ecc71;"><div class="num">{total_fcfa:,.0f}</div><div class="label">FCFA</div></div>
+        <div class="stat-card" style="border-left-color:#3498db;"><div class="num">{nb_classes}</div><div class="label">Classes</div></div>
+        <div class="stat-card" style="border-left-color:#9b59b6;"><div class="num">{tx_global}%</div><div class="label">Réussite</div></div>
+    </div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:15px; margin-top:20px;">
+        <div class="card"><h2 style="margin-bottom:15px; font-size:1rem;">📊 Étudiants / filière</h2><canvas id="cF" height="200"></canvas></div>
+        <div class="card"><h2 style="margin-bottom:15px; font-size:1rem;">💰 Paiements / mois</h2><canvas id="cP" height="200"></canvas></div>
+        <div class="card"><h2 style="margin-bottom:15px; font-size:1rem;">🎯 Réussite / classe</h2><canvas id="cR" height="200"></canvas></div>
+        <div class="card"><h2 style="margin-bottom:15px; font-size:1rem;">📈 Moyennes / classe</h2><canvas id="cM" height="200"></canvas></div>
+    </div>
+    <script>
+    const colors = ['#e94560','#2ecc71','#3498db','#9b59b6','#e67e22','#f39c12','#1abc9c'];
+    new Chart(document.getElementById('cF'), {{type:'doughnut', data:{{labels:{fl}, datasets:[{{data:{fd}, backgroundColor:colors}}]}}, options:{{responsive:true, plugins:{{legend:{{position:'right'}}}}}}}});
+    new Chart(document.getElementById('cP'), {{type:'bar', data:{{labels:{pl}, datasets:[{{label:'FCFA', data:{pd}, backgroundColor:'#2ecc71'}}]}}, options:{{responsive:true, plugins:{{legend:{{display:false}}}}}}}});
+    new Chart(document.getElementById('cR'), {{type:'bar', data:{{labels:{rl}, datasets:[{{label:'%', data:{rd}, backgroundColor:'#3498db'}}]}}, options:{{responsive:true, indexAxis:'y', plugins:{{legend:{{display:false}}}}}}}});
+    new Chart(document.getElementById('cM'), {{type:'line', data:{{labels:{ml}, datasets:[{{label:'Moyenne', data:{md}, borderColor:'#e94560', backgroundColor:'rgba(233,69,96,0.1)', fill:true, tension:0.4}}]}}, options:{{responsive:true, scales:{{y:{{min:0, max:20}}}}}}}});
+    </script>"""
+    return render_page(content, active='analytics')
+
+
+# ==================== HEALTH ====================
+@app.route("/health")
+def health():
+    try:
+        conn = get_db()
+        conn.execute("SELECT 1")
+        conn.close()
+        return {"status": "ok", "db": "connected"}, 200
+    except Exception as ex:
+        return {"status": "error", "message": str(ex)}, 500
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=False)

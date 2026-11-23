@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Lavage{% endblock %}
+{% block page_title %}Lavage & Esthetique{% endblock %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h2 style="margin:0">🚿 Lavage</h2>
+  <a href="{{ url_for('lavage_new') }}" class="btn btn-success">
+    ➕ Nouveau lavage
+  </a>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-droplet"></i></div><div><div class="kpi-val">{{ kpi.total }}</div><div class="kpi-lbl">Total</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-gold-grad"><i class="bi bi-hourglass"></i></div><div><div class="kpi-val">{{ kpi.en_attente }}</div><div class="kpi-lbl">En attente</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-play-circle"></i></div><div><div class="kpi-val">{{ kpi.en_cours }}</div><div class="kpi-lbl">En cours</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-check-circle"></i></div><div><div class="kpi-val">{{ kpi.termines }}</div><div class="kpi-lbl">Termines</div></div></div></div>
+</div>
+
+<div class="card-premium">
+  <h5>Lavages</h5>
+  <div class="table-responsive">
+    <table class="table table-omega">
+      <thead><tr><th>N°</th><th>Vehicule</th><th>Client</th><th>Formule</th><th class="text-end">Prix</th><th>Statut</th></tr></thead>
+      <tbody>
+        {% for l in lavages %}
+        <tr>
+          <td><code style="font-size:11px">{{ l.numero }}</code></td>
+          <td>{{ l.immatriculation or '-' }}</td>
+          <td>{{ l.client_prenom or '' }} {{ l.client_nom or '-' }}</td>
+          <td>{{ l.formule }}</td>
+          <td class="text-end fw-bold">{{ l.prix|money }}</td>
+          <td><span class="badge-statut badge-{{ l.statut }}">{{ l.statut }}</span></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="text-center text-muted py-4">Aucun lavage</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

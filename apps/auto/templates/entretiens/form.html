@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Modifier' if entretien else 'Nouvel' }} entretien{% endblock %}
+{% block page_title %}{{ '✏️ Modifier' if entretien else '➕ Nouvel' }} entretien{% endblock %}
+{% block content %}
+<form method="POST" class="card-premium">
+  <div class="row g-3">
+    <div class="col-md-6"><label class="form-label">Véhicule *</label>
+      <select name="vehicule_id" class="form-select" required>
+        <option value="">— Choisir —</option>
+        {% for v in vehicules %}<option value="{{ v.id }}" {% if (entretien and entretien.vehicule_id==v.id) or (not entretien and vehicule_id==v.id) %}selected{% endif %}>{{ v.code }} — {{ v.marque_nom }} {{ v.modele_nom }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="col-md-3"><label class="form-label">Type *</label>
+      <select name="type" class="form-select" required>
+        {% for t in ['vidange','révision','freins','pneus','batterie','carrosserie','climatisation','électricité','autre'] %}
+        <option value="{{ t }}" {% if entretien and entretien.type==t %}selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-3"><label class="form-label">Date *</label><input type="date" name="date_entretien" class="form-control" required value="{{ entretien.date_entretien if entretien else now.strftime('%Y-%m-%d') }}"></div>
+    <div class="col-md-3"><label class="form-label">Kilométrage</label><input type="number" name="kilometrage" class="form-control" value="{{ entretien.kilometrage if entretien else 0 }}"></div>
+    <div class="col-md-3"><label class="form-label">Coût (FCFA)</label><input type="number" name="cout" class="form-control" value="{{ entretien.cout if entretien else 0 }}"></div>
+    <div class="col-md-3"><label class="form-label">Garage</label><input type="text" name="garage" class="form-control" value="{{ entretien.garage if entretien else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Prochain km</label><input type="number" name="prochain_km" class="form-control" value="{{ entretien.prochain_km if entretien else 0 }}"></div>
+    <div class="col-12"><label class="form-label">Description</label><textarea name="description" class="form-control" rows="3">{{ entretien.description if entretien else '' }}</textarea></div>
+  </div>
+  <div class="mt-4 d-flex gap-2">
+    <button class="btn btn-accent"><i class="bi bi-check-lg"></i> Enregistrer</button>
+    <a href="{{ url_for('entretiens_list') }}" class="btn btn-light">Annuler</a>
+  </div>
+</form>
+{% endblock %}

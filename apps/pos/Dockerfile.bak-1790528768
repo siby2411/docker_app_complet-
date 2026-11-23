@@ -1,0 +1,15 @@
+FROM docker2-transport-v2:latest
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir fastapi==0.104.1 uvicorn==0.24.0 python-multipart==0.0.6 sqlalchemy==1.4.50 qrcode==7.4.2 Pillow==10.1.0 python-jose==3.3.0 passlib==1.7.4 python-dateutil==2.8.2 jinja2==3.1.2
+
+COPY main.py .
+
+RUN mkdir -p /app/data
+
+EXPOSE 8000
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

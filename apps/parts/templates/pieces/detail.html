@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}{{ p.nom }}{% endblock %}
+{% block page_title %}🔧 {{ p.nom[:60] }}{% endblock %}
+{% block content %}
+
+<div class="row g-3">
+  <div class="col-lg-8">
+    <div class="card-premium">
+      <div class="row g-3">
+        <div class="col-md-4">
+          {% if p.photo_principale %}
+          <img src="{{ url_for('uploaded_file', subpath='parts', filename=p.photo_principale) }}" style="width:100%;border-radius:12px">
+          {% else %}
+          <div style="background:#f5f7fa;border-radius:12px;padding:60px;text-align:center"><i class="bi bi-gear" style="font-size:80px;color:#cbd5e1"></i></div>
+          {% endif %}
+          <div class="mt-2 text-center"><img src="{{ url_for('piece_qr', pid=p.id) }}" style="max-width:120px"></div>
+        </div>
+        <div class="col-md-8">
+          <div class="d-flex gap-2 mb-2">
+            <span class="badge-statut badge-{{ p.qualite }}">{{ p.qualite }}</span>
+            <span class="badge-statut badge-{{ p.statut }}">{{ p.statut }}</span>
+          </div>
+          <h4 style="color:#0a2540">{{ p.nom }}</h4>
+          <table class="table table-sm">
+            <tr><td width="40%"><strong>SKU</strong></td><td><code>{{ p.sku }}</code></td></tr>
+            {% if p.code_oem %}<tr><td><strong>Code OEM</strong></td><td><code>{{ p.code_oem }}</code></td></tr>{% endif %}
+            {% if p.code_barre %}<tr><td><strong>Code-barres</strong></td><td>{{ p.code_barre }}</td></tr>{% endif %}
+            <tr><td><strong>Catégorie</strong></td><td>{{ p.categorie_icone or '' }} {{ p.categorie_nom or '—' }}</td></tr>
+            {% if p.marque_piece %}<tr><td><strong>Marque</strong></td><td>{{ p.marque_piece }}</td></tr>{% endif %}
+            {% if p.fournisseur_nom %}<tr><td><strong>Fournisseur</strong></td><td>{{ p.fournisseur_nom }}</td></tr>{% endif %}
+            {% if p.garantie_mois %}<tr><td><strong>Garantie</strong></td><td>{{ p.garantie_mois }} mois</td></tr>{% endif %}
+          </table>
+        </div>
+      </div>
+    </div>
+
+    {% if compat %}
+    <div class="card-premium">
+      <h5><i class="bi bi-check2-square text-info"></i> Compatibilité ({{ compat|length }})</h5>
+      <table class="table table-omega table-sm">
+        <thead><tr><th>Marque</th><th>Modèle</th><th>Années</th><th>Moteur</th></tr></thead>
+        <tbody>
+          {% for c in compat %}
+          <tr><td><strong>{{ c.marque_nom }}</strong></td><td>{{ c.modele_nom or 'Tous' }}</td><td>{% if c.annee_debut %}{{ c.annee_debut }}{% if c.annee_fin %} - {{ c.annee_fin }}{% endif %}{% else %}—{% endif %}</td><td>{{ c.moteur or '—' }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    <div class="card-premium">
+      <h5><i class="bi bi-clock-history"></i> Derniers mouvements</h5>
+      {% if mouvements %}
+      <table class="table table-omega table-sm">
+        <thead><tr><th>Date</th><th>Type</th><th>Quantité</th><th>PDV</th></tr></thead>
+        <tbody>
+          {% for m in mouvements %}
+          <tr>
+            <td><small>{{ m.created_at|dtm }}</small></td>
+            <td><span class="badge-statut badge-{{ 'disponible' if m.quantite > 0 else 'annulee' }}">{{ m.type }}</span></td>
+            <td class="fw-bold">{% if m.quantite > 0 %}+{% endif %}{{ m.quantite }}</td>
+            <td><small>{{ m.pv_nom or '—' }}</small></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="text-muted mb-0">Aucun mouvement.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card-premium">
+      <h5>💰 Prix</h5>
+      <div class="mb-3">
+        <div style="font-size:11px;color:#8896aa;text-transform:uppercase">Détail</div>
+        <div style="font-size:22px;font-weight:800;color:#ff6b35">{{ p.prix_vente_detail|money }}</div>
+      </div>
+      <div class="d-flex justify-content-between mb-1"><span style="font-size:12px">Gros</span><strong>{{ p.prix_vente_gros|money }}</strong></div>
+      <div class="d-flex justify-content-between mb-1"><span style="font-size:12px">Mécano</span><strong>{{ p.prix_vente_mecano|money }}</strong></div>
+      <div class="d-flex justify-content-between mb-1"><span style="font-size:12px">Achat</span><strong>{{ p.prix_achat|money }}</strong></div>
+      <hr>
+      <div class="d-flex justify-content-between"><span style="font-size:12px">Marge</span><strong style="color:#06d6a0">+{{ p.marge_pct }}%</strong></div>
+    </div>
+
+    <div class="card-premium">
+      <h5>📦 Stock par PDV</h5>
+      <div class="d-flex justify-content-between mb-3 pb-2" style="border-bottom:1px solid #f0f4f8">
+        <span style="font-weight:700">TOTAL</span>
+        <span style="font-size:22px;font-weight:800;color:{% if stock_total == 0 %}#ef476f{% elif stock_total <= p.stock_alerte %}#f4b400{% else %}#06d6a0{% endif %}">{{ stock_total }}</span>
+      </div>
+      {% for s in stock_par_pdv %}
+      <div class="d-flex justify-content-between mb-2"><small>{{ s.pv_nom }}</small><strong>{{ s.quantite }}</strong></div>
+      {% endfor %}
+      <hr>
+      <div class="d-flex justify-content-between"><small class="text-muted">Seuil alerte</small><small>{{ p.stock_alerte }}</small></div>
+    </div>
+
+    <div class="card-premium">
+      <h6>Actions</h6>
+      <div class="d-grid gap-2">
+        <a href="{{ url_for('piece_edit', pid=p.id) }}" class="btn btn-accent"><i class="bi bi-pencil"></i> Modifier</a>
+        <button class="btn btn-light" data-bs-toggle="modal" data-bs-target="#modalAjust"><i class="bi bi-sliders"></i> Ajuster stock</button>
+        <a href="{{ url_for('piece_qr', pid=p.id) }}" download="qr-{{ p.sku }}.png" class="btn btn-light"><i class="bi bi-qr-code"></i> QR Code</a>
+        {% if current_user.is_admin() %}
+        <form method="POST" action="{{ url_for('piece_delete', pid=p.id) }}" onsubmit="return confirm('Supprimer ?')">
+          <button class="btn btn-outline-danger w-100"><i class="bi bi-trash"></i> Supprimer</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="modalAjust" tabindex="-1">
+  <div class="modal-dialog"><div class="modal-content">
+    <form method="POST" action="{{ url_for('stock_ajuster', pid=p.id) }}">
+      <div class="modal-header"><h5>Ajuster le stock</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <div class="mb-2"><label class="form-label">Point de vente</label>
+          <select name="point_vente_id" class="form-select" required>
+            {% for s in stock_par_pdv %}<option value="{{ s.point_vente_id }}">{{ s.pv_nom }} (actuel: {{ s.quantite }})</option>{% endfor %}
+          </select>
+        </div>
+        <div class="mb-2"><label class="form-label">Nouvelle quantité</label><input type="number" name="nouvelle_quantite" class="form-control" required></div>
+        <div class="mb-2"><label class="form-label">Motif</label><input type="text" name="motif" class="form-control"></div>
+      </div>
+      <div class="modal-footer"><button class="btn btn-accent">Ajuster</button></div>
+    </form>
+  </div></div>
+</div>
+
+{% endblock %}

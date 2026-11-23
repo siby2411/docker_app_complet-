@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Nouveau devis{% endblock %}
+{% block page_title %}➕ Nouveau devis{% endblock %}
+{% block content %}
+<form method="POST" class="card-premium">
+  <div class="row g-3">
+    <div class="col-md-6"><label class="form-label">Client</label>
+      <select name="client_id" class="form-select">
+        <option value="">— Sans client —</option>
+        {% for c in clients %}<option value="{{ c.id }}">{{ c.nom }} {{ c.prenom or '' }} — {{ c.telephone }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="col-md-6"><label class="form-label">Point de vente *</label>
+      <select name="point_vente_id" class="form-select" required>
+        {% for pv in points_vente %}<option value="{{ pv.id }}">{{ pv.nom }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="col-md-6"><label class="form-label">Date validité</label>
+      <input type="date" name="date_validite" class="form-control" value="{{ (now + timedelta(days=30)).strftime('%Y-%m-%d') }}">
+    </div>
+    <div class="col-12"><label class="form-label">Notes</label><textarea name="notes" class="form-control" rows="2"></textarea></div>
+  </div>
+  <div class="mt-4 d-flex gap-2">
+    <button class="btn btn-accent"><i class="bi bi-check-lg"></i> Créer</button>
+    <a href="{{ url_for('devis_list') }}" class="btn btn-light">Annuler</a>
+  </div>
+</form>
+{% endblock %}

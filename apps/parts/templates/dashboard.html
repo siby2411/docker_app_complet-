@@ -1,0 +1,227 @@
+{% extends "base.html" %}
+{% block title %}Tableau de bord{% endblock %}
+{% block page_title %}📊 Tableau de bord{% endblock %}
+
+{% block content %}
+
+<!-- KPI ROW 1 -->
+<div class="row g-3 mb-4">
+  <div class="col-6 col-lg-3">
+    <div class="kpi-card">
+      <div class="icon bg-primary-grad"><i class="bi bi-gear-wide-connected"></i></div>
+      <div>
+        <div class="kpi-val">{{ kpi.pieces_total }}</div>
+        <div class="kpi-lbl">Références</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="kpi-card">
+      <div class="icon bg-info-grad"><i class="bi bi-boxes"></i></div>
+      <div>
+        <div class="kpi-val">{{ kpi.stock_total_units }}</div>
+        <div class="kpi-lbl">Unités stock</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="kpi-card">
+      <div class="icon bg-success-grad"><i class="bi bi-cash-stack"></i></div>
+      <div>
+        <div class="kpi-val">{{ kpi.stock_valeur_vente|money_short }}</div>
+        <div class="kpi-lbl">Valeur stock</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="kpi-card">
+      <div class="icon {% if kpi.stock_alertes > 5 %}bg-danger-grad{% else %}bg-gold-grad{% endif %}"><i class="bi bi-exclamation-triangle"></i></div>
+      <div>
+        <div class="kpi-val">{{ kpi.stock_alertes }}</div>
+        <div class="kpi-lbl">Alertes</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- KPI ROW 2 -->
+<div class="row g-3 mb-4">
+  <div class="col-6 col-lg-3">
+    <div class="kpi-card">
+      <div class="icon bg-accent-grad"><i class="bi bi-receipt"></i></div>
+      <div>
+        <div class="kpi-val">{{ kpi.ventes_jour }}</div>
+        <div class="kpi-lbl">Ventes jour</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="kpi-card">
+      <div class="icon bg-gold-grad"><i class="bi bi-cash-coin"></i></div>
+      <div>
+        <div class="kpi-val">{{ kpi.ca_jour|money_short }}</div>
+        <div class="kpi-lbl">CA jour</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="kpi-card">
+      <div class="icon bg-purple-grad"><i class="bi bi-graph-up-arrow"></i></div>
+      <div>
+        <div class="kpi-val">{{ kpi.ca_mois|money_short }}</div>
+        <div class="kpi-lbl">CA mois</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="kpi-card">
+      <div class="icon bg-primary-grad"><i class="bi bi-cart-check"></i></div>
+      <div>
+        <div class="kpi-val">{{ kpi.panier_moyen|money_short }}</div>
+        <div class="kpi-lbl">Panier moyen</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ALERTES STOCK -->
+{% if alertes_stock %}
+<div class="card-premium" style="border-left:4px solid #ef476f">
+  <h5><i class="bi bi-exclamation-triangle-fill text-danger"></i> Alertes Stock — {{ alertes_stock|length }} pièces</h5>
+  <div class="table-responsive">
+    <table class="table table-omega table-sm">
+      <thead>
+        <tr><th>Pièce</th><th>SKU</th><th>Catégorie</th><th class="text-center">Stock</th><th class="text-center">Seuil</th><th class="text-center">État</th></tr>
+      </thead>
+      <tbody>
+        {% for a in alertes_stock %}
+        <tr>
+          <td><strong>{{ a.nom[:50] }}</strong><br><small class="text-muted">OEM: {{ a.code_oem or '—' }}</small></td>
+          <td><code style="font-size:11px">{{ a.sku }}</code></td>
+          <td><small>{{ a.categorie_icone or '' }} {{ a.categorie_nom or '—' }}</small></td>
+          <td class="text-center fw-bold {% if a.stock_total == 0 %}text-danger{% endif %}">{{ a.stock_total }}</td>
+          <td class="text-center">{{ a.stock_alerte }}</td>
+          <td class="text-center">
+            {% if a.stock_total == 0 %}
+              <span class="badge-statut badge-rupture">RUPTURE</span>
+            {% else %}
+              <span class="badge-statut badge-alerte">ALERTE</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<!-- GRAPHIQUES -->
+<div class="row g-3 mb-4">
+  <div class="col-lg-8">
+    <div class="card-premium">
+      <h5><i class="bi bi-bar-chart-line" style="color:#ff6b35"></i> Ventes 7 derniers jours</h5>
+      <canvas id="chart7j" height="70"></canvas>
+    </div>
+  </div>
+  <div class="col-lg-4">
+    <div class="card-premium">
+      <h5><i class="bi bi-trophy" style="color:#f4b400"></i> Top catégories</h5>
+      {% for c in top_categories %}
+      <div class="d-flex align-items-center gap-2 mb-3">
+        <div style="width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#0a2540,#1a3a5c);display:flex;align-items:center;justify-content:center;color:#fff;font-size:16px">{{ c.icone or '🔧' }}</div>
+        <div style="flex:1">
+          <div style="font-weight:700;font-size:12px;color:#0a2540">{{ c.categorie }}</div>
+          <div class="text-muted" style="font-size:10px">{{ c.nb_pieces }} pièces · {{ c.qte_vendue }} vendues</div>
+        </div>
+        <div style="font-weight:800;color:#ff6b35;font-size:13px">{{ c.ca|money_short }}</div>
+      </div>
+      {% else %}
+      <p class="text-muted small mb-0">Aucune vente ce mois.</p>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<!-- DERNIÈRES VENTES -->
+<div class="card-premium">
+  <h5><i class="bi bi-receipt-cutoff" style="color:#06d6a0"></i> Dernières ventes</h5>
+  <div class="table-responsive">
+    <table class="table table-omega table-sm mb-0">
+      <thead>
+        <tr><th>N°</th><th>Client</th><th>Vendeur</th><th class="text-end">Montant</th><th>Paiement</th></tr>
+      </thead>
+      <tbody>
+        {% for v in dernieres_ventes %}
+        <tr>
+          <td><code style="font-size:11px;color:#0a2540">{{ v.numero }}</code></td>
+          <td>{% if v.client_nom %}{{ v.client_prenom or '' }} {{ v.client_nom }}{% else %}<span class="text-muted">Passage</span>{% endif %}</td>
+          <td><small>{{ v.vendeur_nom or '—' }}</small></td>
+          <td class="text-end fw-bold">{{ v.montant_ttc|money }}</td>
+          <td><span class="badge-statut badge-{{ 'disponible' if v.mode_paiement == 'especes' else 'en_cours' }}">{{ v.mode_paiement }}</span></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="text-center text-muted py-3">Aucune vente enregistrée</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Graphique 7 jours
+const ctx = document.getElementById('chart7j');
+if (ctx) {
+  const labels7j = [{% for v in ventes_7j %}'{{ v.jour }}',{% endfor %}];
+  const data7j = [{% for v in ventes_7j %}{{ v.ca }},{% endfor %}];
+
+  const fullLabels = [];
+  const fullData = [];
+  const today = new Date();
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    const iso = d.toISOString().split('T')[0];
+    fullLabels.push(d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }));
+    const idx = labels7j.indexOf(iso);
+    fullData.push(idx >= 0 ? data7j[idx] : 0);
+  }
+
+  new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: fullLabels,
+      datasets: [{
+        label: 'CA (FCFA)',
+        data: fullData,
+        borderColor: '#ff6b35',
+        backgroundColor: 'rgba(255,107,53,.12)',
+        fill: true,
+        tension: .4,
+        borderWidth: 3,
+        pointRadius: 5,
+        pointBackgroundColor: '#ff6b35',
+        pointBorderColor: '#fff',
+        pointBorderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        y: {
+          beginAtZero: true,
+          ticks: {
+            callback: (v) => v >= 1000000 ? (v/1000000).toFixed(1)+'M' : v >= 1000 ? (v/1000).toFixed(0)+'K' : v
+          }
+        }
+      }
+    }
+  });
+}
+</script>
+{% endblock %}

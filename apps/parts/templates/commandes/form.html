@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Nouvelle commande{% endblock %}
+{% block page_title %}➕ Nouvelle commande{% endblock %}
+{% block content %}
+
+<form method="POST" class="card-premium">
+  <div class="row g-3">
+    <div class="col-md-6"><label class="form-label">Fournisseur *</label>
+      <select name="fournisseur_id" class="form-select" required>
+        <option value="">— Choisir —</option>
+        {% for f in fournisseurs %}<option value="{{ f.id }}">{{ f.nom }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="col-md-6"><label class="form-label">Point de livraison *</label>
+      <select name="point_vente_id" class="form-select" required>
+        <option value="">— Choisir —</option>
+        {% for pv in points_vente %}<option value="{{ pv.id }}">{{ pv.nom }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="col-md-4"><label class="form-label">Date commande</label><input type="date" name="date_commande" class="form-control" value="{{ now.strftime('%Y-%m-%d') }}"></div>
+    <div class="col-md-4"><label class="form-label">Livraison prévue</label><input type="date" name="date_livraison_prevue" class="form-control"></div>
+    <div class="col-md-4"><label class="form-label">Frais livraison</label><input type="number" name="frais_livraison" class="form-control" value="0"></div>
+    <div class="col-12"><label class="form-label">Notes</label><textarea name="notes" class="form-control" rows="2"></textarea></div>
+  </div>
+
+  <div class="mt-4 d-flex gap-2">
+    <button class="btn btn-accent"><i class="bi bi-check-lg"></i> Créer</button>
+    <a href="{{ url_for('commandes_list') }}" class="btn btn-light">Annuler</a>
+  </div>
+</form>
+
+{% endblock %}

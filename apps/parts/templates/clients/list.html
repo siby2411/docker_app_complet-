@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Clients{% endblock %}
+{% block page_title %}👥 Clients{% endblock %}
+{% block content %}
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-people"></i></div><div><div class="kpi-val">{{ kpi.total }}</div><div class="kpi-lbl">Total</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-info-grad"><i class="bi bi-person"></i></div><div><div class="kpi-val">{{ kpi.particuliers }}</div><div class="kpi-lbl">Particuliers</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-tools"></i></div><div><div class="kpi-val">{{ kpi.mecanos }}</div><div class="kpi-lbl">Mécanos</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-building"></i></div><div><div class="kpi-val">{{ kpi.garages }}</div><div class="kpi-lbl">Garages</div></div></div></div>
+</div>
+
+<div class="card-premium">
+  <div class="d-flex justify-content-between mb-3">
+    <h5 class="mb-0">Clients</h5>
+    <a href="{{ url_for('client_new') }}" class="btn btn-accent"><i class="bi bi-plus-lg"></i> Nouveau client</a>
+  </div>
+  <form method="GET" class="row g-2 mb-3">
+    <div class="col-md-4"><input type="search" name="q" class="form-control" placeholder="Nom, prénom, téléphone, code…" value="{{ q }}"></div>
+    <div class="col-md-2"><select name="type" class="form-select">
+      <option value="">Type</option>
+      <option value="particulier" {% if type_c=='particulier' %}selected{% endif %}>Particulier</option>
+      <option value="mecano" {% if type_c=='mecano' %}selected{% endif %}>Mécano</option>
+      <option value="garage" {% if type_c=='garage' %}selected{% endif %}>Garage</option>
+    </select></div>
+    <div class="col-md-2"><select name="tri" class="form-select">
+      <option value="recent" {% if tri=='recent' %}selected{% endif %}>Récents</option>
+      <option value="nom" {% if tri=='nom' %}selected{% endif %}>Nom A-Z</option>
+      <option value="ca" {% if tri=='ca' %}selected{% endif %}>Meilleurs CA</option>
+      <option value="achats" {% if tri=='achats' %}selected{% endif %}>Plus d'achats</option>
+    </select></div>
+    <div class="col-md-2"><button class="btn btn-primary-omega w-100"><i class="bi bi-funnel"></i></button></div>
+  </form>
+
+  <table class="table table-omega">
+    <thead><tr><th>Code</th><th>Nom</th><th>Téléphone</th><th>Type</th><th class="text-center">Achats</th><th class="text-end">CA Total</th><th>Dernière visite</th><th></th></tr></thead>
+    <tbody>
+      {% for c in clients %}
+      <tr>
+        <td><code style="font-size:11px">{{ c.code }}</code></td>
+        <td><a href="{{ url_for('client_detail', cid=c.id) }}" style="text-decoration:none;font-weight:600;color:#0a2540">{{ c.prenom or '' }} {{ c.nom }}</a>{% if c.garage_nom %}<br><small class="text-muted">{{ c.garage_nom }}</small>{% endif %}</td>
+        <td>{{ c.telephone }}</td>
+        <td><span class="badge-statut badge-{{ 'disponible' if c.type_client == 'particulier' else 'en_cours' if c.type_client == 'mecano' else 'alerte' }}">{{ c.type_client }}</span></td>
+        <td class="text-center">{{ c.nb_achats }}</td>
+        <td class="text-end fw-bold">{{ c.total_achats|money }}</td>
+        <td><small>{{ c.derniere_visite|dte if c.derniere_visite else '—' }}</small></td>
+        <td><a href="{{ url_for('client_detail', cid=c.id) }}" class="btn btn-sm btn-light"><i class="bi bi-eye"></i></a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" class="text-center text-muted py-4">Aucun client</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

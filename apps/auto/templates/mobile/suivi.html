@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Suivi · OMEGA AUTO</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+<style>
+body { background:#f5f7fa; font-family:'Segoe UI',sans-serif; padding-bottom:70px; }
+.topnav { background:#0a2540; color:#fff; padding:12px 16px; display:flex; align-items:center; gap:10px; }
+.topnav a { color:#fff; text-decoration:none; font-size:18px; }
+.topnav h2 { font-size:16px; margin:0; flex:1; font-weight:700; }
+.form-card { background:#fff; margin:16px; border-radius:16px; padding:20px; }
+.form-control { border-radius:12px; padding:14px; }
+.btn-search { background:linear-gradient(135deg,#ff6b35,#ff8e5e); color:#fff; width:100%; padding:12px; border-radius:12px; border:none; font-weight:700; margin-top:10px; }
+.res-card { background:#fff; margin:12px 16px; border-radius:14px; padding:16px; box-shadow:0 2px 12px rgba(10,37,64,.06); }
+.badge-s { display:inline-block; padding:4px 10px; border-radius:14px; font-size:11px; font-weight:600; text-transform:uppercase; background:#d6ecf5; color:#0b5674; }
+.bottom-nav { position:fixed; bottom:0; left:0; right:0; background:#fff; display:flex; justify-content:space-around; padding:10px 0; border-top:1px solid #eee; z-index:100; }
+.bottom-nav a { color:#8896aa; text-decoration:none; font-size:11px; text-align:center; flex:1; }
+.bottom-nav a.active { color:#ff6b35; }
+.bottom-nav i { font-size:22px; display:block; margin-bottom:2px; }
+</style>
+</head>
+<body>
+<div class="topnav">
+  <a href="{{ url_for('mobile_home') }}"><i class="bi bi-arrow-left"></i></a>
+  <h2>Suivi de dossier</h2>
+</div>
+
+<div class="form-card">
+  <p style="font-size:13px" class="text-muted">Entrez votre numéro de dossier (ex : VTE-20260101-0001) ou téléphone.</p>
+  <form method="POST">
+    <input type="text" name="q" class="form-control" placeholder="N° dossier ou téléphone" value="{{ q }}" required>
+    <button class="btn-search"><i class="bi bi-search"></i> Rechercher</button>
+  </form>
+</div>
+
+{% for r in resultats %}
+<div class="res-card">
+  <div class="d-flex justify-content-between mb-2">
+    <strong>{% if r.type=='vente' %}🚗 Vente{% else %}🔑 Location{% endif %} — {{ r.data.numero }}</strong>
+    <span class="badge-s">{{ r.data.statut }}</span>
+  </div>
+  <div style="font-size:13px">
+    <strong>{{ r.data.marque_nom }} {{ r.data.modele_nom }}</strong><br>
+    Client : {{ r.data.client_prenom or '' }} {{ r.data.client_nom }}<br>
+    {% if r.type=='vente' %}
+    Montant : {{ r.data.montant_ttc|money }}<br>
+    Reste : <strong style="color:#ef476f">{{ r.data.reste_a_payer|money }}</strong>
+    {% else %}
+    Du {{ r.data.date_debut|dte }} au {{ r.data.date_fin_prevue|dte }}<br>
+    Montant : {{ r.data.montant_total|money }}
+    {% endif %}
+  </div>
+</div>
+{% else %}
+{% if q %}<p class="text-center text-muted py-4">Aucun résultat pour « {{ q }} »</p>{% endif %}
+{% endfor %}
+
+<nav class="bottom-nav">
+  <a href="{{ url_for('mobile_home') }}"><i class="bi bi-house-door-fill"></i>Accueil</a>
+  <a href="{{ url_for('mobile_catalogue') }}"><i class="bi bi-grid"></i>Catalogue</a>
+  <a href="{{ url_for('mobile_suivi') }}" class="active"><i class="bi bi-search-heart"></i>Suivi</a>
+  <a href="{{ url_for('mobile_contact') }}"><i class="bi bi-telephone-fill"></i>Contact</a>
+</nav>
+</body>
+</html>

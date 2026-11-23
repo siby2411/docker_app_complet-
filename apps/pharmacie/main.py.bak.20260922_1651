@@ -1,0 +1,646 @@
+
+from flask import Flask
+from flask import render_template_string, redirect, url_for, session, request
+from flask_login import LoginManager, UserMixin
+from flask_login import login_user, logout_user, login_required, current_user
+from datetime import datetime
+import sqlite3
+import os
+
+
+
+
+
+
+
+app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'omega-pharmacie-pro-secret-2026')
+
+DB_PATH = '/app/data/pharmacie.db'
+
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+
+
+class User(UserMixin):
+    def __init__(self, id, username, role, nom_complet):
+        self.id = id
+        self.username = username
+        self.role = role
+        self.nom_complet = nom_complet
+
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def log_action(user_id, action, details='', entity=None, entity_id=None):
+    try:
+        db = get_db()
+        cur = db.cursor()
+        cur.execute("""
+            INSERT INTO audit_log (user_id, action, entity, entity_id, details, ip, created_at)
+            VALUES (?,?,?,?,?,?,?)
+        """, (user_id, action, entity, entity_id, details,
+              request.remote_addr if request else '', datetime.now().isoformat()))
+        db.commit()
+    except Exception:
+        pass
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT * FROM users WHERE id=?", (user_id,))
+    r = cur.fetchone()
+    if r:
+        return User(r['id'], r['username'], r['role'], r['nom_complet'])
+    return None
+
+
+def render_page(content, active='dashboard', page_title='Pharmacie Pro'):
+    from markupsafe import Markup
+    user_name = current_user.nom_complet if current_user.is_authenticated else ''
+    return render_template_string("""
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ title }} — Pharmacie Pro</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',system-ui,sans-serif}
+body{background:#f3f4f6;color:#1f2937}
+.nav{background:linear-gradient(135deg,#0891b2,#06b6d4);color:#fff;padding:14px 24px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 2px 8px rgba(0,0,0,.1)}
+.nav-brand{font-weight:800;font-size:18px;display:flex;align-items:center;gap:10px}
+.nav-links{display:flex;gap:6px;flex-wrap:wrap}
+.nav-links a{color:#fff;text-decoration:none;padding:8px 14px;border-radius:8px;font-size:13px;font-weight:600;transition:.2s}
+.nav-links a:hover{background:rgba(255,255,255,.15)}
+.nav-links a.active{background:rgba(255,255,255,.25)}
+.nav-user{font-size:13px;display:flex;gap:12px;align-items:center}
+.nav-user a{color:#fff;text-decoration:none;background:rgba(0,0,0,.2);padding:6px 12px;border-radius:6px}
+.container{max-width:1400px;margin:0 auto;padding:24px}
+h1{color:#0e7490;margin-bottom:20px;font-size:26px}
+.card{background:#fff;padding:24px;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.08);margin-bottom:20px}
+table{width:100%;border-collapse:collapse}
+thead{background:#0e7490;color:#fff}
+th{padding:12px;text-align:left;font-size:13px;font-weight:700}
+td{padding:11px;border-bottom:1px solid #f3f4f6;font-size:14px}
+.btn{display:inline-block;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;border:none;cursor:pointer}
+.btn-primary{background:#06b6d4;color:#fff}
+.btn-success{background:#10b981;color:#fff}
+.btn-danger{background:#ef4444;color:#fff}
+input,select,textarea{width:100%;padding:11px 14px;border:2px solid #e5e7eb;border-radius:8px;font-size:14px;font-family:inherit}
+input:focus,select:focus,textarea:focus{outline:none;border-color:#06b6d4}
+label{display:block;font-weight:600;margin-bottom:6px;font-size:13px;color:#374151}
+.kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:20px}
+.kpi-card{padding:18px;border-radius:10px;color:#fff}
+.flash{padding:12px 18px;border-radius:8px;margin-bottom:14px;font-size:14px}
+.flash-success{background:#d1fae5;color:#065f46}
+.flash-error{background:#fee2e2;color:#991b1b}
+</style>
+</head>
+<body>
+<nav class="nav">
+  <div class="nav-brand">💊 PHARMACIE PRO <small style="opacity:.7;font-size:11px">Officines · Sénégal</small></div>
+  <div class="nav-links">
+    <a href="/" class="{{ 'active' if active=='dashboard' else '' }}">🏠 Dashboard</a>
+    <a href="/medicaments" class="{{ 'active' if active=='medicaments' else '' }}">💊 Médicaments</a>
+    <a href="/stock" class="{{ 'active' if active=='stock' else '' }}">📦 Stock</a>
+    <a href="/ordonnances" class="{{ 'active' if active=='ordonnances' else '' }}">📋 Ordonnances</a>
+    <a href="/ventes" class="{{ 'active' if active=='ventes' else '' }}">🛒 Ventes</a>
+    <a href="/commandes" class="{{ 'active' if active=='commandes' else '' }}">📥 Commandes</a>
+    <a href="/alertes" class="{{ 'active' if active=='alertes' else '' }}">🚨 Alertes</a>
+    <a href="/rapports" class="{{ 'active' if active=='rapports' else '' }}">📈 Rapports</a>
+  </div>
+  <div class="nav-user">
+    <span>👤 {{ user_name }}</span>
+    <a href="/logout">Déconnexion</a>
+  </div>
+</nav>
+<div class="container">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}
+      <div class="flash flash-{{ cat }}">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+  {{ content }}
+</div>
+</body>
+</html>
+    """, title=page_title, active=active, content=Markup(content), user_name=user_name)
+
+
+# ═══════════════════════════════════════════════════════════════
+# AUTH
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/health')
+def health():
+    return {'project': 'PHARMACIE PRO', 'service': 'pharmacie',
+            'status': 'ok', 'timestamp': datetime.now().isoformat(), 'version': '1.0'}
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        from werkzeug.security import check_password_hash
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+        db = get_db()
+        cur = db.cursor()
+        cur.execute("SELECT * FROM users WHERE username=? AND actif=1", (username,))
+        r = cur.fetchone()
+        if r and check_password_hash(r['password_hash'], password):
+            user = User(r['id'], r['username'], r['role'], r['nom_complet'])
+            login_user(user)
+            log_action(user.id, 'LOGIN', f'{username} connecté', 'users', user.id)
+            return redirect(url_for('dashboard'))
+        return render_template_string("""
+<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Connexion</title>
+<style>body{font-family:system-ui;background:linear-gradient(135deg,#0891b2,#06b6d4);min-height:100vh;display:flex;align-items:center;justify-content:center;margin:0}
+.box{background:#fff;padding:40px;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.3);width:100%;max-width:400px}
+h1{color:#0e7490;margin:0 0 24px;text-align:center}input{width:100%;padding:14px;border:2px solid #e5e7eb;border-radius:10px;margin-bottom:14px;font-size:15px;box-sizing:border-box}
+input:focus{outline:none;border-color:#06b6d4}button{width:100%;background:#06b6d4;color:#fff;padding:14px;border:none;border-radius:10px;font-weight:700;font-size:15px;cursor:pointer}
+.err{background:#fee2e2;color:#991b1b;padding:10px;border-radius:8px;margin-bottom:14px;font-size:13px}
+.hint{margin-top:20px;padding:12px;background:#f0f9ff;border-radius:8px;font-size:12px;color:#0e7490;text-align:center}</style></head>
+<body><div class="box"><h1>💊 Pharmacie Pro</h1>
+{% if error %}<div class="err">{{ error }}</div>{% endif %}
+<form method="post">
+<input type="text" name="username" placeholder="Nom d'utilisateur" required autofocus>
+<input type="password" name="password" placeholder="Mot de passe" required>
+<button type="submit">Se connecter</button>
+</form>
+<div class="hint">admin / admin123</div></div></body></html>
+        """, error='Identifiants invalides'), 401
+    return render_template_string("""
+<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Connexion</title>
+<style>body{font-family:system-ui;background:linear-gradient(135deg,#0891b2,#06b6d4);min-height:100vh;display:flex;align-items:center;justify-content:center;margin:0}
+.box{background:#fff;padding:40px;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.3);width:100%;max-width:400px}
+h1{color:#0e7490;margin:0 0 24px;text-align:center}input{width:100%;padding:14px;border:2px solid #e5e7eb;border-radius:10px;margin-bottom:14px;font-size:15px;box-sizing:border-box}
+input:focus{outline:none;border-color:#06b6d4}button{width:100%;background:#06b6d4;color:#fff;padding:14px;border:none;border-radius:10px;font-weight:700;font-size:15px;cursor:pointer}
+.hint{margin-top:20px;padding:12px;background:#f0f9ff;border-radius:8px;font-size:12px;color:#0e7490;text-align:center}</style></head>
+<body><div class="box"><h1>💊 Pharmacie Pro</h1>
+<form method="post">
+<input type="text" name="username" placeholder="Nom d'utilisateur" required autofocus>
+<input type="password" name="password" placeholder="Mot de passe" required>
+<button type="submit">Se connecter</button>
+</form>
+<div class="hint">admin / admin123</div></div></body></html>
+    """)
+
+
+@app.route('/logout')
+@login_required
+def logout():
+    log_action(current_user.id, 'LOGOUT', current_user.username, 'users', current_user.id)
+    logout_user()
+    return redirect(url_for('login'))
+
+
+# ═══════════════════════════════════════════════════════════════
+# DASHBOARD
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/')
+@login_required
+def dashboard():
+    db = get_db()
+    cur = db.cursor()
+    stats = {}
+    for k, sql in [
+        ('medicaments', "SELECT COUNT(*) FROM medicaments"),
+        ('officines', "SELECT COUNT(*) FROM officines"),
+        ('lots', "SELECT COUNT(*) FROM lots WHERE statut='disponible'"),
+        ('stock_total', "SELECT COALESCE(SUM(quantite),0) FROM lots WHERE statut='disponible'"),
+        ('ordonnances', "SELECT COUNT(*) FROM ordonnances WHERE statut='en_attente'"),
+        ('alertes', "SELECT COUNT(*) FROM alertes WHERE traitee=0"),
+        ('ventes_jour', "SELECT COALESCE(SUM(montant_total),0) FROM ventes WHERE date(date_vente)=date('now')"),
+        ('ventes_nb', "SELECT COUNT(*) FROM ventes WHERE date(date_vente)=date('now')"),
+    ]:
+        try:
+            cur.execute(sql)
+            stats[k] = cur.fetchone()[0]
+        except Exception:
+            stats[k] = 0
+
+    # Top 5 ventes
+    cur.execute("""
+        SELECT m.nom_commercial, COALESCE(SUM(vl.quantite),0) AS qte
+        FROM vente_lignes vl
+        JOIN medicaments m ON m.id=vl.medicament_id
+        GROUP BY m.id ORDER BY qte DESC LIMIT 5
+    """)
+    top = cur.fetchall()
+
+    top_html = ''.join(f"""
+        <tr><td>{t['nom_commercial']}</td>
+        <td style="text-align:right">{t['qte']}</td></tr>
+    """ for t in top) or '<tr><td colspan="2" style="text-align:center;color:#9ca3af">Pas encore de ventes</td></tr>'
+
+    # Alertes récentes
+    cur.execute("SELECT * FROM alertes WHERE traitee=0 ORDER BY id DESC LIMIT 8")
+    alertes = cur.fetchall()
+    alertes_html = ''.join(f"""
+        <tr><td><span style="background:#f59e0b;color:#fff;padding:3px 10px;border-radius:12px;font-size:11px">{a['type']}</span></td>
+        <td>{a['message']}</td></tr>
+    """ for a in alertes) or '<tr><td colspan="2" style="text-align:center;color:#10b981">✅ Aucune alerte ouverte</td></tr>'
+
+    content = f"""
+    <h1>💊 Tableau de bord Pharmacie Pro</h1>
+
+    <div class="kpi">
+      <div class="kpi-card" style="background:linear-gradient(135deg,#0891b2,#06b6d4)">
+        <div style="font-size:12px;opacity:.9">Médicaments référencés</div>
+        <div style="font-size:28px;font-weight:800">{stats['medicaments']}</div>
+      </div>
+      <div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)">
+        <div style="font-size:12px;opacity:.9">Officines actives</div>
+        <div style="font-size:28px;font-weight:800">{stats['officines']}</div>
+      </div>
+      <div class="kpi-card" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9)">
+        <div style="font-size:12px;opacity:.9">Lots en stock</div>
+        <div style="font-size:28px;font-weight:800">{stats['lots']}</div>
+      </div>
+      <div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#b45309)">
+        <div style="font-size:12px;opacity:.9">Unités en stock</div>
+        <div style="font-size:28px;font-weight:800">{stats['stock_total']:,}</div>
+      </div>
+      <div class="kpi-card" style="background:linear-gradient(135deg,#ef4444,#b91c1c)">
+        <div style="font-size:12px;opacity:.9">Alertes ouvertes</div>
+        <div style="font-size:28px;font-weight:800">{stats['alertes']}</div>
+      </div>
+      <div class="kpi-card" style="background:linear-gradient(135deg,#ec4899,#be185d)">
+        <div style="font-size:12px;opacity:.9">Ordonnances en attente</div>
+        <div style="font-size:28px;font-weight:800">{stats['ordonnances']}</div>
+      </div>
+      <div class="kpi-card" style="background:linear-gradient(135deg,#06b6d4,#0e7490)">
+        <div style="font-size:12px;opacity:.9">CA du jour</div>
+        <div style="font-size:22px;font-weight:800">{stats['ventes_jour']:,.0f} F</div>
+      </div>
+      <div class="kpi-card" style="background:linear-gradient(135deg,#7c3aed,#5b21b6)">
+        <div style="font-size:12px;opacity:.9">Ventes du jour</div>
+        <div style="font-size:28px;font-weight:800">{stats['ventes_nb']}</div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+      <div class="card">
+        <h3 style="margin-top:0;color:#0e7490">🏆 Top 5 médicaments vendus</h3>
+        <table><thead><tr><th>Médicament</th><th style="text-align:right">Quantité</th></tr></thead>
+        <tbody>{top_html}</tbody></table>
+      </div>
+      <div class="card">
+        <h3 style="margin-top:0;color:#0e7490">🚨 Alertes récentes</h3>
+        <table><thead><tr><th>Type</th><th>Message</th></tr></thead>
+        <tbody>{alertes_html}</tbody></table>
+      </div>
+    </div>
+
+    <div style="margin-top:20px;padding:14px;background:#f0f9ff;border-left:4px solid #06b6d4;border-radius:8px;font-size:13px">
+      💡 <strong>Modules actifs</strong> : Stock DLC · Ordonnances · POS · Commandes grossistes · Anti-contrefaçon QR
+    </div>
+    """
+    return render_page(content, active='dashboard', page_title='Dashboard')
+
+
+# ═══════════════════════════════════════════════════════════════
+# MÉDICAMENTS
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/medicaments')
+@login_required
+def medicaments_liste():
+    db = get_db()
+    cur = db.cursor()
+    q = request.args.get('q', '').strip()
+    sql = "SELECT * FROM medicaments WHERE 1=1"
+    params = []
+    if q:
+        sql += " AND (nom_commercial LIKE ? OR dci LIKE ? OR code LIKE ?)"
+        params = [f'%{q}%'] * 3
+    sql += " ORDER BY nom_commercial LIMIT 200"
+    cur.execute(sql, params)
+    meds = cur.fetchall()
+
+    rows = ''.join(f"""
+        <tr>
+          <td><strong>{m['code'] or '—'}</strong></td>
+          <td>{m['nom_commercial']}</td>
+          <td>{m['dci']}</td>
+          <td>{m['forme'] or '—'}</td>
+          <td>{m['dosage'] or '—'}</td>
+          <td>{m['categorie'] or '—'}</td>
+          <td style="text-align:right">{m['prix_vente']:,.0f} F</td>
+          <td style="text-align:center">{'⚠' if m['ordonnance_requise'] else '✓'}</td>
+          <td>{m['tableau'] or '—'}</td>
+        </tr>
+    """ for m in meds)
+
+    content = f"""
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+      <h1 style="margin:0">💊 Catalogue médicaments ({len(meds)})</h1>
+    </div>
+    <form method="get" style="margin-bottom:16px;display:flex;gap:10px">
+      <input type="text" name="q" value="{q}" placeholder="Rechercher par nom, DCI ou code..." style="max-width:400px">
+      <button type="submit" class="btn btn-primary">🔍 Rechercher</button>
+    </form>
+    <div class="card" style="padding:0;overflow:hidden">
+      <table>
+        <thead><tr>
+          <th>Code</th><th>Nom commercial</th><th>DCI</th><th>Forme</th>
+          <th>Dosage</th><th>Catégorie</th><th style="text-align:right">Prix</th>
+          <th style="text-align:center">Ordonnance</th><th>Tableau</th>
+        </tr></thead>
+        <tbody>{rows or '<tr><td colspan="9" style="padding:40px;text-align:center;color:#9ca3af">Aucun médicament</td></tr>'}</tbody>
+      </table>
+    </div>
+    """
+    return render_page(content, active='medicaments', page_title='Médicaments')
+
+
+@app.route('/stock')
+@login_required
+def stock_liste():
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT l.*, m.nom_commercial, m.dci, o.nom AS officine_nom,
+               CAST(julianday(l.date_peremption) - julianday('now') AS INTEGER) AS jours_restants
+        FROM lots l
+        JOIN medicaments m ON m.id=l.medicament_id
+        JOIN officines o ON o.id=l.officine_id
+        WHERE l.statut='disponible'
+        ORDER BY l.date_peremption ASC LIMIT 300
+    """)
+    lots = cur.fetchall()
+
+    rows = ''
+    for l in lots:
+        jours = l['jours_restants'] or 0
+        color = '#10b981'
+        if jours <= 30: color = '#ef4444'
+        elif jours <= 90: color = '#f59e0b'
+
+        rows += f"""
+        <tr>
+          <td><strong>{l['numero_lot']}</strong></td>
+          <td>{l['nom_commercial']}</td>
+          <td>{l['officine_nom']}</td>
+          <td style="text-align:right">{l['quantite']}</td>
+          <td style="color:{color};font-weight:700">{l['date_peremption']}</td>
+          <td style="color:{color}">{jours} j</td>
+          <td>{l['emplacement'] or '—'}</td>
+        </tr>"""
+
+    content = f"""
+    <h1>📦 Stock des lots — {len(lots)}</h1>
+    <div style="margin-bottom:16px;font-size:13px;color:#6b7280">
+      🟢 DLC &gt; 90j · 🟠 DLC 30-90j · 🔴 DLC &lt; 30j
+    </div>
+    <div class="card" style="padding:0;overflow:hidden">
+      <table>
+        <thead><tr>
+          <th>N° Lot</th><th>Médicament</th><th>Officine</th>
+          <th style="text-align:right">Quantité</th><th>DLC</th>
+          <th>Jours restants</th><th>Emplacement</th>
+        </tr></thead>
+        <tbody>{rows or '<tr><td colspan="7" style="padding:40px;text-align:center;color:#9ca3af">Aucun lot</td></tr>'}</tbody>
+      </table>
+    </div>
+    """
+    return render_page(content, active='stock', page_title='Stock')
+
+
+@app.route('/ordonnances')
+@login_required
+def ordonnances_liste():
+    db = get_db()
+    cur = db.cursor()
+    statut = request.args.get('statut', '')
+    sql = "SELECT * FROM ordonnances"
+    params = []
+    if statut:
+        sql += " WHERE statut=?"
+        params = [statut]
+    sql += " ORDER BY id DESC LIMIT 200"
+    cur.execute(sql, params)
+    ords = cur.fetchall()
+
+    rows = ''
+    for o in ords:
+        color = {'en_attente': '#f59e0b', 'delivree': '#10b981',
+                 'partielle': '#3b82f6', 'annulee': '#ef4444'}.get(o['statut'], '#6b7280')
+        rows += f"""
+        <tr>
+          <td><strong>{o['numero']}</strong></td>
+          <td>{o['patient_nom'] or '—'}</td>
+          <td>{o['patient_age'] or '—'} ans</td>
+          <td>{o['medecin_nom'] or '—'}</td>
+          <td>{o['etablissement'] or '—'}</td>
+          <td>{o['date_prescription'] or '—'}</td>
+          <td><span style="background:{color};color:#fff;padding:3px 10px;border-radius:12px;font-size:11px">{o['statut']}</span></td>
+        </tr>"""
+
+    content = f"""
+    <h1>📋 Ordonnances — {len(ords)}</h1>
+    <div style="margin-bottom:16px">
+      <a href="/ordonnances" class="btn btn-primary">Toutes</a>
+      <a href="/ordonnances?statut=en_attente" class="btn btn-primary" style="margin-left:6px">En attente</a>
+      <a href="/ordonnances?statut=delivree" class="btn btn-success" style="margin-left:6px">Délivrées</a>
+    </div>
+    <div class="card" style="padding:0;overflow:hidden">
+      <table>
+        <thead><tr>
+          <th>N° Ordonnance</th><th>Patient</th><th>Âge</th>
+          <th>Médecin</th><th>Établissement</th><th>Date</th><th>Statut</th>
+        </tr></thead>
+        <tbody>{rows or '<tr><td colspan="7" style="padding:40px;text-align:center;color:#9ca3af">Aucune ordonnance</td></tr>'}</tbody>
+      </table>
+    </div>
+    """
+    return render_page(content, active='ordonnances', page_title='Ordonnances')
+
+
+@app.route('/ventes')
+@login_required
+def ventes_liste():
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT v.*, o.nom AS officine_nom
+        FROM ventes v
+        LEFT JOIN officines o ON o.id=v.officine_id
+        ORDER BY v.id DESC LIMIT 200
+    """)
+    ventes = cur.fetchall()
+
+    rows = ''.join(f"""
+        <tr>
+          <td><strong>{v['numero'] or '—'}</strong></td>
+          <td>{v['officine_nom'] or '—'}</td>
+          <td style="text-align:right">{v['montant_total']:,.0f} F</td>
+          <td>{v['mode_paiement'] or '—'}</td>
+          <td>{v['date_vente'] or '—'}</td>
+          <td>{v['statut'] or '—'}</td>
+        </tr>""" for v in ventes)
+
+    content = f"""
+    <h1>🛒 Ventes (POS) — {len(ventes)}</h1>
+    <div class="card" style="padding:0;overflow:hidden">
+      <table>
+        <thead><tr>
+          <th>N° Vente</th><th>Officine</th>
+          <th style="text-align:right">Montant</th><th>Paiement</th>
+          <th>Date</th><th>Statut</th>
+        </tr></thead>
+        <tbody>{rows or '<tr><td colspan="6" style="padding:40px;text-align:center;color:#9ca3af">Aucune vente</td></tr>'}</tbody>
+      </table>
+    </div>
+    """
+    return render_page(content, active='ventes', page_title='Ventes')
+
+
+@app.route('/commandes')
+@login_required
+def commandes_liste():
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT c.*, f.nom AS fournisseur_nom, o.nom AS officine_nom
+        FROM commandes c
+        LEFT JOIN fournisseurs f ON f.id=c.fournisseur_id
+        LEFT JOIN officines o ON o.id=c.officine_id
+        ORDER BY c.id DESC LIMIT 100
+    """)
+    cmds = cur.fetchall()
+
+    rows = ''.join(f"""
+        <tr>
+          <td><strong>{c['numero'] or '—'}</strong></td>
+          <td>{c['fournisseur_nom'] or '—'}</td>
+          <td>{c['officine_nom'] or '—'}</td>
+          <td style="text-align:right">{c['montant_total']:,.0f} F</td>
+          <td>{c['statut'] or '—'}</td>
+          <td>{c['date_commande'] or '—'}</td>
+        </tr>""" for c in cmds)
+
+    content = f"""
+    <h1>📥 Commandes grossistes — {len(cmds)}</h1>
+    <div class="card" style="padding:0;overflow:hidden">
+      <table>
+        <thead><tr>
+          <th>N° Commande</th><th>Fournisseur</th><th>Officine</th>
+          <th style="text-align:right">Montant</th><th>Statut</th><th>Date</th>
+        </tr></thead>
+        <tbody>{rows or '<tr><td colspan="6" style="padding:40px;text-align:center;color:#9ca3af">Aucune commande</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div style="margin-top:20px" class="card">
+      <h3 style="margin-top:0;color:#0e7490">🏢 Grossistes partenaires</h3>
+      <p style="color:#6b7280;font-size:13px">SONAPHARM · COPHARMED · LABOREX Sénégal</p>
+    </div>
+    """
+    return render_page(content, active='commandes', page_title='Commandes')
+
+
+@app.route('/alertes')
+@login_required
+def alertes_liste():
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT a.*, m.nom_commercial
+        FROM alertes a
+        LEFT JOIN lots l ON l.id=a.lot_id
+        LEFT JOIN medicaments m ON m.id=l.medicament_id
+        ORDER BY a.id DESC LIMIT 200
+    """)
+    alertes = cur.fetchall()
+
+    rows = ''
+    for a in alertes:
+        color = {'rupture': '#ef4444', 'peremption': '#f59e0b',
+                 'contrefacon': '#7c3aed'}.get(a['type'], '#6b7280')
+        rows += f"""
+        <tr>
+          <td><span style="background:{color};color:#fff;padding:3px 10px;border-radius:12px;font-size:11px">{a['type']}</span></td>
+          <td>{a['nom_commercial'] or '—'}</td>
+          <td>{a['message']}</td>
+          <td>{'✅' if a['traitee'] else '🔴 Ouverte'}</td>
+          <td>{(a['date_alerte'] or '')[:16]}</td>
+        </tr>"""
+
+    content = f"""
+    <h1>🚨 Alertes — {len(alertes)}</h1>
+    <div style="margin-bottom:16px;font-size:13px;color:#6b7280">
+      Types : 🔴 Rupture · 🟠 Péremption · 🟣 Contrefaçon
+    </div>
+    <div class="card" style="padding:0;overflow:hidden">
+      <table>
+        <thead><tr>
+          <th>Type</th><th>Médicament</th><th>Message</th>
+          <th>État</th><th>Date</th>
+        </tr></thead>
+        <tbody>{rows or '<tr><td colspan="5" style="padding:40px;text-align:center;color:#10b981">✅ Aucune alerte</td></tr>'}</tbody>
+      </table>
+    </div>
+    """
+    return render_page(content, active='alertes', page_title='Alertes')
+
+
+@app.route('/rapports')
+@login_required
+def rapports_index():
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT m.categorie,
+               COUNT(DISTINCT m.id) AS nb_meds,
+               COALESCE(SUM(l.quantite),0) AS stock_total
+        FROM medicaments m
+        LEFT JOIN lots l ON l.medicament_id=m.id AND l.statut='disponible'
+        GROUP BY m.categorie
+        ORDER BY stock_total DESC
+    """)
+    stats = cur.fetchall()
+
+    rows = ''.join(f"""
+        <tr>
+          <td>{s['categorie'] or 'Non catégorisé'}</td>
+          <td style="text-align:right">{s['nb_meds']}</td>
+          <td style="text-align:right">{s['stock_total']:,}</td>
+        </tr>""" for s in stats)
+
+    content = f"""
+    <h1>📈 Rapports & Statistiques</h1>
+    <div class="card">
+      <h3 style="margin-top:0;color:#0e7490">📊 Stock par catégorie thérapeutique</h3>
+      <table>
+        <thead><tr>
+          <th>Catégorie</th><th style="text-align:right">Nb médicaments</th>
+          <th style="text-align:right">Stock total</th>
+        </tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;color:#0e7490">🎯 Indicateurs cibles SM10 AGRO</h3>
+      <ul style="line-height:2;color:#374151">
+        <li>📉 <strong>-50%</strong> ruptures de stock</li>
+        <li>🚫 <strong>-80%</strong> contrefaçons (QR + blockchain)</li>
+        <li>🏥 <strong>1500</strong> officines Sénégal cible</li>
+        <li>🌍 <strong>5000</strong> officines CEDEAO cible</li>
+        <li>💊 <strong>Prix réglementés PNLP</strong> intégrés</li>
+      </ul>
+    </div>
+    """
+    return render_page(content, active='rapports', page_title='Rapports')
+
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8000, debug=False)

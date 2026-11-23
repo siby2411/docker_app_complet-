@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Véhicules{% endblock %}
+{% block page_title %}🚗 Véhicules ({{ total }}){% endblock %}
+{% block content %}
+<div class="card-premium">
+  <form method="GET" class="row g-2">
+    <div class="col-md-3"><input type="search" name="q" class="form-control" placeholder="Code, immat, description…" value="{{ q }}"></div>
+    <div class="col-md-2"><select name="marque_id" class="form-select">
+      <option value="">Marque</option>
+      {% for m in marques %}<option value="{{ m.id }}" {% if marque_id==m.id %}selected{% endif %}>{{ m.nom }}</option>{% endfor %}
+    </select></div>
+    <div class="col-md-2"><select name="agence_id" class="form-select">
+      <option value="">Agence</option>
+      {% for a in agences %}<option value="{{ a.id }}" {% if agence_id==a.id %}selected{% endif %}>{{ a.nom }}</option>{% endfor %}
+    </select></div>
+    <div class="col-md-1"><select name="etat" class="form-select">
+      <option value="">État</option>
+      <option value="neuf" {% if etat=='neuf' %}selected{% endif %}>Neuf</option>
+      <option value="occasion" {% if etat=='occasion' %}selected{% endif %}>Occasion</option>
+    </select></div>
+    <div class="col-md-2"><select name="statut" class="form-select">
+      <option value="">Statut</option>
+      <option value="disponible" {% if statut=='disponible' %}selected{% endif %}>Disponible</option>
+      <option value="en_location" {% if statut=='en_location' %}selected{% endif %}>En location</option>
+      <option value="vendu" {% if statut=='vendu' %}selected{% endif %}>Vendu</option>
+    </select></div>
+    <div class="col-md-2 d-flex gap-2">
+      <button class="btn btn-primary-omega flex-grow-1"><i class="bi bi-funnel"></i></button>
+      <a href="{{ url_for('vehicules_list') }}" class="btn btn-light"><i class="bi bi-x"></i></a>
+    </div>
+    <div class="col-12 text-end">
+      <a href="{{ url_for('vehicule_new') }}" class="btn btn-accent"><i class="bi bi-plus-lg"></i> Nouveau véhicule</a>
+    </div>
+  </form>
+</div>
+
+<div class="row g-3">
+  {% for v in vehicules %}
+  <div class="col-md-6 col-lg-4">
+    <div class="vehicule-card">
+      <a href="{{ url_for('vehicule_detail', vid=v.id) }}" class="text-decoration-none text-dark">
+        <div class="img-wrap">
+          {% if v.photo_principale %}
+            <img src="{{ url_for('uploaded_file', subpath='vehicules', filename=v.photo_principale) }}" alt="{{ v.code }}">
+          {% else %}
+            <i class="bi bi-car-front" style="font-size:60px;color:#cbd5e1"></i>
+          {% endif %}
+        </div>
+        <div style="padding:16px">
+          <div class="d-flex justify-content-between align-items-start mb-2">
+            <div>
+              <div style="font-weight:700;color:#0a2540">{{ v.marque_nom }} {{ v.modele_nom }}</div>
+              <div class="text-muted small">{{ v.code }} · {{ v.immatriculation or '—' }}</div>
+            </div>
+            <span class="badge-statut badge-{{ v.statut }}">{{ v.statut }}</span>
+          </div>
+          <div class="d-flex gap-2 mb-2 flex-wrap">
+            <span class="badge-statut badge-{{ v.etat }}">{{ v.etat }}</span>
+            <span class="badge-statut badge-en_cours">{{ v.annee }}</span>
+            <span class="badge-statut badge-devis">{{ v.kilometrage|int }} km</span>
+          </div>
+          <div class="price">{{ v.prix_vente|money }}</div>
+          {% if v.disponible_location %}
+          <div class="text-muted small"><i class="bi bi-key"></i> {{ v.prix_location_jour|money }} / jour</div>
+          {% endif %}
+        </div>
+      </a>
+    </div>
+  </div>
+  {% else %}
+  <div class="col-12 text-center text-muted py-5">Aucun véhicule trouvé.</div>
+  {% endfor %}
+</div>
+
+{% if pages > 1 %}
+<nav class="mt-4">
+  <ul class="pagination justify-content-center">
+    {% if page > 1 %}<li class="page-item"><a class="page-link" href="?page={{ page-1 }}&q={{ q }}&marque_id={{ marque_id or '' }}&statut={{ statut }}&etat={{ etat }}">«</a></li>{% endif %}
+    {% for p in range(1, pages+1) %}
+      {% if p == page or (p >= page-2 and p <= page+2) or p == 1 or p == pages %}
+      <li class="page-item {% if p==page %}active{% endif %}"><a class="page-link" href="?page={{ p }}&q={{ q }}&marque_id={{ marque_id or '' }}&statut={{ statut }}&etat={{ etat }}">{{ p }}</a></li>
+      {% elif p == page-3 or p == page+3 %}<li class="page-item disabled"><span class="page-link">…</span></li>{% endif %}
+    {% endfor %}
+    {% if page < pages %}<li class="page-item"><a class="page-link" href="?page={{ page+1 }}&q={{ q }}&marque_id={{ marque_id or '' }}&statut={{ statut }}&etat={{ etat }}">»</a></li>{% endif %}
+  </ul>
+</nav>
+{% endif %}
+{% endblock %}

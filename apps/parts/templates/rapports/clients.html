@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Portefeuille Clients{% endblock %}
+{% block page_title %}👥 Portefeuille Clients{% endblock %}
+{% block content %}
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-people"></i></div><div><div class="kpi-val">{{ kpi.total }}</div><div class="kpi-lbl">Total</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-info-grad"><i class="bi bi-person"></i></div><div><div class="kpi-val">{{ kpi.particuliers }}</div><div class="kpi-lbl">Particuliers</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-tools"></i></div><div><div class="kpi-val">{{ kpi.mecanos }}</div><div class="kpi-lbl">Mécanos</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-building"></i></div><div><div class="kpi-val">{{ kpi.garages }}</div><div class="kpi-lbl">Garages</div></div></div></div>
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-8"><div class="card-premium"><h5>🏆 Top 20 clients</h5>
+    <table class="table table-omega table-sm">
+      <thead><tr><th>Client</th><th>Téléphone</th><th>Type</th><th class="text-center">Achats</th><th class="text-end">CA</th></tr></thead>
+      <tbody>
+        {% for c in top_clients %}
+        <tr>
+          <td><a href="{{ url_for('client_detail', cid=c.id) }}">{{ c.prenom or '' }} {{ c.nom }}</a></td>
+          <td>{{ c.telephone }}</td>
+          <td><span class="badge-statut badge-en_cours">{{ c.type_client }}</span></td>
+          <td class="text-center">{{ c.nb_achats }}</td>
+          <td class="text-end fw-bold">{{ c.total_achats|money }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div></div>
+  <div class="col-lg-4"><div class="card-premium"><h5>📍 Par ville</h5>
+    {% for v in par_ville %}
+    <div class="d-flex justify-content-between mb-2"><span>{{ v.ville }}</span><strong>{{ v.ca|money_short }} ({{ v.nb }})</strong></div>
+    {% endfor %}
+  </div></div>
+</div>
+
+<a href="{{ url_for('export_clients') }}" class="btn btn-light mt-3"><i class="bi bi-download"></i> Export CSV</a>
+{% endblock %}

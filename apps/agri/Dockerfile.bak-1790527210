@@ -1,0 +1,28 @@
+# Base = image transport (contient déjà Flask, gunicorn, qrcode, etc.)
+FROM docker2-transport:latest
+
+WORKDIR /app
+
+# Nettoyer les anciens .py
+RUN rm -f /app/*.py
+
+# Copier les nouveaux fichiers Agri
+COPY main.py /app/
+COPY auth.py /app/
+COPY init_db.py /app/
+COPY init_db_v2.py /app/
+COPY crud.py /app/
+COPY agri_logic.py /app/
+COPY agri_ia.py /app/
+COPY agri_iot.py /app/
+COPY agri_finance.py /app/
+COPY rapports.py /app/
+COPY portail.py /app/
+COPY entrypoint.sh /app/
+
+RUN chmod +x /app/entrypoint.sh && \
+    mkdir -p /app/data/documents /app/data/photos /app/data/uploads /app/data/satellite /app/data/exports
+
+EXPOSE 8000
+
+ENTRYPOINT ["/app/entrypoint.sh"]

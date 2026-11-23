@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Rapports{% endblock %}
+{% block page_title %}📊 Rapports & Analyses{% endblock %}
+{% block content %}
+<div class="row g-3">
+  {% set rapports = [
+    ('rapports_ventes', '💰', 'Rapport Ventes', 'CA, vendeurs, modes de paiement', 'primary'),
+    ('rapports_produits', '🔧', 'Analyse Produits', 'Top pièces, catégories, dormants', 'accent'),
+    ('rapports_stock', '📦', 'Analyse Stock', 'Valeur, répartition, marges', 'success'),
+    ('rapports_clients', '👥', 'Portefeuille Clients', 'Top clients, villes, segments', 'info')
+  ] %}
+  {% for endpoint, icon, titre, desc, color in rapports %}
+  <div class="col-md-6 col-lg-3">
+    <a href="{{ url_for(endpoint) }}" class="text-decoration-none">
+      <div class="kpi-card" style="height:100%;cursor:pointer">
+        <div class="icon bg-{{ color }}-grad" style="width:64px;height:64px;font-size:28px"><i class="bi bi-{{ icon if icon.startswith('bi') else icon }}"></i></div>
+        <div style="flex:1">
+          <div style="font-size:16px;font-weight:700;color:#0a2540">{{ icon }} {{ titre }}</div>
+          <div class="text-muted" style="font-size:12px">{{ desc }}</div>
+        </div>
+      </div>
+    </a>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="card-premium mt-4">
+  <h5>📥 Exports CSV</h5>
+  <div class="d-flex flex-wrap gap-2">
+    <a href="{{ url_for('export_pieces') }}" class="btn btn-light"><i class="bi bi-download"></i> Pièces</a>
+    <a href="{{ url_for('export_stock') }}" class="btn btn-light"><i class="bi bi-download"></i> Stock</a>
+    <a href="{{ url_for('export_ventes') }}" class="btn btn-light"><i class="bi bi-download"></i> Ventes</a>
+    <a href="{{ url_for('export_clients') }}" class="btn btn-light"><i class="bi bi-download"></i> Clients</a>
+    <a href="{{ url_for('export_mouvements') }}" class="btn btn-light"><i class="bi bi-download"></i> Mouvements</a>
+  </div>
+</div>
+{% endblock %}

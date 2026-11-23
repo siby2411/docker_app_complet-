@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Alertes stock{% endblock %}
+{% block page_title %}⚠️ Alertes stock{% endblock %}
+{% block content %}
+
+<div class="card-premium" style="border-left:4px solid #ef476f">
+  <h5 class="text-danger">🚨 Ruptures de stock ({{ rupture|length }})</h5>
+  <div class="table-responsive">
+    <table class="table table-omega table-sm">
+      <thead><tr><th>SKU</th><th>Pièce</th><th>Catégorie</th><th class="text-center">Stock</th><th></th></tr></thead>
+      <tbody>
+        {% for p in rupture %}
+        <tr>
+          <td><code style="font-size:11px">{{ p.sku }}</code></td>
+          <td><strong>{{ p.nom[:50] }}</strong></td>
+          <td><small>{{ p.categorie_icone }} {{ p.categorie_nom }}</small></td>
+          <td class="text-center"><span class="badge-statut badge-rupture">0</span></td>
+          <td><a href="{{ url_for('piece_detail', pid=p.id) }}" class="btn btn-sm btn-light">Voir</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="text-center text-muted py-3">✅ Aucune rupture</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card-premium" style="border-left:4px solid #f4b400">
+  <h5 style="color:#856404">⚠️ Stock bas ({{ alerte|length }})</h5>
+  <div class="table-responsive">
+    <table class="table table-omega table-sm">
+      <thead><tr><th>SKU</th><th>Pièce</th><th class="text-center">Stock</th><th class="text-center">Seuil</th><th></th></tr></thead>
+      <tbody>
+        {% for p in alerte %}
+        <tr>
+          <td><code style="font-size:11px">{{ p.sku }}</code></td>
+          <td><strong>{{ p.nom[:50] }}</strong></td>
+          <td class="text-center fw-bold" style="color:#b35c00">{{ p.stock_total }}</td>
+          <td class="text-center">{{ p.stock_alerte }}</td>
+          <td><a href="{{ url_for('piece_detail', pid=p.id) }}" class="btn btn-sm btn-light">Voir</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="text-center text-muted py-3">✅ Aucun stock bas</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

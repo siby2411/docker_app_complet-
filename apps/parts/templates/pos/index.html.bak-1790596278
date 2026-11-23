@@ -1,0 +1,909 @@
+{% extends "base.html" %}
+{% block title %}POS Caisse{% endblock %}
+{% block page_title %}🛒 POS — Point de Vente{% endblock %}
+
+{% block extra_css %}
+<style>
+/* ═══ LAYOUT PRINCIPAL — FIX FLEXBOX ═══ */
+.pos-container {
+    display: flex;
+    height: calc(100vh - 190px);
+    gap: 12px;
+    min-height: 0;
+    overflow: hidden;
+}
+.pos-left {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
+.pos-right {
+    width: 420px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    background: #fff;
+    border-radius: 14px;
+    box-shadow: 0 4px 24px rgba(10,37,64,.06);
+    overflow: hidden;
+    min-height: 0;
+    max-height: 100%;
+}
+
+/* ═══ HEADER POS ═══ */
+.pos-header {
+    background: #fff;
+    padding: 12px 16px;
+    margin-bottom: 12px;
+    border-radius: 14px;
+    box-shadow: 0 4px 24px rgba(10,37,64,.06);
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+}
+.pos-header select {
+    border: 2px solid #e0e6ed;
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-weight: 600;
+}
+
+/* ═══ BARRE DE RECHERCHE ═══ */
+.pos-search-bar {
+    background: #fff;
+    border-radius: 14px;
+    padding: 16px;
+    box-shadow: 0 4px 24px rgba(10,37,64,.06);
+    margin-bottom: 12px;
+    flex-shrink: 0;
+}
+.pos-search-input {
+    width: 100%;
+    padding: 14px 20px 14px 48px;
+    border: 2px solid #e0e6ed;
+    border-radius: 12px;
+    font-size: 17px;
+    font-weight: 500;
+}
+.pos-search-input:focus {
+    border-color: var(--op-accent);
+    outline: none;
+    box-shadow: 0 0 0 4px rgba(255,107,53,.15);
+}
+.pos-search-icon {
+    position: absolute;
+    left: 34px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #8896aa;
+    font-size: 22px;
+}
+
+/* ═══ GRILLE PRODUITS ═══ */
+.pos-products {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    background: #fff;
+    border-radius: 14px;
+    box-shadow: 0 4px 24px rgba(10,37,64,.06);
+    padding: 16px;
+    min-height: 0;
+    max-height: 100%;
+}
+.pos-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 10px;
+}
+.pos-product-card {
+    background: #f8fafc;
+    border: 2px solid transparent;
+    border-radius: 12px;
+    padding: 12px;
+    cursor: pointer;
+    transition: all .15s;
+}
+.pos-product-card:hover {
+    border-color: var(--op-accent);
+    background: #fff;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(255,107,53,.15);
+}
+.pos-product-card .name {
+    font-weight: 700;
+    font-size: 13px;
+    color: #0a2540;
+    margin-bottom: 4px;
+}
+.pos-product-card .sku {
+    font-size: 10px;
+    color: #8896aa;
+    font-family: monospace;
+}
+.pos-product-card .price {
+    font-weight: 800;
+    color: var(--op-accent);
+    font-size: 16px;
+    margin-top: 6px;
+}
+.pos-product-card .stock {
+    font-size: 10px;
+    color: #8896aa;
+}
+.pos-product-card.out-of-stock {
+    opacity: .5;
+    cursor: not-allowed;
+}
+
+/* ═══ EN-TÊTE PANIER ═══ */
+.pos-cart-header {
+    padding: 16px 20px;
+    background: linear-gradient(135deg, #0a2540, #1a3a5c);
+    color: #fff;
+    flex-shrink: 0;
+}
+
+/* ═══ ZONE DES ARTICLES DU PANIER — CRITIQUE ═══ */
+.pos-cart-items {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 12px;
+    min-height: 0;
+    max-height: 100%;
+    background: #fafbfd;
+}
+.pos-cart-items::-webkit-scrollbar {
+    width: 6px;
+}
+.pos-cart-items::-webkit-scrollbar-track {
+    background: #f1f5f9;
+}
+.pos-cart-items::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 3px;
+}
+.pos-cart-items::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+}
+
+/* ═══ ITEM PANIER ═══ */
+.pos-cart-item {
+    background: #fff;
+    border: 1px solid #e0e6ed;
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+}
+.pos-cart-item .name {
+    font-weight: 600;
+    font-size: 13px;
+    color: #0a2540;
+    line-height: 1.3;
+}
+.pos-cart-item .sku {
+    font-size: 10px;
+    color: #8896aa;
+    margin-top: 2px;
+}
+.pos-cart-item .controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+}
+.pos-cart-item .qty-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    border: none;
+    background: #0a2540;
+    color: #fff;
+    font-weight: 700;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.pos-cart-item .qty-btn:hover {
+    background: var(--op-accent);
+}
+.pos-cart-item .qty-input {
+    width: 50px;
+    text-align: center;
+    border: 1px solid #e0e6ed;
+    border-radius: 6px;
+    padding: 4px;
+    font-weight: 700;
+}
+.pos-cart-item .line-total {
+    font-weight: 800;
+    color: var(--op-accent);
+    font-size: 14px;
+    margin-left: auto;
+}
+.pos-cart-item .remove-btn {
+    background: none;
+    border: none;
+    color: var(--op-danger);
+    font-size: 14px;
+    cursor: pointer;
+    padding: 0 4px;
+    flex-shrink: 0;
+}
+
+/* ═══ TOTAUX — TOUJOURS VISIBLE ═══ */
+.pos-totals {
+    padding: 16px 20px;
+    background: #fff;
+    border-top: 2px solid #e0e6ed;
+    flex-shrink: 0;
+}
+.pos-totals .row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    font-size: 14px;
+}
+.pos-totals .total-row {
+    font-size: 22px;
+    font-weight: 900;
+    color: #0a2540;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 2px dashed #cbd5e1;
+}
+
+/* ═══ BOUTON ENCAISSER — TOUJOURS VISIBLE ═══ */
+.pos-checkout {
+    padding: 16px 20px;
+    background: #fff;
+    border-top: 2px solid #e0e6ed;
+    flex-shrink: 0;
+}
+.pos-btn-checkout {
+    width: 100%;
+    padding: 16px;
+    border-radius: 12px;
+    border: none;
+    background: linear-gradient(135deg, #06d6a0, #4cd7b5);
+    color: #fff;
+    font-size: 18px;
+    font-weight: 800;
+    cursor: pointer;
+}
+.pos-btn-checkout:hover:not(:disabled) {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(6,214,160,.4);
+}
+.pos-btn-checkout:disabled {
+    opacity: .5;
+    cursor: not-allowed;
+}
+
+/* ═══ MODAL PAIEMENT ═══ */
+.payment-methods {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+.payment-method-btn {
+    padding: 16px;
+    border: 2px solid #e0e6ed;
+    border-radius: 12px;
+    background: #fff;
+    cursor: pointer;
+    transition: all .15s;
+    text-align: center;
+    font-weight: 700;
+}
+.payment-method-btn:hover {
+    border-color: var(--op-accent);
+}
+.payment-method-btn.selected {
+    border-color: var(--op-accent);
+    background: rgba(255,107,53,.08);
+}
+
+/* ═══ TOAST ═══ */
+.toast-custom {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: #0a2540;
+    color: #fff;
+    padding: 16px 24px;
+    border-radius: 12px;
+    font-weight: 600;
+    z-index: 9999;
+    display: none;
+    max-width: 400px;
+}
+.toast-custom.show {
+    display: block;
+    animation: slideIn .3s ease;
+}
+.toast-custom.success { background: #06d6a0; }
+.toast-custom.error { background: #ef476f; }
+@keyframes slideIn {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+
+.no-results {
+    padding: 40px;
+    text-align: center;
+    color: #8896aa;
+}
+.no-results i {
+    font-size: 60px;
+    color: #cbd5e1;
+}
+
+.shortcuts-help {
+    position: fixed;
+    bottom: 10px;
+    left: 20px;
+    background: rgba(10,37,64,.9);
+    color: #fff;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 11px;
+    z-index: 100;
+}
+.shortcuts-help kbd {
+    background: rgba(255,255,255,.15);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: monospace;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="pos-header">
+  <span style="font-weight:700;color:#0a2540">Point de vente :</span>
+  <select id="pdv-select">
+    {% for pv in points_vente %}
+    <option value="{{ pv.id }}" {% if pdv_defaut and pdv_defaut.id==pv.id %}selected{% endif %}>{{ pv.nom }}</option>
+    {% endfor %}
+  </select>
+
+  <span style="margin-left:20px;font-weight:700;color:#0a2540">Type vente :</span>
+  <select id="type-vente">
+    <option value="detail">💰 Détail</option>
+    <option value="gros">📦 Gros</option>
+    <option value="mecano">🔧 Mécano</option>
+  </select>
+
+  <div style="margin-left:auto;display:flex;gap:8px">
+    <button class="btn btn-light" onclick="showShortcuts()"><i class="bi bi-keyboard"></i> Raccourcis</button>
+    <button class="btn btn-light" onclick="clearCart()"><i class="bi bi-trash"></i> Vider panier</button>
+  </div>
+</div>
+
+<div class="pos-container">
+  <!-- Côté gauche : recherche + produits -->
+  <div class="pos-left">
+    <div class="pos-search-bar position-relative">
+      <i class="bi bi-search pos-search-icon"></i>
+      <input type="text" id="search-input" class="pos-search-input" placeholder="Rechercher par SKU, OEM, code-barres ou nom..." autofocus>
+    </div>
+
+    <div class="pos-products" id="products-area">
+      <div class="no-results">
+        <i class="bi bi-search"></i>
+        <p class="mt-3">Tapez pour rechercher un article</p>
+        <p class="small">Exemple : plaquette, 04465, HUIL-001...</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Côté droit : panier -->
+  <div class="pos-right">
+    <div class="pos-cart-header">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <div style="font-weight:800;font-size:18px">🛒 PANIER</div>
+          <div id="client-display" style="font-size:12px;opacity:.8">Client : <strong>Passage</strong></div>
+        </div>
+        <button class="btn btn-sm" style="background:rgba(255,255,255,.15);color:#fff;border:none" onclick="selectClient()">
+          <i class="bi bi-person-plus"></i> Client
+        </button>
+      </div>
+    </div>
+
+    <div class="pos-cart-items" id="cart-items">
+      <div class="no-results" style="padding:40px 20px">
+        <i class="bi bi-cart" style="font-size:48px"></i>
+        <p class="mt-3 mb-0">Panier vide</p>
+      </div>
+    </div>
+
+    <div class="pos-totals">
+      <div class="row"><span>Sous-total</span><strong id="subtotal">0 FCFA</strong></div>
+      <div class="row">
+        <span>Remise</span>
+        <div style="display:flex;gap:6px;align-items:center">
+          <input type="number" id="discount-input" value="0" min="0" max="100" style="width:60px;padding:4px;border:1px solid #e0e6ed;border-radius:6px;text-align:center" oninput="updateTotals()">
+          <span>%</span>
+        </div>
+      </div>
+      <div class="row"><span>TVA (incluse)</span><span id="tva-display">0 FCFA</span></div>
+      <div class="row total-row"><span>TOTAL</span><span id="total-display">0 FCFA</span></div>
+    </div>
+
+    <div class="pos-checkout">
+      <button class="pos-btn-checkout" id="checkout-btn" onclick="openPaymentModal()" disabled>
+        <i class="bi bi-cash-coin"></i> ENCAISSER
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal paiement -->
+<div class="modal fade" id="paymentModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5>💳 Encaissement</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3 text-center">
+          <div style="font-size:36px;font-weight:900;color:#0a2540" id="modal-total">0 FCFA</div>
+          <div class="text-muted">Montant à payer</div>
+        </div>
+
+        <h6>Mode de paiement</h6>
+        <div class="payment-methods mb-3">
+          <button type="button" class="payment-method-btn selected" data-mode="especes" onclick="selectPaymentMode(this)">
+            <i class="bi bi-cash-stack" style="font-size:24px;color:#06d6a0;display:block"></i> Espèces
+          </button>
+          <button type="button" class="payment-method-btn" data-mode="wave" onclick="selectPaymentMode(this)">
+            <i class="bi bi-phone" style="font-size:24px;color:#1e88e5;display:block"></i> Wave
+          </button>
+          <button type="button" class="payment-method-btn" data-mode="orange_money" onclick="selectPaymentMode(this)">
+            <i class="bi bi-phone" style="font-size:24px;color:#ff6f00;display:block"></i> Orange Money
+          </button>
+          <button type="button" class="payment-method-btn" data-mode="virement" onclick="selectPaymentMode(this)">
+            <i class="bi bi-bank" style="font-size:24px;color:#6c5ce7;display:block"></i> Virement
+          </button>
+        </div>
+
+        <div class="row g-2">
+          <div class="col-md-6">
+            <label class="form-label">Montant reçu</label>
+            <input type="number" id="paid-input" class="form-control form-control-lg" style="font-size:24px;font-weight:800;text-align:right" value="0">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Monnaie à rendre</label>
+            <div class="form-control form-control-lg" style="font-size:24px;font-weight:800;text-align:right;background:#f5f7fa;color:#06d6a0" id="change-display">0 FCFA</div>
+          </div>
+        </div>
+
+        <div class="mt-3">
+          <label class="form-label">Notes</label>
+          <textarea id="payment-notes" class="form-control" rows="2" placeholder="Optionnel"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-light" data-bs-dismiss="modal">Annuler</button>
+        <button class="btn btn-accent btn-lg" onclick="submitSale()" id="confirm-payment-btn">
+          <i class="bi bi-check-circle"></i> VALIDER LA VENTE
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal client -->
+<div class="modal fade" id="clientModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header"><h5>Sélectionner un client</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <input type="text" id="client-search" class="form-control mb-3" placeholder="Nom, téléphone, code...">
+        <div id="client-list" style="max-height:400px;overflow-y:auto"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast-custom" id="toast"></div>
+<div class="shortcuts-help" id="shortcuts" style="display:none">
+  <kbd>F1</kbd> Recherche · <kbd>F2</kbd> Client · <kbd>F3</kbd> Remise · <kbd>F4</kbd> Encaisser · <kbd>F5</kbd> Vider · <kbd>ESC</kbd> Fermer
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// ═══ État ═══
+let cart = [];
+let selectedClient = null;
+let currentType = 'detail';
+let currentPdvId = {{ pdv_defaut.id if pdv_defaut else 0 }};
+let currentPaymentMode = 'especes';
+const settings = {
+  devise: '{{ settings.devise or "FCFA" }}',
+  tva: {{ settings.tva_defaut or 18 }}
+};
+
+// ═══ Formatage ═══
+function fmtMoney(v) {
+  return Math.round(v).toLocaleString('fr-FR').replace(/\s/g, ' ') + ' ' + settings.devise;
+}
+
+// ═══ Recherche ═══
+let searchTimer = null;
+document.getElementById('search-input').addEventListener('input', function(e) {
+  clearTimeout(searchTimer);
+  const q = e.target.value.trim();
+  if (q.length < 1) {
+    showNoResults();
+    return;
+  }
+  searchTimer = setTimeout(() => doSearch(q), 200);
+});
+
+document.getElementById('pdv-select').addEventListener('change', function() {
+  currentPdvId = parseInt(this.value);
+  const q = document.getElementById('search-input').value.trim();
+  if (q) doSearch(q);
+});
+
+document.getElementById('type-vente').addEventListener('change', function() {
+  currentType = this.value;
+  // Mettre à jour les prix dans le panier
+  cart.forEach(item => {
+    if (currentType === 'gros') item.prix_unitaire = item.prix_gros;
+    else if (currentType === 'mecano') item.prix_unitaire = item.prix_mecano;
+    else item.prix_unitaire = item.prix_detail;
+    item.montant = item.prix_unitaire * item.quantite;
+  });
+  renderCart();
+});
+
+async function doSearch(q) {
+  try {
+    const r = await fetch(`/pos/api/search?q=${encodeURIComponent(q)}&pdv_id=${currentPdvId}`);
+    const data = await r.json();
+    renderProducts(data);
+  } catch (e) {
+    showToast('Erreur de recherche', 'error');
+  }
+}
+
+function showNoResults() {
+  document.getElementById('products-area').innerHTML = `
+    <div class="no-results">
+      <i class="bi bi-search"></i>
+      <p class="mt-3">Tapez pour rechercher un article</p>
+      <p class="small">Exemple : plaquette, 04465, HUIL-001...</p>
+    </div>`;
+}
+
+function renderProducts(products) {
+  const area = document.getElementById('products-area');
+  if (!products.length) {
+    area.innerHTML = `<div class="no-results"><i class="bi bi-inbox"></i><p class="mt-3">Aucun résultat</p></div>`;
+    return;
+  }
+
+  area.innerHTML = '<div class="pos-grid">' + products.map(p => {
+    const stock = p.stock_pdv || 0;
+    const outOfStock = stock <= 0;
+    let prix = p.prix_vente_detail;
+    if (currentType === 'gros') prix = p.prix_vente_gros || prix;
+    else if (currentType === 'mecano') prix = p.prix_vente_mecano || prix;
+
+    return `
+      <div class="pos-product-card ${outOfStock ? 'out-of-stock' : ''}"
+           onclick="${outOfStock ? '' : `addToCart(${JSON.stringify(p).replace(/"/g, '&quot;')})`}">
+        <div class="sku">${p.sku}</div>
+        <div class="name">${p.nom.substring(0, 50)}</div>
+        ${p.code_oem ? `<div class="sku">OEM: ${p.code_oem}</div>` : ''}
+        <div class="d-flex justify-content-between align-items-center mt-2">
+          <div class="price">${fmtMoney(prix)}</div>
+          <div class="stock">${outOfStock ? '❌ Rupture' : 'Stock: ' + stock}</div>
+        </div>
+      </div>
+    `;
+  }).join('') + '</div>';
+}
+
+// ═══ Panier ═══
+function addToCart(p) {
+  const stock = p.stock_pdv || 0;
+  if (stock <= 0) {
+    showToast('❌ Rupture de stock', 'error');
+    return;
+  }
+
+  let prix_detail = p.prix_vente_detail;
+  let prix_gros = p.prix_vente_gros || prix_detail;
+  let prix_mecano = p.prix_vente_mecano || prix_detail;
+
+  let prix = prix_detail;
+  if (currentType === 'gros') prix = prix_gros;
+  else if (currentType === 'mecano') prix = prix_mecano;
+
+  const existing = cart.find(item => item.piece_id === p.id);
+  if (existing) {
+    if (existing.quantite + 1 > stock) {
+      showToast('Stock insuffisant', 'error');
+      return;
+    }
+    existing.quantite += 1;
+    existing.montant = existing.prix_unitaire * existing.quantite;
+  } else {
+    cart.push({
+      piece_id: p.id,
+      sku: p.sku,
+      nom: p.nom,
+      code_oem: p.code_oem,
+      prix_detail: prix_detail,
+      prix_gros: prix_gros,
+      prix_mecano: prix_mecano,
+      prix_unitaire: prix,
+      quantite: 1,
+      montant: prix,
+      stock_max: stock
+    });
+  }
+
+  renderCart();
+  document.getElementById('search-input').value = '';
+  document.getElementById('search-input').focus();
+  showNoResults();
+  showToast(`✅ ${p.nom.substring(0, 30)} ajouté`, 'success');
+}
+
+function updateQuantity(pieceId, delta) {
+  const item = cart.find(i => i.piece_id === pieceId);
+  if (!item) return;
+
+  const newQty = item.quantite + delta;
+  if (newQty < 1) {
+    removeFromCart(pieceId);
+    return;
+  }
+  if (newQty > item.stock_max) {
+    showToast('Stock insuffisant', 'error');
+    return;
+  }
+  item.quantite = newQty;
+  item.montant = item.prix_unitaire * newQty;
+  renderCart();
+}
+
+function setQuantity(pieceId, qty) {
+  const item = cart.find(i => i.piece_id === pieceId);
+  if (!item) return;
+  qty = parseInt(qty) || 1;
+  if (qty < 1) qty = 1;
+  if (qty > item.stock_max) {
+    qty = item.stock_max;
+    showToast('Quantité limitée au stock', 'error');
+  }
+  item.quantite = qty;
+  item.montant = item.prix_unitaire * qty;
+  renderCart();
+}
+
+function removeFromCart(pieceId) {
+  cart = cart.filter(i => i.piece_id !== pieceId);
+  renderCart();
+}
+
+function clearCart() {
+  if (cart.length && !confirm('Vider le panier ?')) return;
+  cart = [];
+  selectedClient = null;
+  document.getElementById('discount-input').value = 0;
+  renderCart();
+}
+
+function renderCart() {
+  const area = document.getElementById('cart-items');
+  if (!cart.length) {
+    area.innerHTML = `<div class="no-results" style="padding:40px 20px"><i class="bi bi-cart" style="font-size:48px"></i><p class="mt-3 mb-0">Panier vide</p></div>`;
+    updateTotals();
+    return;
+  }
+
+  area.innerHTML = cart.map(item => `
+    <div class="pos-cart-item">
+      <div class="d-flex justify-content-between">
+        <div style="flex:1">
+          <div class="name">${item.nom.substring(0, 40)}</div>
+          <div class="sku">${item.sku}</div>
+        </div>
+        <button class="remove-btn" onclick="removeFromCart(${item.piece_id})">✕</button>
+      </div>
+      <div class="controls">
+        <button class="qty-btn" onclick="updateQuantity(${item.piece_id}, -1)">−</button>
+        <input type="number" class="qty-input" value="${item.quantite}" onchange="setQuantity(${item.piece_id}, this.value)" min="1" max="${item.stock_max}">
+        <button class="qty-btn" onclick="updateQuantity(${item.piece_id}, 1)">+</button>
+        <span class="line-total">${fmtMoney(item.montant)}</span>
+      </div>
+    </div>
+  `).join('');
+
+  updateTotals();
+}
+
+function updateTotals() {
+  const subtotal = cart.reduce((sum, i) => sum + i.montant, 0);
+  const discountPct = parseFloat(document.getElementById('discount-input').value) || 0;
+  const discountAmount = subtotal * (discountPct / 100);
+  const total = subtotal - discountAmount;
+  const tva = total * (settings.tva / (100 + settings.tva));
+
+  document.getElementById('subtotal').textContent = fmtMoney(subtotal);
+  document.getElementById('tva-display').textContent = fmtMoney(tva);
+  document.getElementById('total-display').textContent = fmtMoney(total);
+  document.getElementById('modal-total').textContent = fmtMoney(total);
+  document.getElementById('checkout-btn').disabled = cart.length === 0;
+
+  return { subtotal, discountPct, discountAmount, total, tva };
+}
+
+// ═══ Client ═══
+function selectClient() {
+  document.getElementById('client-search').value = '';
+  document.getElementById('client-list').innerHTML = '';
+  new bootstrap.Modal(document.getElementById('clientModal')).show();
+  setTimeout(() => document.getElementById('client-search').focus(), 300);
+}
+
+document.getElementById('client-search')?.addEventListener('input', async function(e) {
+  const q = e.target.value.trim();
+  if (q.length < 2) return;
+  const r = await fetch(`/pos/api/client-search?q=${encodeURIComponent(q)}`);
+  const data = await r.json();
+  const list = document.getElementById('client-list');
+  if (!data.length) {
+    list.innerHTML = '<p class="text-muted text-center">Aucun client trouvé</p>';
+    return;
+  }
+  list.innerHTML = data.map(c => `
+    <div class="p-2 mb-2" style="background:#f5f7fa;border-radius:8px;cursor:pointer" onclick="pickClient(${JSON.stringify(c).replace(/"/g, '&quot;')})">
+      <div style="font-weight:700;color:#0a2540">${c.prenom || ''} ${c.nom}</div>
+      <div class="text-muted small">${c.telephone} · ${c.code} · ${c.type_client}</div>
+    </div>
+  `).join('');
+});
+
+function pickClient(c) {
+  selectedClient = c;
+  document.getElementById('client-display').innerHTML = `Client : <strong>${c.prenom || ''} ${c.nom}</strong>`;
+  bootstrap.Modal.getInstance(document.getElementById('clientModal')).hide();
+
+  // Appliquer la remise client
+  if (c.remise_pct > 0) {
+    document.getElementById('discount-input').value = c.remise_pct;
+    updateTotals();
+    showToast(`Remise client appliquée : ${c.remise_pct}%`, 'success');
+  }
+}
+
+// ═══ Paiement ═══
+function openPaymentModal() {
+  if (!cart.length) return;
+  const totals = updateTotals();
+  document.getElementById('paid-input').value = Math.round(totals.total);
+  document.getElementById('change-display').textContent = fmtMoney(0);
+  updateChange();
+  new bootstrap.Modal(document.getElementById('paymentModal')).show();
+}
+
+document.getElementById('paid-input')?.addEventListener('input', updateChange);
+
+function updateChange() {
+  const totals = updateTotals();
+  const paid = parseFloat(document.getElementById('paid-input').value) || 0;
+  const change = Math.max(0, paid - totals.total);
+  document.getElementById('change-display').textContent = fmtMoney(change);
+}
+
+function selectPaymentMode(btn) {
+  document.querySelectorAll('.payment-method-btn').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+  currentPaymentMode = btn.dataset.mode;
+}
+
+async function submitSale() {
+  const btn = document.getElementById('confirm-payment-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Enregistrement...';
+
+  const totals = updateTotals();
+  const paid = parseFloat(document.getElementById('paid-input').value) || 0;
+
+  if (paid < totals.total && currentPaymentMode !== 'credit') {
+    showToast('Montant reçu insuffisant', 'error');
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-check-circle"></i> VALIDER LA VENTE';
+    return;
+  }
+
+  const payload = {
+    pdv_id: currentPdvId,
+    client_id: selectedClient ? selectedClient.id : null,
+    type_vente: currentType,
+    lignes: cart.map(i => ({
+      piece_id: i.piece_id,
+      quantite: i.quantite,
+      prix_unitaire: i.prix_unitaire,
+      montant: i.montant
+    })),
+    remise_pct: totals.discountPct,
+    montant_paye: paid,
+    mode_paiement: currentPaymentMode,
+    notes: document.getElementById('payment-notes').value
+  };
+
+  try {
+    const r = await fetch('/pos/api/checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await r.json();
+
+    if (data.success) {
+      showToast('✅ Vente enregistrée : ' + data.numero, 'success');
+      bootstrap.Modal.getInstance(document.getElementById('paymentModal')).hide();
+
+      // Ouvrir le ticket dans un nouvel onglet
+      window.open(`/pos/ticket-58/${data.vente_id}`, '_blank');
+
+      // Reset
+      cart = [];
+      selectedClient = null;
+      document.getElementById('discount-input').value = 0;
+      document.getElementById('client-display').innerHTML = 'Client : <strong>Passage</strong>';
+      renderCart();
+      document.getElementById('search-input').focus();
+    } else {
+      showToast(data.error || 'Erreur', 'error');
+    }
+  } catch (e) {
+    showToast('Erreur réseau : ' + e.message, 'error');
+  }
+
+  btn.disabled = false;
+  btn.innerHTML = '<i class="bi bi-check-circle"></i> VALIDER LA VENTE';
+}
+
+// ═══ Toast ═══
+function showToast(msg, type = '') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast-custom show ' + type;
+  setTimeout(() => el.className = 'toast-custom', 2500);
+}
+
+// ═══ Raccourcis clavier ═══
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'F1') { e.preventDefault(); document.getElementById('search-input').focus(); }
+  else if (e.key === 'F2') { e.preventDefault(); selectClient(); }
+  else if (e.key === 'F3') { e.preventDefault(); document.getElementById('discount-input').focus(); }
+  else if (e.key === 'F4') { e.preventDefault(); if (cart.length) openPaymentModal(); }
+  else if (e.key === 'F5') { e.preventDefault(); clearCart(); }
+});
+
+function showShortcuts() {
+  const el = document.getElementById('shortcuts');
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+// Auto-focus au chargement
+document.getElementById('search-input').focus();
+</script>
+{% endblock %}

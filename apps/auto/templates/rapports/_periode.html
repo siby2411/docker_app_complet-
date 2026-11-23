@@ -1,0 +1,20 @@
+<form method="GET" class="row g-2 mb-3">
+  <div class="col-md-3">
+    <select name="periode" class="form-select" onchange="if(this.value!='custom') this.form.submit()">
+      <option value="jour" {% if periode=='jour' %}selected{% endif %}>Aujourd'hui</option>
+      <option value="semaine" {% if periode=='semaine' %}selected{% endif %}>Cette semaine</option>
+      <option value="mois" {% if periode=='mois' %}selected{% endif %}>Ce mois</option>
+      <option value="trimestre" {% if periode=='trimestre' %}selected{% endif %}>Ce trimestre</option>
+      <option value="annee" {% if periode=='annee' %}selected{% endif %}>Cette année</option>
+      <option value="custom" {% if periode=='custom' %}selected{% endif %}>Personnalisé</option>
+    </select>
+  </div>
+  {% if periode=='custom' %}
+  <div class="col-md-3"><input type="date" name="date_from" class="form-control" value="{{ d1 }}"></div>
+  <div class="col-md-3"><input type="date" name="date_to" class="form-control" value="{{ d2 }}"></div>
+  <div class="col-md-2"><button class="btn btn-primary-omega w-100">Appliquer</button></div>
+  {% endif %}
+  <div class="col-md-6 text-end text-muted align-self-center">
+    <i class="bi bi-calendar-range"></i> <strong>{{ label }}</strong>
+  </div>
+</form>

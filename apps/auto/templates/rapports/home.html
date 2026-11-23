@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Rapports{% endblock %}
+{% block page_title %}📊 Rapports & analyses{% endblock %}
+{% block content %}
+<div class="row g-3">
+  {% set rapports = [
+    ('rapports_ventes', '💰', 'Rapport Ventes', 'CA, marges, top marques, vendeurs', 'primary'),
+    ('rapports_locations', '🔑', 'Rapport Locations', 'Durée moyenne, taux occupation, CA/jour', 'accent'),
+    ('rapports_stock', '📦', 'Analyse Stock', 'Valeur, marge latente, dépréciation, immobilisations', 'success'),
+    ('rapports_clients', '👥', 'Portefeuille Clients', 'Segmentation, scoring, top 20', 'gold'),
+    ('rapports_paiements', '💳', 'Rapport Paiements', 'Par mode, mobile money, évolution', 'info'),
+    ('rapports_marges', '📈', 'Analyse Marges', 'Taux, top ventes, marges négatives', 'accent'),
+    ('rapports_depreciation', '📉', 'Dépréciation Parc', 'Calcul 6%/an, pertes potentielles', 'danger')
+  ] %}
+  {% for endpoint, icon, titre, desc, color in rapports %}
+  <div class="col-md-6 col-lg-4">
+    <a href="{{ url_for(endpoint) }}" class="text-decoration-none">
+      <div class="kpi-card" style="height:100%;cursor:pointer">
+        <div class="icon bg-{{ color }}-grad" style="width:64px;height:64px;font-size:28px"><i class="bi bi-{{ icon if icon.startswith('bi-') else icon }}"></i></div>
+        <div style="flex:1">
+          <div style="font-size:16px;font-weight:700;color:#0a2540">{{ icon }} {{ titre }}</div>
+          <div class="text-muted" style="font-size:12px">{{ desc }}</div>
+        </div>
+        <i class="bi bi-arrow-right-circle" style="color:#cbd5e1;font-size:24px"></i>
+      </div>
+    </a>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="card-premium mt-4">
+  <h5>📥 Exports CSV</h5>
+  <div class="d-flex flex-wrap gap-2">
+    <a href="{{ url_for('export_vehicules') }}" class="btn btn-light"><i class="bi bi-download"></i> Véhicules</a>
+    <a href="{{ url_for('export_clients') }}" class="btn btn-light"><i class="bi bi-download"></i> Clients</a>
+    <a href="{{ url_for('export_ventes') }}" class="btn btn-light"><i class="bi bi-download"></i> Ventes</a>
+    <a href="{{ url_for('export_locations') }}" class="btn btn-light"><i class="bi bi-download"></i> Locations</a>
+    <a href="{{ url_for('export_paiements') }}" class="btn btn-light"><i class="bi bi-download"></i> Paiements</a>
+    <a href="{{ url_for('export_stock') }}" class="btn btn-light"><i class="bi bi-download"></i> Stock</a>
+    <a href="{{ url_for('export_entretiens') }}" class="btn btn-light"><i class="bi bi-download"></i> Entretiens</a>
+  </div>
+</div>
+{% endblock %}

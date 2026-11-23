@@ -1,0 +1,78 @@
+from flask import Flask, render_template_string, request, redirect, url_for
+import sqlite3
+
+app = Flask(__name__)
+DB_PATH = "ecole.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("CREATE TABLE IF NOT EXISTS eleves (id INTEGER PRIMARY KEY AUTOINCREMENT, nom TEXT, prenom TEXT, classe TEXT)")
+    c.execute("SELECT COUNT(*) FROM eleves")
+    if c.fetchone()[0] == 0:
+        c.executemany("INSERT INTO eleves (nom,prenom,classe) VALUES (?,?,?)",
+            [("Diop","Mamadou","CM2"), ("Fall","Aminata","CM1")])
+        conn.commit()
+    conn.close()
+
+init_db()
+
+HTML = """
+<!DOCTYPE html>
+<html>
+<head><title>Omega Ecole</title>
+<style>
+body { font-family: Arial; margin:20px; background:#f0f4f8; }
+.container { max-width:1200px; margin:0 auto; background:white; padding:20px; border-radius:12px; }
+h1 { color:#1a365d; }
+table { width:100%; border-collapse:collapse; margin-top:20px; }
+th, td { padding:12px; text-align:left; border-bottom:1px solid #e2e8f0; }
+th { background:#f7fafc; }
+.btn { padding:10px 20px; background:#2b6cb0; color:white; border:none; border-radius:4px; cursor:pointer; }
+input { padding:8px; margin:5px; border:1px solid #e2e8f0; border-radius:4px; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>🏫 Omega Ecole</h1>
+<form action="/ajouter" method="POST" style="display:flex; gap:10px; flex-wrap:wrap;">
+<input type="text" name="nom" placeholder="Nom" required>
+<input type="text" name="prenom" placeholder="Prenom" required>
+<input type="text" name="classe" placeholder="Classe" required>
+<button type="submit" class="btn">Ajouter</button>
+</form>
+<h3>Eleves</h3>
+<table>
+<thead><tr><th>Nom</th><th>Prenom</th><th>Classe</th></tr></thead>
+<tbody>
+{% for e in eleves %}
+<tr><td>{{ e[1] }}</td><td>{{ e[2] }}</td><td>{{ e[3] }}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+</body>
+</html>
+"""
+
+@app.route("/")
+def index():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT * FROM eleves ORDER BY id DESC")
+    eleves = c.fetchall()
+    conn.close()
+    return render_template_string(HTML, eleves=eleves)
+
+@app.route("/ajouter", methods=["POST"])
+def ajouter():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT INTO eleves (nom,prenom,classe) VALUES (?,?,?)",
+        (request.form["nom"], request.form["prenom"], request.form["classe"]))
+    conn.commit()
+    conn.close()
+    return redirect(url_for("index"))
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000)

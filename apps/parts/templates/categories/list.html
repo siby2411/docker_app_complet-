@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Catégories{% endblock %}
+{% block page_title %}📂 Catégories de pièces{% endblock %}
+{% block content %}
+
+<div class="card-premium">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h5 class="mb-0">{{ total }} catégorie(s)</h5>
+    <a href="{{ url_for('categorie_new') }}" class="btn btn-accent">
+      <i class="bi bi-plus-lg"></i> Nouvelle catégorie
+    </a>
+  </div>
+
+  {% for root in arbo %}
+  <div class="mb-3 pb-3" style="border-bottom:1px solid #f0f4f8">
+    <div class="d-flex align-items-center gap-2 mb-2">
+      <div style="width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,#0a2540,#1a3a5c);display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px">
+        {{ root.icone or '🔧' }}
+      </div>
+      <div style="flex:1">
+        <div style="font-weight:700;color:#0a2540;font-size:15px">{{ root.nom }}</div>
+        <div class="text-muted" style="font-size:11px">{{ root.code }}</div>
+      </div>
+      <a href="{{ url_for('categorie_detail', cid=root.id) }}" class="btn btn-sm btn-light"><i class="bi bi-eye"></i></a>
+      <a href="{{ url_for('categorie_edit', cid=root.id) }}" class="btn btn-sm btn-light"><i class="bi bi-pencil"></i></a>
+    </div>
+
+    {% if root.enfants %}
+    <div class="row g-2 ms-4">
+      {% for enfant in root.enfants %}
+      <div class="col-md-4 col-lg-3">
+        <a href="{{ url_for('categorie_detail', cid=enfant.id) }}" class="text-decoration-none">
+          <div style="padding:10px 14px;background:#f5f7fa;border-radius:10px">
+            <div style="font-weight:600;color:#0a2540;font-size:13px">{{ enfant.icone }} {{ enfant.nom }}</div>
+            <div class="text-muted" style="font-size:10px">{{ enfant.code }}</div>
+          </div>
+        </a>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% else %}
+  <p class="text-center text-muted py-5">Aucune catégorie</p>
+  {% endfor %}
+</div>
+
+{% endblock %}

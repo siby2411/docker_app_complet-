@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Stock{% endblock %}
+{% block page_title %}📦 État du stock{% endblock %}
+{% block content %}
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-boxes"></i></div><div><div class="kpi-val">{{ kpi.total_pieces }}</div><div class="kpi-lbl">Références</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-cash-stack"></i></div><div><div class="kpi-val">{{ kpi.valeur_vente|money_short }}</div><div class="kpi-lbl">Valeur vente</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-danger-grad"><i class="bi bi-x-octagon"></i></div><div><div class="kpi-val">{{ kpi.ruptures }}</div><div class="kpi-lbl">Ruptures</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-gold-grad"><i class="bi bi-exclamation-triangle"></i></div><div><div class="kpi-val">{{ kpi.alertes }}</div><div class="kpi-lbl">Alertes</div></div></div></div>
+</div>
+
+<div class="card-premium">
+  <form method="GET" class="row g-2 mb-3">
+    <div class="col-md-3"><input type="search" name="q" class="form-control" placeholder="SKU, OEM, nom…" value="{{ q }}"></div>
+    <div class="col-md-2"><select name="categorie_id" class="form-select">
+      <option value="">Catégorie</option>
+      {% for c in categories %}<option value="{{ c.id }}" {% if categorie_id==c.id %}selected{% endif %}>{{ c.nom }}</option>{% endfor %}
+    </select></div>
+    <div class="col-md-2"><select name="point_vente_id" class="form-select">
+      <option value="">Tous PDV</option>
+      {% for pv in points_vente %}<option value="{{ pv.id }}" {% if point_vente_id==pv.id %}selected{% endif %}>{{ pv.nom }}</option>{% endfor %}
+    </select></div>
+    <div class="col-md-2"><select name="situation" class="form-select">
+      <option value="">Tout</option>
+      <option value="rupture" {% if situation=='rupture' %}selected{% endif %}>🔴 Rupture</option>
+      <option value="alerte" {% if situation=='alerte' %}selected{% endif %}>🟠 Alerte</option>
+      <option value="ok" {% if situation=='ok' %}selected{% endif %}>🟢 OK</option>
+    </select></div>
+    <div class="col-md-2"><button class="btn btn-primary-omega w-100"><i class="bi bi-funnel"></i></button></div>
+  </form>
+
+  <div class="table-responsive">
+    <table class="table table-omega">
+      <thead>
+        <tr>
+          <th>SKU</th>
+          <th>Pièce</th>
+          <th>Catégorie</th>
+          <th class="text-end">Prix vente</th>
+          <th class="text-center">Stock</th>
+          <th class="text-center">Seuil</th>
+          <th class="text-center">État</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in pieces %}
+        <tr>
+          <td><code style="font-size:11px">{{ p.sku }}</code></td>
+          <td><strong style="color:#0a2540">{{ p.nom[:45] }}</strong>{% if p.code_oem %}<br><small class="text-muted">OEM: {{ p.code_oem }}</small>{% endif %}</td>
+          <td><small>{{ p.categorie_icone }} {{ p.categorie_nom or '—' }}</small></td>
+          <td class="text-end fw-bold">{{ p.prix_vente_detail|money }}</td>
+          <td class="text-center fw-bold">{{ p.stock_total }}</td>
+          <td class="text-center"><small>{{ p.stock_alerte }}</small></td>
+          <td class="text-center">
+            {% if p.stock_total == 0 %}
+            <span class="badge-statut badge-rupture">RUPTURE</span>
+            {% elif p.stock_total <= p.stock_alerte %}
+            <span class="badge-statut badge-alerte">ALERTE</span>
+            {% else %}
+            <span class="badge-statut badge-disponible">OK</span>
+            {% endif %}
+          </td>
+          <td><a href="{{ url_for('piece_detail', pid=p.id) }}" class="btn btn-sm btn-light"><i class="bi bi-eye"></i></a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if pages > 1 %}
+  <nav class="mt-3"><ul class="pagination justify-content-center mb-0">
+    {% if page > 1 %}<li class="page-item"><a class="page-link" href="?page={{ page-1 }}">«</a></li>{% endif %}
+    {% for p in range(1, pages+1) %}
+      {% if p == page or (p >= page-2 and p <= page+2) or p == 1 or p == pages %}
+      <li class="page-item {% if p==page %}active{% endif %}"><a class="page-link" href="?page={{ p }}">{{ p }}</a></li>
+      {% endif %}
+    {% endfor %}
+    {% if page < pages %}<li class="page-item"><a class="page-link" href="?page={{ page+1 }}">»</a></li>{% endif %}
+  </ul></nav>
+  {% endif %}
+</div>
+
+{% endblock %}

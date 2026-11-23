@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Modifier' if marque else 'Nouvelle' }} marque{% endblock %}
+{% block page_title %}{{ '✏️ Modifier' if marque else '➕ Nouvelle' }} marque{% endblock %}
+{% block content %}
+<form method="POST" class="card-premium">
+  <div class="row g-3">
+    <div class="col-md-6"><label class="form-label">Nom *</label><input type="text" name="nom" class="form-control" required value="{{ marque.nom if marque else '' }}"></div>
+    <div class="col-md-6"><label class="form-label">Slug</label><input type="text" name="slug" class="form-control" value="{{ marque.slug if marque else '' }}" placeholder="auto si vide"></div>
+    <div class="col-md-6"><label class="form-label">Pays d'origine</label><input type="text" name="pays_origine" class="form-control" value="{{ marque.pays_origine if marque else '' }}"></div>
+    <div class="col-md-4"><label class="form-label">Ordre affichage</label><input type="number" name="ordre" class="form-control" value="{{ marque.ordre if marque else 0 }}"></div>
+    <div class="col-md-2 d-flex align-items-end">
+      <button class="btn btn-accent w-100"><i class="bi bi-check-lg"></i></button>
+    </div>
+  </div>
+  <a href="{{ url_for('marques_list') }}" class="btn btn-light mt-3">Annuler</a>
+</form>
+{% endblock %}

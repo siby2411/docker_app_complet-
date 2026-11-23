@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Entretien {{ e.id }}{% endblock %}
+{% block page_title %}🔧 Entretien — {{ e.veh_code }}{% endblock %}
+{% block content %}
+<div class="row g-3">
+  <div class="col-lg-7">
+    <div class="card-premium">
+      <h5>Détails</h5>
+      <table class="table table-omega">
+        <tr><td>Véhicule</td><td>{{ e.veh_code }} — {{ e.marque_nom }} {{ e.modele_nom }}</td></tr>
+        <tr><td>Type</td><td>{{ e.type }}</td></tr>
+        <tr><td>Date</td><td>{{ e.date_entretien|dte }}</td></tr>
+        <tr><td>Km</td><td>{{ e.kilometrage|int }} km</td></tr>
+        <tr><td>Coût</td><td class="fw-bold text-danger">{{ e.cout|money }}</td></tr>
+        <tr><td>Garage</td><td>{{ e.garage or '—' }}</td></tr>
+        <tr><td>Prochain km</td><td>{{ e.prochain_km|int }} km</td></tr>
+      </table>
+      {% if e.description %}<p><strong>Description :</strong> {{ e.description }}</p>{% endif %}
+      <a href="{{ url_for('entretien_edit', eid=e.id) }}" class="btn btn-accent">Modifier</a>
+      <a href="{{ url_for('entretiens_list') }}" class="btn btn-light">Retour</a>
+    </div>
+  </div>
+  <div class="col-lg-5">
+    <div class="card-premium">
+      <h5>Historique complet véhicule ({{ historique|length }})</h5>
+      <p class="text-muted small">Coût total maintenance : <strong class="text-danger">{{ total_cout|money }}</strong></p>
+      <table class="table table-omega table-sm mb-0">
+        <thead><tr><th>Date</th><th>Type</th><th class="text-end">Coût</th></tr></thead>
+        <tbody>
+          {% for h in historique %}
+          <tr>
+            <td>{{ h.date_entretien|dte }}</td>
+            <td>{{ h.type }}</td>
+            <td class="text-end">{{ h.cout|money }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

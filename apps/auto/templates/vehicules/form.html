@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Modifier' if vehicule else 'Nouveau' }} véhicule{% endblock %}
+{% block page_title %}{{ '✏️ Modifier' if vehicule else '➕ Nouveau' }} véhicule{% endblock %}
+{% block content %}
+<form method="POST" enctype="multipart/form-data" class="card-premium">
+  <h5 class="mb-3">Identification</h5>
+  <div class="row g-3">
+    <div class="col-md-3"><label class="form-label">Code</label><input type="text" name="code" class="form-control" value="{{ vehicule.code if vehicule else '' }}" placeholder="Auto si vide"></div>
+    <div class="col-md-3"><label class="form-label">Immatriculation *</label><input type="text" name="immatriculation" class="form-control" required value="{{ vehicule.immatriculation if vehicule else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">VIN / Châssis</label><input type="text" name="vin_chassis" class="form-control" value="{{ vehicule.vin_chassis if vehicule else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Date acquisition</label><input type="date" name="date_acquisition" class="form-control" value="{{ vehicule.date_acquisition if vehicule else '' }}"></div>
+  </div>
+
+  <h5 class="mt-4 mb-3">Caractéristiques</h5>
+  <div class="row g-3">
+    <div class="col-md-3"><label class="form-label">Marque *</label>
+      <select name="marque_id" id="marque_sel" class="form-select" required onchange="loadModeles()">
+        <option value="">—</option>
+        {% for m in marques %}<option value="{{ m.id }}" {% if vehicule and vehicule.marque_id==m.id %}selected{% endif %}>{{ m.nom }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="col-md-3"><label class="form-label">Modèle</label>
+      <select name="modele_id" id="modele_sel" class="form-select">
+        <option value="">—</option>
+        {% for mo in modeles|default([]) %}<option value="{{ mo.id }}" {% if vehicule and vehicule.modele_id==mo.id %}selected{% endif %}>{{ mo.nom }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="col-md-2"><label class="form-label">Type</label><input type="text" name="type" class="form-control" value="{{ vehicule.type if vehicule else '' }}" placeholder="berline, SUV…"></div>
+    <div class="col-md-2"><label class="form-label">État</label>
+      <select name="etat" class="form-select">
+        <option value="occasion" {% if vehicule and vehicule.etat=='occasion' %}selected{% endif %}>Occasion</option>
+        <option value="neuf" {% if vehicule and vehicule.etat=='neuf' %}selected{% endif %}>Neuf</option>
+      </select>
+    </div>
+    <div class="col-md-2"><label class="form-label">Année</label><input type="number" name="annee" class="form-control" value="{{ vehicule.annee if vehicule else '' }}"></div>
+    <div class="col-md-2"><label class="form-label">Kilométrage</label><input type="number" name="kilometrage" class="form-control" value="{{ vehicule.kilometrage if vehicule else 0 }}"></div>
+    <div class="col-md-2"><label class="form-label">Carburant</label>
+      <select name="carburant" class="form-select">
+        {% for c in ['essence','diesel','hybride','électrique'] %}
+        <option value="{{ c }}" {% if vehicule and vehicule.carburant==c %}selected{% endif %}>{{ c|capitalize }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-2"><label class="form-label">Transmission</label>
+      <select name="transmission" class="form-select">
+        <option value="manuelle" {% if vehicule and vehicule.transmission=='manuelle' %}selected{% endif %}>Manuelle</option>
+        <option value="automatique" {% if vehicule and vehicule.transmission=='automatique' %}selected{% endif %}>Automatique</option>
+      </select>
+    </div>
+    <div class="col-md-2"><label class="form-label">Couleur</label><input type="text" name="couleur" class="form-control" value="{{ vehicule.couleur if vehicule else '' }}"></div>
+    <div class="col-md-2"><label class="form-label">Portes</label><input type="number" name="nb_portes" class="form-control" value="{{ vehicule.nb_portes if vehicule else 4 }}"></div>
+    <div class="col-md-2"><label class="form-label">Places</label><input type="number" name="nb_places" class="form-control" value="{{ vehicule.nb_places if vehicule else 5 }}"></div>
+    <div class="col-md-2"><label class="form-label">Puissance (ch)</label><input type="number" name="puissance_ch" class="form-control" value="{{ vehicule.puissance_ch if vehicule else 0 }}"></div>
+    <div class="col-md-2"><label class="form-label">Cylindrée (cm³)</label><input type="number" name="cylindree_cm3" class="form-control" value="{{ vehicule.cylindree_cm3 if vehicule else 0 }}"></div>
+    <div class="col-md-2"><label class="form-label">Agence</label>
+      <select name="agence_id" class="form-select">
+        <option value="">—</option>
+        {% for a in agences %}<option value="{{ a.id }}" {% if vehicule and vehicule.agence_id==a.id %}selected{% endif %}>{{ a.nom }}</option>{% endfor %}
+      </select>
+    </div>
+  </div>
+
+  <h5 class="mt-4 mb-3">Prix & Location</h5>
+  <div class="row g-3">
+    <div class="col-md-3"><label class="form-label">Prix achat (FCFA)</label><input type="number" name="prix_achat" class="form-control" value="{{ vehicule.prix_achat if vehicule else 0 }}"></div>
+    <div class="col-md-3"><label class="form-label">Prix vente (FCFA)</label><input type="number" name="prix_vente" class="form-control" value="{{ vehicule.prix_vente if vehicule else 0 }}"></div>
+    <div class="col-md-2"><label class="form-label">Loc. / jour</label><input type="number" name="prix_location_jour" class="form-control" value="{{ vehicule.prix_location_jour if vehicule else 0 }}"></div>
+    <div class="col-md-2"><label class="form-label">Loc. / semaine</label><input type="number" name="prix_location_semaine" class="form-control" value="{{ vehicule.prix_location_semaine if vehicule else 0 }}"></div>
+    <div class="col-md-2"><label class="form-label">Loc. / mois</label><input type="number" name="prix_location_mois" class="form-control" value="{{ vehicule.prix_location_mois if vehicule else 0 }}"></div>
+  </div>
+
+  <div class="row g-3 mt-3">
+    <div class="col-md-3">
+      <div class="form-check form-switch">
+        <input class="form-check-input" type="checkbox" name="disponible_vente" id="dv" {% if not vehicule or vehicule.disponible_vente %}checked{% endif %}>
+        <label class="form-check-label" for="dv">Disponible à la vente</label>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="form-check form-switch">
+        <input class="form-check-input" type="checkbox" name="disponible_location" id="dl" {% if not vehicule or vehicule.disponible_location %}checked{% endif %}>
+        <label class="form-check-label" for="dl">Disponible à la location</label>
+      </div>
+    </div>
+    {% if vehicule %}
+    <div class="col-md-3"><label class="form-label">Statut</label>
+      <select name="statut" class="form-select">
+        {% for s in ['disponible','en_location','vendu','reserve'] %}
+        <option value="{{ s }}" {% if vehicule.statut==s %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
+  </div>
+
+  <h5 class="mt-4 mb-3">Description & équipements</h5>
+  <div class="row g-3">
+    <div class="col-md-6"><label class="form-label">Description</label><textarea name="description" class="form-control" rows="3">{{ vehicule.description if vehicule else '' }}</textarea></div>
+    <div class="col-md-6"><label class="form-label">Équipements</label><textarea name="equipements" class="form-control" rows="3">{{ vehicule.equipements if vehicule else '' }}</textarea></div>
+  </div>
+
+  <h5 class="mt-4 mb-3">Photos & vidéo</h5>
+  <div class="row g-3">
+    <div class="col-md-4"><label class="form-label">Photo principale</label><input type="file" name="photo_principale" class="form-control" accept="image/*"></div>
+    <div class="col-md-4"><label class="form-label">Galerie (multiple)</label><input type="file" name="galerie" class="form-control" accept="image/*" multiple></div>
+    <div class="col-md-4"><label class="form-label">Vidéo walkaround</label><input type="file" name="video" class="form-control" accept="video/*"></div>
+  </div>
+
+  <div class="mt-4 d-flex gap-2">
+    <button class="btn btn-accent"><i class="bi bi-check-lg"></i> Enregistrer</button>
+    <a href="{{ url_for('vehicules_list') }}" class="btn btn-light">Annuler</a>
+  </div>
+</form>
+
+<script>
+async function loadModeles() {
+  const mid = document.getElementById('marque_sel').value;
+  const sel = document.getElementById('modele_sel');
+  sel.innerHTML = '<option value="">—</option>';
+  if (!mid) return;
+  const r = await fetch(`/api/modeles/${mid}`);
+  const data = await r.json();
+  data.forEach(m => {
+    const o = document.createElement('option');
+    o.value = m.id; o.textContent = m.nom;
+    sel.appendChild(o);
+  });
+}
+</script>
+{% endblock %}

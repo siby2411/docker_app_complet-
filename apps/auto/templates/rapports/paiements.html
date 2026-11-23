@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Rapport Paiements{% endblock %}
+{% block page_title %}💳 Rapport Paiements — {{ label }}{% endblock %}
+{% block content %}
+{% include "rapports/_periode.html" %}
+
+<div class="row g-3 mb-3">
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-cash-stack"></i></div><div><div class="kpi-val">{{ kpi.total|money }}</div><div class="kpi-lbl">Total encaissé</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-receipt"></i></div><div><div class="kpi-val">{{ kpi.nb }}</div><div class="kpi-lbl">Transactions</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-car-front"></i></div><div><div class="kpi-val">{{ kpi.ventes|money }}</div><div class="kpi-lbl">Ventes</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-info-grad"><i class="bi bi-key"></i></div><div><div class="kpi-val">{{ kpi.locations|money }}</div><div class="kpi-lbl">Locations</div></div></div></div>
+</div>
+
+<div class="card-premium mb-3"><h6>Évolution</h6><canvas id="chartP" height="70"></canvas></div>
+
+<div class="row g-3">
+  <div class="col-md-6"><div class="card-premium"><h6>Par mode</h6>
+    <table class="table table-omega table-sm mb-0">
+      <thead><tr><th>Mode</th><th>Nb</th><th class="text-end">Total</th></tr></thead>
+      <tbody>
+        {% for m in par_mode %}<tr><td>{{ m.mode }}</td><td>{{ m.nb }}</td><td class="text-end fw-bold">{{ m.total|money }}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div></div>
+  <div class="col-md-6"><div class="card-premium"><h6>Par type</h6>
+    <table class="table table-omega table-sm mb-0">
+      <thead><tr><th>Type</th><th>Nb</th><th class="text-end">Total</th></tr></thead>
+      <tbody>
+        {% for t in par_type %}<tr><td>{{ t.type }}</td><td>{{ t.nb }}</td><td class="text-end fw-bold">{{ t.total|money }}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div></div>
+</div>
+
+<a href="{{ url_for('export_paiements') }}?periode={{ periode }}&date_from={{ d1 }}&date_to={{ d2 }}" class="btn btn-light mt-3"><i class="bi bi-download"></i> Export CSV</a>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+new Chart(document.getElementById('chartP'), {
+  type: 'line',
+  data: { labels: [{% for e in evolution %}'{{ e.jour }}',{% endfor %}],
+    datasets: [{ label: 'Encaissements', data: [{% for e in evolution %}{{ e.total }},{% endfor %}], borderColor: '#06d6a0', backgroundColor: 'rgba(6,214,160,.15)', fill: true, tension: .3 }] },
+  options: { plugins: { legend: { display: false } } }
+});
+</script>
+{% endblock %}

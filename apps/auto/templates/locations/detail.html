@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}{{ loc.numero }}{% endblock %}
+{% block page_title %}🔑 Location {{ loc.numero }}{% endblock %}
+{% block content %}
+<div class="row g-3">
+  <div class="col-lg-8">
+    <div class="card-premium">
+      <div class="d-flex justify-content-between mb-3">
+        <div>
+          <h4 class="mb-1">{{ loc.marque_nom }} {{ loc.modele_nom }}</h4>
+          <p class="text-muted mb-0">{{ loc.veh_code }} · {{ loc.immatriculation }} · {{ loc.couleur }}</p>
+        </div>
+        <span class="badge-statut badge-{{ loc.statut }}">{{ loc.statut }}</span>
+      </div>
+
+      {% if loc.statut in ('reservee','en_cours') and jours_restants is not none %}
+      <div class="alert {% if jours_restants < 0 %}alert-danger{% elif jours_restants <= 2 %}alert-warning{% else %}alert-info{% endif %}">
+        {% if jours_restants < 0 %}⚠️ Retour en retard de {{ -jours_restants }} jour(s){% else %}⏱️ Retour prévu dans {{ jours_restants }} jour(s){% endif %}
+      </div>
+      {% endif %}
+
+      <div class="row g-3">
+        <div class="col-md-6"><h6>👤 Client</h6>
+          <p><strong>{{ loc.client_prenom or '' }} {{ loc.client_nom }}</strong><br>
+          {{ loc.client_tel }}<br>
+          {{ loc.client_adresse or '' }}<br>
+          CNI : {{ loc.piece_identite or '—' }} · Permis : {{ loc.permis_conduire or '—' }}</p>
+        </div>
+        <div class="col-md-6"><h6>📅 Période</h6>
+          <p><strong>Début :</strong> {{ loc.date_debut|dte }}<br>
+          <strong>Fin prévue :</strong> {{ loc.date_fin_prevue|dte }}<br>
+          {% if loc.date_retour_reelle %}<strong>Retour réel :</strong> {{ loc.date_retour_reelle|dte }}<br>{% endif %}
+          <strong>Durée :</strong> {{ loc.duree_jours }} jour(s)</p>
+        </div>
+      </div>
+
+      <hr>
+      <h6>🚙 État & Km</h6>
+      <table class="table table-omega table-sm">
+        <tr><td>Km départ</td><td class="text-end">{{ loc.km_depart|int }} km</td></tr>
+        <tr><td>Km retour</td><td class="text-end">{{ loc.km_retour|int }} km</td></tr>
+        <tr><td><strong>Km parcourus</strong></td><td class="text-end"><strong>{{ loc.km_parcourus|int }} km</strong></td></tr>
+        <tr><td>Carburant départ</td><td class="text-end">{{ loc.carburant_depart or '—' }}</td></tr>
+        <tr><td>Carburant retour</td><td class="text-end">{{ loc.carburant_retour or '—' }}</td></tr>
+        <tr><td>État départ</td><td class="text-end">{{ loc.etat_depart or '—' }}</td></tr>
+        <tr><td>État retour</td><td class="text-end">{{ loc.etat_retour or '—' }}</td></tr>
+      </table>
+
+      <hr>
+      <h6>💵 Détail financier</h6>
+      <table class="table table-omega table-sm">
+        <tr><td>Tarif journalier</td><td class="text-end">{{ loc.tarif_journalier|money }}</td></tr>
+        <tr><td>Montant HT</td><td class="text-end">{{ loc.montant_ht|money }}</td></tr>
+        <tr><td>Caution</td><td class="text-end">{{ loc.caution|money }}</td></tr>
+        <tr><td>Frais supplémentaires</td><td class="text-end">{{ loc.frais_supplementaires|money }}</td></tr>
+        <tr style="background:#fff3cd"><td><strong>TOTAL</strong></td><td class="text-end"><strong>{{ loc.montant_total|money }}</strong></td></tr>
+      </table>
+
+      {% if loc.notes %}<div class="alert alert-secondary"><strong>Notes :</strong> {{ loc.notes }}</div>{% endif %}
+    </div>
+
+    <div class="card-premium">
+      <h5>💰 Paiements ({{ paiements|length }})</h5>
+      <table class="table table-omega table-sm mb-0">
+        <thead><tr><th>Date</th><th>Type</th><th>Mode</th><th class="text-end">Montant</th></tr></thead>
+        <tbody>
+          {% for p in paiements %}
+          <tr>
+            <td>{{ p.date_paiement|dte }}</td>
+            <td>{{ p.type }}</td>
+            <td>{{ p.mode }}</td>
+            <td class="text-end fw-bold">{{ p.montant|money }}</td>
+          </tr>
+          {% else %}<tr><td colspan="4" class="text-muted text-center py-2">Aucun paiement</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if loc.statut in ('reservee','en_cours') %}
+    <div class="card-premium">
+      <h5>🔄 Retour véhicule</h5>
+      <form method="POST" action="{{ url_for('location_retour', loc_id=loc.id) }}" class="row g-2">
+        <div class="col-md-3"><label class="form-label">Date retour</label><input type="date" name="date_retour_reelle" class="form-control" value="{{ now.strftime('%Y-%m-%d') }}"></div>
+        <div class="col-md-2"><label class="form-label">Km retour *</label><input type="number" name="km_retour" class="form-control" required value="{{ loc.km_depart|int }}"></div>
+        <div class="col-md-2"><label class="form-label">Carburant</label>
+          <select name="carburant_retour" class="form-select">
+            {% for c in ['plein','3/4','1/2','1/4','vide'] %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-md-3"><label class="form-label">État retour</label><input type="text" name="etat_retour" class="form-control" placeholder="Rayures, dégâts…"></div>
+        <div class="col-md-2"><label class="form-label">Frais divers</label><input type="number" name="frais_divers" class="form-control" value="0"></div>
+        <div class="col-md-3"><label class="form-label">Montant encaissé</label><input type="number" name="montant_paye" class="form-control" value="0"></div>
+        <div class="col-md-2"><label class="form-label">Mode</label>
+          <select name="mode_paiement" class="form-select">
+            {% for m in ['especes','virement','orange_money','wave'] %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-md-2 d-flex align-items-end"><button class="btn btn-success w-100" onclick="return confirm('Confirmer le retour ?')"><i class="bi bi-check-lg"></i> Valider retour</button></div>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card-premium">
+      <h6>Actions</h6>
+      <div class="d-grid gap-2">
+        <a href="{{ url_for('location_contrat', loc_id=loc.id) }}" target="_blank" class="btn btn-accent"><i class="bi bi-file-earmark-text"></i> Contrat de location</a>
+        <a href="{{ url_for('location_etat_lieux', loc_id=loc.id, mode='depart') }}" target="_blank" class="btn btn-light"><i class="bi bi-clipboard-check"></i> État des lieux — départ</a>
+        <a href="{{ url_for('location_etat_lieux', loc_id=loc.id, mode='retour') }}" target="_blank" class="btn btn-light"><i class="bi bi-clipboard-x"></i> État des lieux — retour</a>
+
+        {% if loc.statut == 'reservee' %}
+        <button class="btn btn-primary-omega" data-bs-toggle="modal" data-bs-target="#modalDemarrer"><i class="bi bi-play-fill"></i> Démarrer la location</button>
+        {% endif %}
+
+        {% if loc.statut in ('reservee','en_cours') %}
+        <button class="btn btn-light" data-bs-toggle="modal" data-bs-target="#modalProlonger"><i class="bi bi-calendar-plus"></i> Prolonger</button>
+        <form method="POST" action="{{ url_for('whatsapp_relance_location', loc_id=loc.id) }}">
+          <button class="btn w-100" style="background:#25D366;color:#fff"><i class="bi bi-whatsapp"></i> Rappel WhatsApp</button>
+        </form>
+        <form method="POST" action="{{ url_for('location_annuler', loc_id=loc.id) }}" onsubmit="return confirm('Annuler cette location ?')">
+          <button class="btn btn-outline-danger w-100"><i class="bi bi-x-lg"></i> Annuler</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Démarrer -->
+<div class="modal fade" id="modalDemarrer" tabindex="-1">
+  <div class="modal-dialog"><div class="modal-content">
+    <form method="POST" action="{{ url_for('location_demarrer', loc_id=loc.id) }}">
+      <div class="modal-header"><h5 class="modal-title">Démarrer la location</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <div class="mb-2"><label class="form-label">Km au départ</label><input type="number" name="km_depart" class="form-control" value="{{ loc.km_depart|int }}"></div>
+        <div class="mb-2"><label class="form-label">Carburant</label>
+          <select name="carburant_depart" class="form-select">
+            {% for c in ['plein','3/4','1/2','1/4','vide'] %}<option value="{{ c }}" {% if loc.carburant_depart==c %}selected{% endif %}>{{ c }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="mb-2"><label class="form-label">État au départ</label><textarea name="etat_depart" class="form-control" rows="2">{{ loc.etat_depart or '' }}</textarea></div>
+      </div>
+      <div class="modal-footer"><button class="btn btn-accent">Confirmer le départ</button></div>
+    </form>
+  </div></div>
+</div>
+
+<!-- Modal Prolonger -->
+<div class="modal fade" id="modalProlonger" tabindex="-1">
+  <div class="modal-dialog"><div class="modal-content">
+    <form method="POST" action="{{ url_for('location_prolonger', loc_id=loc.id) }}">
+      <div class="modal-header"><h5 class="modal-title">Prolonger la location</h5><button class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <label class="form-label">Nouvelle date de fin</label>
+        <input type="date" name="nouvelle_date_fin" class="form-control" required>
+      </div>
+      <div class="modal-footer"><button class="btn btn-accent">Prolonger</button></div>
+    </form>
+  </div></div>
+</div>
+{% endblock %}

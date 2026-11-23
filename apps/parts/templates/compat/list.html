@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Compatibilités{% endblock %}
+{% block page_title %}✅ Compatibilités pièces ↔ véhicules{% endblock %}
+{% block content %}
+
+<div class="card-premium">
+  <form method="GET" class="row g-2 mb-3">
+    <div class="col-md-4"><input type="search" name="q" class="form-control" placeholder="SKU, OEM, nom pièce…" value="{{ q }}"></div>
+    <div class="col-md-3"><select name="marque_id" class="form-select" onchange="this.form.submit()">
+      <option value="">Toutes marques</option>
+      {% for m in marques %}<option value="{{ m.id }}" {% if marque_id==m.id %}selected{% endif %}>{{ m.nom }}</option>{% endfor %}
+    </select></div>
+    <div class="col-md-2"><button class="btn btn-primary-omega w-100"><i class="bi bi-search"></i></button></div>
+  </form>
+
+  <div class="table-responsive">
+    <table class="table table-omega">
+      <thead><tr><th>Pièce</th><th>SKU</th><th>OEM</th><th>Marque véhicule</th><th>Modèle</th><th>Années</th><th>Moteur</th></tr></thead>
+      <tbody>
+        {% for item in items %}
+        <tr>
+          <td><a href="{{ url_for('piece_detail', pid=item.piece_id) }}" style="text-decoration:none"><strong>{{ item.piece_nom[:45] }}</strong></a></td>
+          <td><code style="font-size:11px">{{ item.sku }}</code></td>
+          <td>{{ item.code_oem or '—' }}</td>
+          <td><strong>{{ item.marque_nom }}</strong></td>
+          <td>{{ item.modele_nom or 'Tous' }}</td>
+          <td>{% if item.annee_debut %}{{ item.annee_debut }}{% if item.annee_fin %} - {{ item.annee_fin }}{% endif %}{% else %}—{% endif %}</td>
+          <td>{{ item.moteur or '—' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="text-center text-muted py-4">Aucune compatibilité</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

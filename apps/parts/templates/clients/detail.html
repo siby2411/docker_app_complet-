@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}{{ c.nom }}{% endblock %}
+{% block page_title %}👤 {{ c.prenom or '' }} {{ c.nom }}{% endblock %}
+{% block content %}
+<div class="row g-3 mb-3">
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-cash-stack"></i></div><div><div class="kpi-val">{{ kpi.ca_total|money_short }}</div><div class="kpi-lbl">CA total</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-receipt"></i></div><div><div class="kpi-val">{{ kpi.nb_ventes }}</div><div class="kpi-lbl">Ventes</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-cart"></i></div><div><div class="kpi-val">{{ kpi.panier_moyen|money_short }}</div><div class="kpi-lbl">Panier moyen</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-gold-grad"><i class="bi bi-star"></i></div><div><div class="kpi-val">{{ kpi.score }}</div><div class="kpi-lbl">Score /100</div></div></div></div>
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-4">
+    <div class="card-premium">
+      <h6>Coordonnées</h6>
+      <p><strong>Code :</strong> {{ c.code }}</p>
+      <p><strong>Tél :</strong> {{ c.telephone }}</p>
+      <p><strong>Email :</strong> {{ c.email or '—' }}</p>
+      <p><strong>Ville :</strong> {{ c.ville or '—' }}</p>
+      <p><strong>Type :</strong> <span class="badge-statut badge-en_cours">{{ c.type_client }}</span></p>
+      {% if c.garage_nom %}<p><strong>Garage :</strong> {{ c.garage_nom }}</p>{% endif %}
+      {% if c.remise_pct > 0 %}<p><strong>Remise :</strong> {{ c.remise_pct }}%</p>{% endif %}
+    </div>
+    <div class="card-premium">
+      <div class="d-grid gap-2">
+        <a href="{{ url_for('client_edit', cid=c.id) }}" class="btn btn-accent"><i class="bi bi-pencil"></i> Modifier</a>
+        {% if current_user.is_gerant() %}
+        <form method="POST" action="{{ url_for('client_delete', cid=c.id) }}" onsubmit="return confirm('Supprimer ?')">
+          <button class="btn btn-outline-danger w-100"><i class="bi bi-trash"></i> Supprimer</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-8">
+    <div class="card-premium">
+      <h5>🧾 Dernières ventes</h5>
+      <table class="table table-omega table-sm">
+        <thead><tr><th>N°</th><th>Date</th><th class="text-end">Montant</th><th>Statut</th></tr></thead>
+        <tbody>
+          {% for v in ventes %}
+          <tr>
+            <td><a href="{{ url_for('vente_detail', vid=v.id) }}">{{ v.numero }}</a></td>
+            <td><small>{{ v.date_vente|dte }}</small></td>
+            <td class="text-end fw-bold">{{ v.montant_ttc|money }}</td>
+            <td><span class="badge-statut badge-{{ 'disponible' if v.statut == 'complete' else 'annulee' }}">{{ v.statut }}</span></td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="text-center text-muted py-3">Aucune vente</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if pieces_pref %}
+    <div class="card-premium">
+      <h5>🏆 Pièces préférées</h5>
+      <table class="table table-omega table-sm">
+        <thead><tr><th>Pièce</th><th class="text-center">Achats</th><th class="text-center">Qté</th><th class="text-end">Prix</th></tr></thead>
+        <tbody>
+          {% for p in pieces_pref %}
+          <tr>
+            <td><a href="{{ url_for('piece_detail', pid=p.id) }}">{{ p.nom[:50] }}</a></td>
+            <td class="text-center">{{ p.nb_achats }}</td>
+            <td class="text-center">{{ p.qte_totale }}</td>
+            <td class="text-end">{{ p.prix_vente_detail|money }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

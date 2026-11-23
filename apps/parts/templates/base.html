@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}OMEGA PARTS{% endblock %} · Pièces Détachées & Services Auto</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+<style>
+/* ═══════════════════════════════════════════════════════════
+   OMEGA PARTS — Design Premium
+   ═══════════════════════════════════════════════════════════ */
+:root {
+  --op-primary: #0a2540;
+  --op-accent: #ff6b35;
+  --op-gold: #f4b400;
+  --op-success: #06d6a0;
+  --op-danger: #ef476f;
+  --op-warning: #ffd166;
+  --op-info: #118ab2;
+  --op-purple: #6c5ce7;
+  --op-dark: #1a1a2e;
+  --op-bg: #f5f7fa;
+  --op-shadow: 0 4px 24px rgba(10,37,64,.06);
+  --op-radius: 14px;
+}
+* { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; }
+body { background: var(--op-bg); font-size: 14px; margin: 0; }
+body.pos-fullscreen { overflow: hidden; }
+
+/* ═══ SIDEBAR ═══ */
+.sidebar {
+  position: fixed; top: 0; left: 0; height: 100vh; width: 260px;
+  background: linear-gradient(180deg, var(--op-primary) 0%, var(--op-dark) 100%);
+  color: #fff; overflow-y: auto; z-index: 1000;
+  transition: transform .3s;
+  box-shadow: 4px 0 20px rgba(0,0,0,.1);
+}
+.sidebar::-webkit-scrollbar { width: 6px; }
+.sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 3px; }
+.sidebar .brand {
+  padding: 22px 20px; text-align: center;
+  border-bottom: 1px solid rgba(255,255,255,.08);
+}
+.sidebar .brand h3 {
+  margin: 0; font-weight: 900;
+  background: linear-gradient(135deg, #fff, var(--op-gold));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  letter-spacing: 1.5px; font-size: 18px;
+}
+.sidebar .brand small { color: var(--op-gold); font-size: 10px; letter-spacing: 2.5px; }
+.sidebar nav { padding: 10px 0; }
+.sidebar nav a {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 20px; color: #b8c4d4; text-decoration: none;
+  font-size: 13.5px; transition: all .2s;
+  border-left: 3px solid transparent;
+}
+.sidebar nav a:hover { background: rgba(255,255,255,.05); color: #fff; border-left-color: var(--op-accent); }
+.sidebar nav a.active { background: rgba(255,107,53,.15); color: #fff; border-left-color: var(--op-accent); font-weight: 600; }
+.sidebar nav .section {
+  padding: 14px 20px 6px; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 1.5px; color: #6c7a8c; font-weight: 700;
+}
+.sidebar nav a .badge {
+  margin-left: auto; font-size: 10px; font-weight: 700;
+  background: var(--op-accent); color: #fff;
+  padding: 3px 8px; border-radius: 10px;
+}
+.sidebar nav a .badge.warn { background: var(--op-warning); color: #856404; }
+.sidebar nav a .badge.danger { background: var(--op-danger); }
+
+/* ═══ MAIN CONTENT ═══ */
+.main-content { margin-left: 260px; min-height: 100vh; }
+.topbar {
+  background: #fff; padding: 12px 24px;
+  box-shadow: 0 2px 12px rgba(0,0,0,.05);
+  display: flex; align-items: center; gap: 16px;
+  position: sticky; top: 0; z-index: 999;
+}
+.topbar .page-title { font-size: 19px; font-weight: 700; color: var(--op-primary); margin: 0; }
+.topbar .user-menu { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.topbar .user-menu .avatar {
+  width: 40px; height: 40px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--op-accent), var(--op-gold));
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 800; font-size: 14px;
+}
+.content-wrapper { padding: 22px 24px 80px; }
+
+/* ═══ CARDS ═══ */
+.card-premium {
+  background: #fff; border: none; border-radius: var(--op-radius);
+  box-shadow: var(--op-shadow); padding: 20px; margin-bottom: 18px;
+}
+.card-premium h5 { font-size: 15px; font-weight: 700; color: var(--op-primary); margin-bottom: 14px; }
+.card-premium h6 { font-size: 13px; font-weight: 700; color: var(--op-primary); margin-bottom: 12px; }
+
+/* ═══ KPI CARDS ═══ */
+.kpi-card {
+  background: #fff; border-radius: var(--op-radius); padding: 18px;
+  box-shadow: var(--op-shadow);
+  display: flex; align-items: center; gap: 14px;
+  transition: transform .2s; height: 100%;
+}
+.kpi-card:hover { transform: translateY(-3px); }
+.kpi-card .icon {
+  width: 52px; height: 52px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; color: #fff; flex-shrink: 0;
+}
+.kpi-card .kpi-val { font-size: 22px; font-weight: 800; color: var(--op-primary); line-height: 1; }
+.kpi-card .kpi-lbl { font-size: 11px; color: #8896aa; text-transform: uppercase; letter-spacing: .8px; margin-top: 4px; }
+
+/* Couleurs gradients */
+.bg-primary-grad { background: linear-gradient(135deg, #0a2540, #1a3a5c); }
+.bg-accent-grad { background: linear-gradient(135deg, #ff6b35, #ff8e5e); }
+.bg-gold-grad { background: linear-gradient(135deg, #f4b400, #ffd166); }
+.bg-success-grad { background: linear-gradient(135deg, #06d6a0, #4cd7b5); }
+.bg-danger-grad { background: linear-gradient(135deg, #ef476f, #f57492); }
+.bg-info-grad { background: linear-gradient(135deg, #118ab2, #4db8d9); }
+.bg-purple-grad { background: linear-gradient(135deg, #6c5ce7, #a29bfe); }
+
+/* ═══ BUTTONS ═══ */
+.btn-accent {
+  background: linear-gradient(135deg, var(--op-accent), #ff8e5e);
+  border: none; color: #fff; font-weight: 600;
+  border-radius: 10px; padding: 9px 20px;
+  transition: all .2s;
+}
+.btn-accent:hover { color: #fff; transform: translateY(-1px); box-shadow: 0 6px 16px rgba(255,107,53,.35); }
+.btn-primary-omega {
+  background: var(--op-primary); color: #fff;
+  border-radius: 10px; font-weight: 600; border: none;
+  padding: 9px 20px;
+}
+.btn-primary-omega:hover { background: #0d3055; color: #fff; }
+
+/* ═══ BADGES ═══ */
+.badge-statut {
+  padding: 4px 11px; border-radius: 20px;
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .4px; display: inline-block;
+}
+.badge-disponible, .badge-valide, .badge-complete, .badge-livree, .badge-actif, .badge-termine, .badge-terminee { background: #d4f7ec; color: #067a52; }
+.badge-vendu, .badge-annulee, .badge-expire, .badge-inactif, .badge-annule { background: #fce4e8; color: #b12a4b; }
+.badge-en_cours, .badge-confirmee, .badge-partielle, .badge-en_attente, .badge-reservee { background: #d6ecf5; color: #0b5674; }
+.badge-rupture, .badge-critique { background: #ffe0b3; color: #b35c00; }
+.badge-alerte, .badge-bientot { background: #fff3cd; color: #856404; }
+.badge-neuf, .badge-occasion { background: #e2e8f0; color: #475569; }
+.badge-premium { background: linear-gradient(135deg, #f4b400, #ffd166); color: #000; }
+.badge-standard, .badge-équivalent { background: #e2e8f0; color: #475569; }
+
+/* ═══ TABLES ═══ */
+table.table-omega { background: #fff; border-radius: 12px; overflow: hidden; margin-bottom: 0; }
+table.table-omega thead { background: #f5f7fa; }
+table.table-omega thead th {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
+  color: #64748b; font-weight: 700; padding: 12px 10px; border: none;
+}
+table.table-omega tbody td { padding: 12px 10px; border-bottom: 1px solid #f0f4f8; vertical-align: middle; font-size: 13px; }
+table.table-omega tbody tr:hover { background: #fafbfd; }
+
+/* ═══ FLASH MESSAGES ═══ */
+.flash-container { position: fixed; top: 80px; right: 24px; z-index: 1100; max-width: 400px; }
+.flash-container .alert { border-radius: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.15); border: none; }
+
+/* ═══ POS FULLSCREEN ═══ */
+body.pos-fullscreen .sidebar,
+body.pos-fullscreen .topbar { display: none; }
+body.pos-fullscreen .main-content { margin-left: 0; }
+body.pos-fullscreen .content-wrapper { padding: 8px; height: 100vh; }
+
+/* ═══ RESPONSIVE ═══ */
+@media (max-width: 991px) {
+  .sidebar { transform: translateX(-100%); }
+  .sidebar.open { transform: translateX(0); }
+  .main-content { margin-left: 0; }
+  .content-wrapper { padding: 16px; }
+}
+@media print {
+  .sidebar, .topbar, .no-print { display: none !important; }
+  .main-content { margin-left: 0; }
+}
+</style>
+{% block extra_css %}{% endblock %}
+</head>
+<body>
+
+<aside class="sidebar" id="sidebar">
+  <div class="brand">
+    <h3>🔧 OMEGA PARTS</h3>
+    <small>PIÈCES & SERVICES AUTO</small>
+  </div>
+
+  <nav>
+    <!-- ═══ PRINCIPAL ═══ -->
+    <div class="section">Principal</div>
+    <a href="{{ url_for('dashboard') }}" class="{% if request.endpoint == 'dashboard' %}active{% endif %}">
+      <i class="bi bi-speedometer2"></i> Tableau de bord
+    </a>
+    <a href="{{ url_for('recherche_globale') }}" class="{% if request.endpoint == 'recherche_globale' %}active{% endif %}">
+      <i class="bi bi-search"></i> Recherche
+    </a>
+
+    <!-- ═══ POINT DE VENTE ═══ -->
+    <div class="section">Point de Vente</div>
+    <a href="{{ url_for('pos') }}" class="{% if 'pos' in request.endpoint %}active{% endif %}" style="background:rgba(6,214,160,.1)">
+      <i class="bi bi-shop"></i> 🛒 POS Caisse
+      <span class="badge" style="background:var(--op-success)">LIVE</span>
+    </a>
+
+    <!-- ═══ CATALOGUE ═══ -->
+    <div class="section">Catalogue</div>
+    <a href="{{ url_for('pieces_list') }}" class="{% if 'pieces_list' in request.endpoint or 'piece_detail' in request.endpoint or 'piece_new' in request.endpoint or 'piece_edit' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-gear-wide-connected"></i> Pièces
+      {% if stats_sidebar.pieces_total > 0 %}
+      <span class="badge">{{ stats_sidebar.pieces_total }}</span>
+      {% endif %}
+    </a>
+    <a href="{{ url_for('categories_list') }}" class="{% if 'categorie' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-diagram-3"></i> Catégories
+    </a>
+    <a href="{{ url_for('compat_list') }}" class="{% if 'compat' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-check2-square"></i> Compatibilités
+    </a>
+
+    <!-- ═══ SERVICES AUTO ═══ -->
+    <div class="section">Services Auto</div>
+    <a href="{{ url_for('services_list') }}" class="{% if 'services_list' in request.endpoint or 'service_' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-tools"></i> Services
+      <span class="badge" style="background:var(--op-gold);color:#000">NEW</span>
+    </a>
+    <a href="{{ url_for('interventions_list') }}" class="{% if 'intervention' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-clipboard-check"></i> Interventions
+    </a>
+    <a href="{{ url_for('lavage_list') }}" class="{% if 'lavage' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-droplet"></i> Lavage & Esthétique
+    </a>
+    <a href="{{ url_for('diagnostic_list') }}" class="{% if 'diagnostic' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-search"></i> Diagnostics
+    </a>
+    <a href="{{ url_for('procedures_list') }}" class="{% if 'procedures' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-book"></i> Procédures dépannage
+    </a>
+    <a href="{{ url_for('formation_list') }}" class="{% if 'formation' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-mortarboard"></i> Formation apprentis
+    </a>
+
+    <!-- ═══ STOCK ═══ -->
+    <div class="section">Stock</div>
+    <a href="{{ url_for('stock_list') }}" class="{% if 'stock_list' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-boxes"></i> État du stock
+    </a>
+    <a href="{{ url_for('stock_alertes') }}" class="{% if 'stock_alertes' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-exclamation-triangle"></i> Alertes
+      {% if stats_sidebar.stock_alertes > 0 %}
+      <span class="badge warn">{{ stats_sidebar.stock_alertes }}</span>
+      {% endif %}
+    </a>
+    <a href="{{ url_for('mouvements_list') }}" class="{% if 'mouvement' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-arrow-left-right"></i> Mouvements
+    </a>
+
+    <!-- ═══ ACHATS ═══ -->
+    <div class="section">Achats</div>
+    <a href="{{ url_for('fournisseurs_list') }}" class="{% if 'fournisseur' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-truck"></i> Fournisseurs
+    </a>
+    <a href="{{ url_for('commandes_list') }}" class="{% if 'commande' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-clipboard-check"></i> Commandes
+    </a>
+
+    <!-- ═══ VENTES ═══ -->
+    <div class="section">Ventes</div>
+    <a href="{{ url_for('ventes_list') }}" class="{% if 'vente' in request.endpoint and 'ventes_list' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-receipt"></i> Ventes
+      {% if stats_sidebar.ventes_mois > 0 %}
+      <span class="badge">{{ stats_sidebar.ventes_mois }}</span>
+      {% endif %}
+    </a>
+    <a href="{{ url_for('devis_list') }}" class="{% if 'devis' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-file-earmark-text"></i> Devis
+    </a>
+    <a href="{{ url_for('retours_list') }}" class="{% if 'retour' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-arrow-return-left"></i> Retours
+    </a>
+    <a href="{{ url_for('paiements_list') }}" class="{% if 'paiement' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-credit-card"></i> Paiements
+    </a>
+
+
+<a href="{{ url_for('vehicules_list') }}" class="nav-link">
+  <i class="bi bi-car-front"></i> 🚗 Véhicules
+</a>
+    <!-- ═══ CLIENTS ═══ -->
+    <div class="section">Clients</div>
+    <a href="{{ url_for('clients_list') }}" class="{% if 'client' in request.endpoint and 'clients_list' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-people-fill"></i> Clients
+      {% if stats_sidebar.clients_total > 0 %}
+      <span class="badge">{{ stats_sidebar.clients_total }}</span>
+      {% endif %}
+    </a>
+
+    <!-- ═══ ANALYSE ═══ -->
+    <div class="section">Analyse</div>
+    <a href="{{ url_for('rapports_home') }}" class="{% if 'rapports' in request.endpoint and 'rapports_home' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-graph-up-arrow"></i> Rapports
+    </a>
+    <a href="{{ url_for('finances_services') }}" class="{% if 'finances_services' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-cash-stack"></i> Finances Services
+    </a>
+    <a href="{{ url_for('stats_live_page') }}" class="{% if 'stats_live' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-activity"></i> Stats temps réel
+    </a>
+
+    <!-- ═══ ADMIN ═══ -->
+    {% if current_user.is_admin() or current_user.is_gerant() %}
+    <div class="section">Admin</div>
+    {% if current_user.is_admin() %}
+    <a href="{{ url_for('users_list') }}" class="{% if 'users' in request.endpoint or 'user_' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-person-badge"></i> Utilisateurs
+    </a>
+    <a href="{{ url_for('audit_list') }}" class="{% if 'audit' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-clock-history"></i> Journal audit
+    </a>
+    <a href="{{ url_for('parametres') }}" class="{% if 'parametres' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-sliders"></i> Paramètres
+    </a>
+    {% endif %}
+    <a href="{{ url_for('backup_page') }}" class="{% if 'backup' in request.endpoint %}active{% endif %}">
+      <i class="bi bi-download"></i> Backup
+    </a>
+    {% endif %}
+
+    <!-- ═══ CLIENT PUBLIC ═══ -->
+    <div class="section">Client</div>
+    <a href="{{ url_for('mobile_home') }}" target="_blank">
+      <i class="bi bi-phone"></i> Catalogue mobile
+    </a>
+    <a href="{{ url_for('logout') }}">
+      <i class="bi bi-box-arrow-right"></i> Déconnexion
+    </a>
+  </nav>
+</aside>
+
+<div class="main-content">
+  <div class="topbar">
+    <button class="btn btn-sm btn-light d-lg-none" onclick="document.getElementById('sidebar').classList.toggle('open')">
+      <i class="bi bi-list"></i>
+    </button>
+    <h1 class="page-title">{% block page_title %}Tableau de bord{% endblock %}</h1>
+    <div class="user-menu">
+      <a href="{{ url_for('profil') }}" class="text-decoration-none d-flex align-items-center gap-2">
+        <div class="avatar">{{ (current_user.nom_complet or current_user.username)[0]|upper }}</div>
+        <div class="d-none d-md-block">
+          <div style="font-size:13px;font-weight:700;color:#0a2540">{{ current_user.nom_complet }}</div>
+          <div style="font-size:11px;color:#8896aa">{{ current_user.role|capitalize }}</div>
+        </div>
+      </a>
+    </div>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div class="flash-container">
+      {% for cat, msg in messages %}
+      <div class="alert alert-{{ 'success' if cat=='success' else 'danger' if cat=='error' else 'info' }} alert-dismissible fade show">
+        {{ msg }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  {% endwith %}
+
+  <div class="content-wrapper">
+    {% block content %}{% endblock %}
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+// Auto-dismiss flash messages
+setTimeout(() => document.querySelectorAll('.flash-container .alert').forEach(a => {
+  try { new bootstrap.Alert(a).close(); } catch(e) {}
+}), 5000);
+
+// Marquer le lien actif par URL (fallback)
+document.addEventListener('DOMContentLoaded', function() {
+  const currentPath = window.location.pathname;
+  document.querySelectorAll('.sidebar nav a').forEach(link => {
+    const href = link.getAttribute('href');
+    if (href && currentPath.startsWith(href) && href !== '/' && href !== '#') {
+      link.classList.add('active');
+    }
+  });
+});
+</script>
+{% block extra_js %}{% endblock %}
+</body>
+</html>

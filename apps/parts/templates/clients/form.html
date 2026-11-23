@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Modifier' if client else 'Nouveau' }} client{% endblock %}
+{% block page_title %}{{ '✏️' if client else '➕' }} Client{% endblock %}
+{% block content %}
+<form method="POST" class="card-premium">
+  <div class="row g-3">
+    <div class="col-md-6"><label class="form-label">Nom *</label><input type="text" name="nom" class="form-control" required value="{{ client.nom if client else '' }}"></div>
+    <div class="col-md-6"><label class="form-label">Prénom</label><input type="text" name="prenom" class="form-control" value="{{ client.prenom if client else '' }}"></div>
+    <div class="col-md-4"><label class="form-label">Type client</label>
+      <select name="type_client" class="form-select">
+        <option value="particulier" {% if client and client.type_client=='particulier' %}selected{% endif %}>Particulier</option>
+        <option value="mecano" {% if client and client.type_client=='mecano' %}selected{% endif %}>Mécano</option>
+        <option value="garage" {% if client and client.type_client=='garage' %}selected{% endif %}>Garage</option>
+      </select>
+    </div>
+    <div class="col-md-4"><label class="form-label">Remise (%)</label><input type="number" step="0.1" name="remise_pct" class="form-control" value="{{ client.remise_pct if client else 0 }}"></div>
+    <div class="col-md-4"><label class="form-label">Garage (nom)</label><input type="text" name="garage_nom" class="form-control" value="{{ client.garage_nom if client else '' }}"></div>
+    <div class="col-md-6"><label class="form-label">Téléphone *</label><input type="text" name="telephone" class="form-control" required value="{{ client.telephone if client else '' }}"></div>
+    <div class="col-md-6"><label class="form-label">WhatsApp</label><input type="text" name="whatsapp" class="form-control" value="{{ client.whatsapp if client else '' }}"></div>
+    <div class="col-md-6"><label class="form-label">Email</label><input type="email" name="email" class="form-control" value="{{ client.email if client else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Ville</label><input type="text" name="ville" class="form-control" value="{{ client.ville if client else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Pays</label><input type="text" name="pays" class="form-control" value="{{ client.pays if client else 'Sénégal' }}"></div>
+    <div class="col-12"><label class="form-label">Adresse</label><input type="text" name="adresse" class="form-control" value="{{ client.adresse if client else '' }}"></div>
+  </div>
+  <div class="mt-4 d-flex gap-2">
+    <button class="btn btn-accent"><i class="bi bi-check-lg"></i> Enregistrer</button>
+    <a href="{{ url_for('clients_list') }}" class="btn btn-light">Annuler</a>
+  </div>
+</form>
+{% endblock %}

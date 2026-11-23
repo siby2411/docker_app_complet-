@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Rapport Ventes{% endblock %}
+{% block page_title %}💰 Rapport Ventes — {{ label }}{% endblock %}
+{% block content %}
+<form method="GET" class="row g-2 mb-3">
+  <div class="col-md-3"><select name="periode" class="form-select" onchange="this.form.submit()">
+    <option value="jour" {% if periode=='jour' %}selected{% endif %}>Aujourd'hui</option>
+    <option value="semaine" {% if periode=='semaine' %}selected{% endif %}>Cette semaine</option>
+    <option value="mois" {% if periode=='mois' %}selected{% endif %}>Ce mois</option>
+    <option value="trimestre" {% if periode=='trimestre' %}selected{% endif %}>Ce trimestre</option>
+    <option value="annee" {% if periode=='annee' %}selected{% endif %}>Cette année</option>
+    <option value="custom" {% if periode=='custom' %}selected{% endif %}>Personnalisé</option>
+  </select></div>
+  {% if periode=='custom' %}
+  <div class="col-md-3"><input type="date" name="date_from" class="form-control" value="{{ d1 }}"></div>
+  <div class="col-md-3"><input type="date" name="date_to" class="form-control" value="{{ d2 }}"></div>
+  <div class="col-md-2"><button class="btn btn-primary-omega w-100">OK</button></div>
+  {% endif %}
+</form>
+
+<div class="row g-3 mb-3">
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-receipt"></i></div><div><div class="kpi-val">{{ kpi.nb_ventes }}</div><div class="kpi-lbl">Ventes</div></div></div></div>
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-cash-stack"></i></div><div><div class="kpi-val">{{ kpi.ca|money }}</div><div class="kpi-lbl">CA Total</div></div></div></div>
+  <div class="col-md-4"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-cart"></i></div><div><div class="kpi-val">{{ kpi.panier_moyen|money }}</div><div class="kpi-lbl">Panier moyen</div></div></div></div>
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-6"><div class="card-premium"><h5>Ventes par vendeur</h5>
+    <table class="table table-omega table-sm"><thead><tr><th>Vendeur</th><th class="text-center">Nb</th><th class="text-end">CA</th></tr></thead>
+    <tbody>{% for v in par_vendeur %}<tr><td>{{ v.vendeur }}</td><td class="text-center">{{ v.nb }}</td><td class="text-end fw-bold">{{ v.ca|money }}</td></tr>{% endfor %}</tbody></table>
+  </div></div>
+  <div class="col-lg-6"><div class="card-premium"><h5>Modes de paiement</h5>
+    <table class="table table-omega table-sm"><thead><tr><th>Mode</th><th class="text-center">Nb</th><th class="text-end">CA</th></tr></thead>
+    <tbody>{% for m in par_mode %}<tr><td>{{ m.mode_paiement }}</td><td class="text-center">{{ m.nb }}</td><td class="text-end fw-bold">{{ m.ca|money }}</td></tr>{% endfor %}</tbody></table>
+  </div></div>
+</div>
+
+<div class="card-premium mt-3">
+  <h5>Évolution</h5>
+  <canvas id="chart" height="80"></canvas>
+</div>
+
+<a href="{{ url_for('export_ventes') }}?periode={{ periode }}&date_from={{ d1 }}&date_to={{ d2 }}" class="btn btn-light mt-3"><i class="bi bi-download"></i> Export CSV</a>
+
+<script>
+new Chart(document.getElementById('chart'), {
+  type: 'line',
+  data: {
+    labels: [{% for e in evolution %}'{{ e.jour }}',{% endfor %}],
+    datasets: [{ label: 'CA', data: [{% for e in evolution %}{{ e.ca }},{% endfor %}], borderColor: '#ff6b35', backgroundColor: 'rgba(255,107,53,.15)', fill: true, tension: .3 }]
+  }
+});
+</script>
+{% endblock %}

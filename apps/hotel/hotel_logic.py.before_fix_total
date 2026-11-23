@@ -1,0 +1,1497 @@
+"""
+Module Logique Métier Hôtel
+Réservations, Check-in/out, Restaurant, Housekeeping, Facturation, Rapports
+"""
+from flask import render_template_string, request, redirect, flash, jsonify
+import sqlite3
+from datetime import datetime, timedelta
+
+DB_PATH = "/app/data/hotel.db"
+
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=30000")
+    return conn
+
+
+def gen_numero(prefix, table):
+    conn = get_db()
+    c = conn.cursor()
+    year = datetime.now().year
+    c.execute(f"SELECT COUNT(*) FROM {table}")
+    n = c.fetchone()[0] + 1
+    conn.close()
+    return f"{prefix}-{year}-{n:04d}"
+
+
+try:
+    from auth import (role_required, admin_required, directeur_required,
+                      reception_required, staff_required, menage_required, log_action)
+    from flask_login import current_user
+except ImportError:
+    def role_required(*r):
+        def d(f): return f
+        return d
+    def admin_required(f): return f
+    def directeur_required(f): return f
+    def reception_required(f): return f
+    def staff_required(f): return f
+    def menage_required(f): return f
+    def log_action(*a, **k): pass
+    current_user = None
+
+
+def register_hotel_routes(app, render_page):
+    """Enregistre toutes les routes logique métier Hôtel"""
+
+    # ==================== RÉSERVATIONS ====================
+    @app.route('/reservations')
+    @reception_required
+    def reservations_liste():
+        conn = get_db()
+        c = conn.cursor()
+
+        statut_filter = request.args.get('statut', '')
+        date_debut = request.args.get('debut', '')
+        date_fin = request.args.get('fin', '')
+        search = request.args.get('q', '').strip()
+
+        query = """SELECT r.*, cl.nom as cl_nom, cl.prenom as cl_prenom, cl.telephone as cl_tel,
+                          cl.vip as cl_vip, cl.societe,
+                          ch.numero as chambre_numero,
+                          tc.nom as type_nom
+                   FROM reservations r
+                   JOIN clients cl ON r.client_id = cl.id
+                   LEFT JOIN chambres ch ON r.chambre_id = ch.id
+                   JOIN types_chambres tc ON r.type_chambre_id = tc.id
+                   WHERE 1=1"""
+        params = []
+
+        if statut_filter:
+            query += " AND r.statut = ?"
+            params.append(statut_filter)
+
+        if date_debut:
+            query += " AND date(r.date_arrivee) >= ?"
+            params.append(date_debut)
+        if date_fin:
+            query += " AND date(r.date_arrivee) <= ?"
+            params.append(date_fin)
+
+        if search:
+            query += """ AND (r.numero LIKE ? OR cl.nom LIKE ? OR cl.prenom LIKE ?
+                        OR cl.telephone LIKE ?)"""
+            params.extend([f'%{search}%'] * 4)
+
+        query += " ORDER BY r.date_arrivee DESC LIMIT 200"
+        c.execute(query, params)
+        rows = c.fetchall()
+
+        # Stats
+        today = datetime.now().date().isoformat()
+        c.execute("SELECT COUNT(*) FROM reservations WHERE date(date_arrivee) = ?", (today,))
+        arrivees = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM reservations WHERE date(date_depart) = ?", (today,))
+        departs = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM reservations WHERE statut='En cours'")
+        en_cours = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM reservations WHERE statut='En attente'")
+        attente = c.fetchone()[0]
+        conn.close()
+
+        statuts = ['En attente', 'Confirmée', 'En cours', 'Terminée', 'Annulée', 'No-show']
+        statuts_opts = "".join(f'<option value="{s}" {"selected" if statut_filter == s else ""}>{s}</option>' for s in statuts)
+
+        content = f"""
+        <div class="page-header">
+          <div>
+            <h2><i class="fas fa-calendar-check"></i> Réservations</h2>
+            <div class="page-subtitle">{len(rows)} réservation(s)</div>
+          </div>
+          <a href="/reservations/nouvelle" class="btn btn-primary"><i class="fas fa-plus"></i> Nouvelle réservation</a>
+        </div>
+
+        <div class="stats">
+          <div class="stat-card">
+            <i class="fas fa-plane-arrival stat-icon"></i>
+            <div class="stat-value">{arrivees}</div>
+            <div class="stat-label">Arrivées du jour</div>
+          </div>
+          <div class="stat-card blue">
+            <i class="fas fa-plane-departure stat-icon"></i>
+            <div class="stat-value">{departs}</div>
+            <div class="stat-label">Départs du jour</div>
+          </div>
+          <div class="stat-card green">
+            <i class="fas fa-user-check stat-icon"></i>
+            <div class="stat-value">{en_cours}</div>
+            <div class="stat-label">En cours</div>
+          </div>
+          <div class="stat-card amber">
+            <i class="fas fa-hourglass-half stat-icon"></i>
+            <div class="stat-value">{attente}</div>
+            <div class="stat-label">En attente</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3><i class="fas fa-list"></i> Liste des réservations</h3>
+            <form method="GET" style="display:flex;gap:8px;flex-wrap:wrap">
+              <input type="text" name="q" value="{search}" placeholder="N°, client, tél..." style="padding:8px 12px;border:2px solid #f1f5f9;border-radius:8px;width:180px">
+              <select name="statut" style="padding:8px 12px;border:2px solid #f1f5f9;border-radius:8px">
+                <option value="">Tous statuts</option>
+                {statuts_opts}
+              </select>
+              <input type="date" name="debut" value="{date_debut}" style="padding:8px 12px;border:2px solid #f1f5f9;border-radius:8px">
+              <input type="date" name="fin" value="{date_fin}" style="padding:8px 12px;border:2px solid #f1f5f9;border-radius:8px">
+              <button type="submit" class="btn btn-primary btn-sm"><i class="fas fa-search"></i></button>
+            </form>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>N°</th><th>Client</th><th>Chambre</th><th>Type</th>
+                  <th>Arrivée</th><th>Départ</th><th>Nuits</th><th>Total</th>
+                  <th>Statut</th><th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+        """
+        for r in rows:
+            badge = 'badge-success'
+            if r['statut'] == 'En attente': badge = 'badge-warning'
+            elif r['statut'] == 'En cours': badge = 'badge-gold'
+            elif r['statut'] in ['Annulée', 'No-show']: badge = 'badge-danger'
+            elif r['statut'] == 'Terminée': badge = 'badge-info'
+
+            vip = '<span class="badge badge-vip"><i class="fas fa-crown"></i></span> ' if r['cl_vip'] else ''
+
+            content += f"""
+            <tr>
+              <td><strong>{r['numero']}</strong></td>
+              <td>{vip}{r['cl_nom']} {r['cl_prenom']}<br><small style="color:#94a3b8">{r['cl_tel']}</small></td>
+              <td>{r['chambre_numero'] or 'À attribuer'}</td>
+              <td>{r['type_nom']}</td>
+              <td>{r['date_arrivee']}</td>
+              <td>{r['date_depart']}</td>
+              <td><strong>{r['nb_nuits']}j</strong></td>
+              <td><strong style="color:#92400e">{r['total']:,.0f}</strong> FCFA</td>
+              <td><span class="badge {badge}">{r['statut']}</span></td>
+              <td>
+                <a href="/reservations/{r['id']}" class="btn btn-info btn-sm"><i class="fas fa-eye"></i></a>
+              </td>
+            </tr>
+            """
+        if not rows:
+            content += '<tr><td colspan="10" class="empty"><i class="fas fa-calendar-check"></i><br>Aucune réservation</td></tr>'
+
+        content += "</tbody></table></div></div>"
+        return render_page(content, active='reservations', page_title='Réservations')
+
+    @app.route('/reservations/nouvelle', methods=['GET', 'POST'])
+    @reception_required
+    def reservation_nouvelle():
+        conn = get_db()
+        c = conn.cursor()
+        client_id_pre = request.args.get('client_id', '')
+        chambre_id_pre = request.args.get('chambre_id', '')
+
+        if request.method == 'POST':
+            try:
+                numero = gen_numero('RES', 'reservations')
+                client_id = int(request.form['client_id'])
+                type_chambre_id = int(request.form['type_chambre_id'])
+                date_arrivee = request.form['date_arrivee']
+                date_depart = request.form['date_depart']
+
+                # Calcul nuits
+                try:
+                    da = datetime.fromisoformat(date_arrivee)
+                    dd = datetime.fromisoformat(date_depart)
+                    nb_nuits = (dd - da).days
+                except Exception:
+                    nb_nuits = 1
+
+                if nb_nuits <= 0:
+                    flash("La date de départ doit être après la date d'arrivée", "danger")
+                    conn.close()
+                    return redirect('/reservations/nouvelle')
+
+                # Tarif
+                tarif_nuit = float(request.form.get('tarif_nuit') or 0)
+                sous_total = tarif_nuit * nb_nuits
+                taxe_sejour = float(request.form.get('taxe_sejour') or 0)
+                remise = float(request.form.get('remise') or 0)
+                total = sous_total + taxe_sejour - remise
+                acompte = float(request.form.get('acompte') or 0)
+                solde = total - acompte
+
+                chambre_id = int(request.form['chambre_id']) if request.form.get('chambre_id') else None
+
+                c.execute("""INSERT INTO reservations
+                    (numero, client_id, chambre_id, type_chambre_id,
+                     date_arrivee, date_depart, nb_nuits, nb_adultes, nb_enfants,
+                     statut, source, tarif_nuit, sous_total, taxe_sejour, remise, total,
+                     acompte, solde, demandes_speciales, notes_internes, user_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (numero, client_id, chambre_id, type_chambre_id,
+                     date_arrivee, date_depart, nb_nuits,
+                     int(request.form.get('nb_adultes') or 1),
+                     int(request.form.get('nb_enfants') or 0),
+                     request.form.get('statut', 'Confirmée'),
+                     request.form.get('source', 'Direct'),
+                     tarif_nuit, sous_total, taxe_sejour, remise, total,
+                     acompte, solde,
+                     request.form.get('demandes_speciales', ''),
+                     request.form.get('notes_internes', ''),
+                     current_user.id if current_user else None))
+                conn.commit()
+                res_id = c.lastrowid
+                conn.close()
+
+                if current_user:
+                    log_action(current_user.id, 'CREATE_RESERVATION', numero)
+
+                flash(f"✅ Réservation {numero} créée", "success")
+                return redirect(f'/reservations/{res_id}')
+            except Exception as e:
+                conn.close()
+                flash(f"❌ Erreur : {e}", "danger")
+
+        # GET
+        c.execute("SELECT id, nom, prenom, telephone, vip FROM clients WHERE actif=1 ORDER BY nom")
+        clients = c.fetchall()
+        c.execute("""SELECT ch.id, ch.numero, tc.nom as type_nom, ch.statut
+                     FROM chambres ch
+                     JOIN types_chambres tc ON ch.type_id = tc.id
+                     WHERE ch.actif=1 AND ch.statut IN ('Disponible', 'Réservée')
+                     ORDER BY ch.numero""")
+        chambres = c.fetchall()
+        c.execute("SELECT id, nom, code FROM types_chambres WHERE actif=1 ORDER BY ordre")
+        types = c.fetchall()
+        c.execute("SELECT * FROM tarifs WHERE actif=1")
+        tarifs = c.fetchall()
+        conn.close()
+
+        clients_opts = "".join(f'<option value="{cl["id"]}" {"selected" if str(cl["id"])==client_id_pre else ""}>{"👑 " if cl["vip"] else ""}{cl["nom"]} {cl["prenom"] or ""} - {cl["telephone"]}</option>' for cl in clients)
+        chambres_opts = "".join(f'<option value="{ch["id"]}" {"selected" if str(ch["id"])==chambre_id_pre else ""}>Ch. {ch["numero"]} ({ch["type_nom"]}) - {ch["statut"]}</option>' for ch in chambres)
+        types_opts = "".join(f'<option value="{t["id"]}">{t["nom"]}</option>' for t in types)
+
+        content = f"""
+        <div class="page-header">
+          <h2><i class="fas fa-calendar-plus"></i> Nouvelle Réservation</h2>
+          <a href="/reservations" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+        </div>
+        <div class="card">
+          <form method="POST">
+            <h3 style="margin-bottom:20px;color:#92400e"><i class="fas fa-user"></i> Client</h3>
+            <div class="form-grid">
+              <div class="form-group form-full"><label>Client *</label>
+                <select name="client_id" required style="padding:12px">
+                  <option value="">-- Sélectionner --</option>
+                  {clients_opts}
+                </select>
+                <small style="color:#94a3b8;font-size:0.75rem">
+                  <a href="/clients/nouveau" style="color:#92400e">+ Créer un nouveau client</a>
+                </small>
+              </div>
+            </div>
+
+            <h3 style="margin:25px 0 20px;color:#92400e"><i class="fas fa-bed"></i> Chambre & dates</h3>
+            <div class="form-grid">
+              <div class="form-group"><label>Type de chambre *</label>
+                <select name="type_chambre_id" required>
+                  <option value="">--</option>
+                  {types_opts}
+                </select>
+              </div>
+              <div class="form-group"><label>Chambre (si dispo)</label>
+                <select name="chambre_id">
+                  <option value="">-- À attribuer --</option>
+                  {chambres_opts}
+                </select>
+              </div>
+              <div class="form-group"><label>Date arrivée *</label>
+                <input type="date" name="date_arrivee" value="{datetime.now().date().isoformat()}" required>
+              </div>
+              <div class="form-group"><label>Date départ *</label>
+                <input type="date" name="date_depart" value="{(datetime.now().date() + timedelta(days=1)).isoformat()}" required>
+              </div>
+              <div class="form-group"><label>Nb adultes</label><input type="number" name="nb_adultes" value="1" min="1"></div>
+              <div class="form-group"><label>Nb enfants</label><input type="number" name="nb_enfants" value="0" min="0"></div>
+            </div>
+
+            <h3 style="margin:25px 0 20px;color:#92400e"><i class="fas fa-money-bill-wave"></i> Tarification</h3>
+            <div class="form-grid">
+              <div class="form-group"><label>Tarif / nuit (FCFA) *</label>
+                <input type="number" name="tarif_nuit" step="100" value="35000" required>
+              </div>
+              <div class="form-group"><label>Taxe de séjour (FCFA)</label>
+                <input type="number" name="taxe_sejour" step="100" value="1000">
+              </div>
+              <div class="form-group"><label>Remise (FCFA)</label>
+                <input type="number" name="remise" step="100" value="0">
+              </div>
+              <div class="form-group"><label>Acompte (FCFA)</label>
+                <input type="number" name="acompte" step="100" value="0">
+              </div>
+            </div>
+
+            <h3 style="margin:25px 0 20px;color:#92400e"><i class="fas fa-info-circle"></i> Détails</h3>
+            <div class="form-grid">
+              <div class="form-group"><label>Statut</label>
+                <select name="statut">
+                  <option value="Confirmée">Confirmée</option>
+                  <option value="En attente">En attente</option>
+                </select>
+              </div>
+              <div class="form-group"><label>Source</label>
+                <select name="source">
+                  <option value="Direct">Direct</option>
+                  <option value="Booking">Booking.com</option>
+                  <option value="Expedia">Expedia</option>
+                  <option value="Airbnb">Airbnb</option>
+                  <option value="Agence">Agence</option>
+                  <option value="Entreprise">Entreprise</option>
+                </select>
+              </div>
+              <div class="form-group form-full"><label>Demandes spéciales</label><textarea name="demandes_speciales" rows="2"></textarea></div>
+              <div class="form-group form-full"><label>Notes internes</label><textarea name="notes_internes" rows="2"></textarea></div>
+            </div>
+
+            <div style="margin-top:25px;display:flex;gap:10px">
+              <button type="submit" class="btn btn-success"><i class="fas fa-save"></i> Créer la réservation</button>
+              <a href="/reservations" class="btn btn-info"><i class="fas fa-arrow-left"></i> Annuler</a>
+            </div>
+          </form>
+        </div>
+        """
+        return render_page(content, active='reservations', page_title='Nouvelle réservation')
+
+    @app.route('/reservations/<int:rid>')
+    @reception_required
+    def reservation_detail(rid):
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""SELECT r.*, cl.nom as cl_nom, cl.prenom as cl_prenom, cl.telephone,
+                            cl.email, cl.vip, cl.societe, cl.preferences, cl.allergies,
+                            ch.numero as chambre_numero,
+                            tc.nom as type_nom
+                     FROM reservations r
+                     JOIN clients cl ON r.client_id = cl.id
+                     LEFT JOIN chambres ch ON r.chambre_id = ch.id
+                     JOIN types_chambres tc ON r.type_chambre_id = tc.id
+                     WHERE r.id=?""", (rid,))
+        r = c.fetchone()
+        if not r:
+            conn.close()
+            flash("Réservation introuvable", "danger")
+            return redirect('/reservations')
+
+        # Séjour associé
+        c.execute("SELECT * FROM sejours WHERE reservation_id = ?", (rid,))
+        sejour = c.fetchone()
+
+        # Factures
+        c.execute("SELECT * FROM factures WHERE sejour_id = (SELECT id FROM sejours WHERE reservation_id=?)",
+                  (rid,))
+        factures = c.fetchall()
+        conn.close()
+
+        badge = 'badge-success'
+        if r['statut'] == 'En attente': badge = 'badge-warning'
+        elif r['statut'] == 'En cours': badge = 'badge-gold'
+        elif r['statut'] in ['Annulée', 'No-show']: badge = 'badge-danger'
+        elif r['statut'] == 'Terminée': badge = 'badge-info'
+
+        content = f"""
+        <div class="page-header">
+          <h2><i class="fas fa-calendar-check"></i> Réservation {r['numero']}</h2>
+          <div style="display:flex;gap:10px">
+            {f'<a href="/sejours/checkin/{rid}" class="btn btn-success"><i class="fas fa-sign-in-alt"></i> Check-in</a>' if r['statut'] == 'Confirmée' else ''}
+            {f'<a href="/sejours/checkout/{sejour["id"]}" class="btn btn-warning"><i class="fas fa-sign-out-alt"></i> Check-out</a>' if sejour and sejour['statut'] == 'En cours' else ''}
+            <a href="/reservations" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+          </div>
+        </div>
+
+        <div class="stats">
+          <div class="stat-card">
+            <i class="fas fa-info-circle stat-icon"></i>
+            <div class="stat-value" style="font-size:1.3rem">{r['statut']}</div>
+            <div class="stat-label">Statut</div>
+          </div>
+          <div class="stat-card gold">
+            <i class="fas fa-moon stat-icon"></i>
+            <div class="stat-value">{r['nb_nuits']}</div>
+            <div class="stat-label">Nuits</div>
+          </div>
+          <div class="stat-card green">
+            <i class="fas fa-money-bill-wave stat-icon"></i>
+            <div class="stat-value">{r['total']:,.0f}</div>
+            <div class="stat-label">Total (FCFA)</div>
+          </div>
+          <div class="stat-card blue">
+            <i class="fas fa-hand-holding-usd stat-icon"></i>
+            <div class="stat-value">{r['acompte']:,.0f}</div>
+            <div class="stat-label">Acompte</div>
+          </div>
+          <div class="stat-card rose">
+            <i class="fas fa-exclamation-circle stat-icon"></i>
+            <div class="stat-value">{r['solde']:,.0f}</div>
+            <div class="stat-label">Solde dû</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><h3><i class="fas fa-user"></i> Client</h3></div>
+          <div class="form-grid">
+            <div><strong>Nom :</strong> {'👑 ' if r['vip'] else ''}{r['cl_nom']} {r['cl_prenom']}</div>
+            <div><strong>Téléphone :</strong> {r['telephone']}</div>
+            <div><strong>Email :</strong> {r['email'] or '-'}</div>
+            <div><strong>Société :</strong> {r['societe'] or '-'}</div>
+          </div>
+          {('<p style="margin-top:10px;padding:10px;background:#fffbeb;border-radius:8px"><strong>⭐ Préférences :</strong> ' + r['preferences'] + '</p>') if r['preferences'] else ''}
+          {('<p style="margin-top:8px;padding:10px;background:#fee2e2;border-radius:8px"><strong>⚠️ Allergies :</strong> ' + r['allergies'] + '</p>') if r['allergies'] else ''}
+        </div>
+
+        <div class="card">
+          <div class="card-header"><h3><i class="fas fa-bed"></i> Hébergement</h3></div>
+          <div class="form-grid">
+            <div><strong>Type :</strong> {r['type_nom']}</div>
+            <div><strong>Chambre :</strong> {r['chambre_numero'] or 'Non attribuée'}</div>
+            <div><strong>Arrivée :</strong> {r['date_arrivee']}</div>
+            <div><strong>Départ :</strong> {r['date_depart']}</div>
+            <div><strong>Adultes :</strong> {r['nb_adultes']}</div>
+            <div><strong>Enfants :</strong> {r['nb_enfants']}</div>
+            <div><strong>Tarif/nuit :</strong> {r['tarif_nuit']:,.0f} FCFA</div>
+            <div><strong>Source :</strong> <span class="badge badge-info">{r['source']}</span></div>
+          </div>
+          {('<p style="margin-top:15px"><strong>Demandes spéciales :</strong> ' + r['demandes_speciales'] + '</p>') if r['demandes_speciales'] else ''}
+        </div>
+
+        <div class="card">
+          <div class="card-header"><h3><i class="fas fa-receipt"></i> Récapitulatif financier</h3></div>
+          <table style="width:100%;border-collapse:collapse">
+            <tr style="border-bottom:1px solid #f3f4f6">
+              <td style="padding:10px">Sous-total hébergement</td>
+              <td style="text-align:right;padding:10px"><strong>{r['sous_total']:,.0f} FCFA</strong></td>
+            </tr>
+            <tr style="border-bottom:1px solid #f3f4f6">
+              <td style="padding:10px">Taxe de séjour</td>
+              <td style="text-align:right;padding:10px">{r['taxe_sejour']:,.0f} FCFA</td>
+            </tr>
+            {f'<tr style="border-bottom:1px solid #f3f4f6"><td style="padding:10px;color:#16a34a">Remise</td><td style="text-align:right;padding:10px;color:#16a34a">-{r["remise"]:,.0f} FCFA</td></tr>' if r['remise'] > 0 else ''}
+            <tr style="background:#fffbeb">
+              <td style="padding:15px;font-weight:900;font-size:1.1rem">TOTAL</td>
+              <td style="text-align:right;padding:15px;font-weight:900;font-size:1.3rem;color:#92400e">{r['total']:,.0f} FCFA</td>
+            </tr>
+            <tr style="border-bottom:1px solid #f3f4f6">
+              <td style="padding:10px">Acompte versé</td>
+              <td style="text-align:right;padding:10px;color:#16a34a">-{r['acompte']:,.0f} FCFA</td>
+            </tr>
+            <tr style="background:#fee2e2">
+              <td style="padding:15px;font-weight:900">SOLDE À PAYER</td>
+              <td style="text-align:right;padding:15px;font-weight:900;color:#dc2626">{r['solde']:,.0f} FCFA</td>
+            </tr>
+          </table>
+        </div>
+        """
+        return render_page(content, active='reservations', page_title=f"Réservation {r['numero']}")
+
+    print("[HOTEL_LOGIC] ✅ Routes réservations enregistrées")
+
+    # ==================== CHECK-IN / CHECK-OUT ====================
+    @app.route('/sejours')
+    @reception_required
+    def sejours_liste():
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""SELECT s.*, cl.nom as cl_nom, cl.prenom as cl_prenom, cl.telephone,
+                            ch.numero as chambre_numero,
+                            r.numero as res_numero
+                     FROM sejours s
+                     JOIN clients cl ON s.client_id = cl.id
+                     JOIN chambres ch ON s.chambre_id = ch.id
+                     JOIN reservations r ON s.reservation_id = r.id
+                     WHERE s.statut = 'En cours'
+                     ORDER BY s.date_checkin DESC""")
+        rows = c.fetchall()
+        conn.close()
+
+        content = """
+        <div class="page-header">
+          <div>
+            <h2><i class="fas fa-user-check"></i> Séjours en cours</h2>
+            <div class="page-subtitle">Clients actuellement hébergés</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Client</th><th>Chambre</th><th>Arrivée</th><th>Départ prévu</th><th>Réservation</th><th>Actions</th></tr></thead>
+              <tbody>
+        """
+        for s in rows:
+            content += f"""
+            <tr>
+              <td><strong>{s['cl_nom']} {s['cl_prenom']}</strong><br><small style="color:#94a3b8">{s['telephone']}</small></td>
+              <td><span class="badge badge-gold">Ch. {s['chambre_numero']}</span></td>
+              <td>{s['date_checkin'][:16]}</td>
+              <td>{s['date_checkout'] or 'En cours'}</td>
+              <td>{s['res_numero']}</td>
+              <td>
+                <a href="/sejours/checkout/{s['id']}" class="btn btn-warning btn-sm"><i class="fas fa-sign-out-alt"></i> Check-out</a>
+              </td>
+            </tr>
+            """
+        if not rows:
+            content += '<tr><td colspan="6" class="empty"><i class="fas fa-user-check"></i><br>Aucun séjour en cours</td></tr>'
+        content += "</tbody></table></div></div>"
+        return render_page(content, active='sejours', page_title='Séjours')
+
+    @app.route('/sejours/checkin/<int:rid>')
+    @reception_required
+    def sejour_checkin(rid):
+        conn = get_db()
+        c = conn.cursor()
+        try:
+            c.execute("""SELECT * FROM reservations WHERE id=? AND statut IN ('Confirmée', 'En attente')""", (rid,))
+            r = c.fetchone()
+            if not r:
+                conn.close()
+                flash("Réservation introuvable ou déjà checkée", "warning")
+                return redirect('/reservations')
+
+            if not r['chambre_id']:
+                conn.close()
+                flash("Veuillez attribuer une chambre avant le check-in", "danger")
+                return redirect(f'/reservations/{rid}')
+
+            # Créer séjour
+            c.execute("""INSERT INTO sejours
+                (reservation_id, client_id, chambre_id, date_checkin, statut, user_checkin, created_at)
+                VALUES (?, ?, ?, ?, 'En cours', ?, ?)""",
+                (rid, r['client_id'], r['chambre_id'],
+                 datetime.now().isoformat(),
+                 current_user.id if current_user else None,
+                 datetime.now().isoformat()))
+
+            # Mettre à jour réservation
+            c.execute("UPDATE reservations SET statut='En cours' WHERE id=?", (rid,))
+
+            # Mettre à jour chambre
+            c.execute("UPDATE chambres SET statut='Occupée' WHERE id=?", (r['chambre_id'],))
+
+            conn.commit()
+            conn.close()
+
+            if current_user:
+                log_action(current_user.id, 'CHECK_IN', f'Réservation {r["numero"]}')
+
+            flash(f"✅ Check-in effectué pour {r['numero']}", "success")
+            return redirect('/sejours')
+        except Exception as e:
+            conn.close()
+            flash(f"❌ Erreur : {e}", "danger")
+            return redirect('/reservations')
+
+    @app.route('/sejours/checkout/<int:sid>', methods=['GET', 'POST'])
+    @reception_required
+    def sejour_checkout(sid):
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""SELECT s.*, r.numero as res_numero, r.tarif_nuit, r.taxe_sejour,
+                            cl.nom as cl_nom, cl.prenom as cl_prenom,
+                            ch.numero as chambre_numero
+                     FROM sejours s
+                     JOIN reservations r ON s.reservation_id = r.id
+                     JOIN clients cl ON s.client_id = cl.id
+                     JOIN chambres ch ON s.chambre_id = ch.id
+                     WHERE s.id=?""", (sid,))
+        s = c.fetchone()
+        if not s or s['statut'] != 'En cours':
+            conn.close()
+            flash("Séjour introuvable", "danger")
+            return redirect('/sejours')
+
+        if request.method == 'POST':
+            try:
+                # Calcul du séjour réel
+                date_checkin = datetime.fromisoformat(s['date_checkin'])
+                date_checkout = datetime.now()
+                nb_nuits_reelles = max(1, (date_checkout.date() - date_checkin.date()).days)
+
+                # Sous-total hébergement
+                sous_total_heb = s['tarif_nuit'] * nb_nuits_reelles
+
+                # Consommations restaurant (room service facturé)
+                c.execute("""SELECT COALESCE(SUM(total), 0) FROM commandes_resto
+                             WHERE sejour_id = ? AND statut != 'Annulée'""", (sid,))
+                sous_total_resto = c.fetchone()[0]
+
+                # Autres services
+                c.execute("""SELECT COALESCE(SUM(total), 0) FROM consommation_services
+                             WHERE sejour_id = ? AND statut = 'À facturer'""", (sid,))
+                sous_total_services = c.fetchone()[0]
+
+                # Totaux
+                remise = float(request.form.get('remise') or 0)
+                sous_total = sous_total_heb + sous_total_resto + sous_total_services
+                tva = (sous_total - remise) * 18 / 118
+                taxe_sejour = s['taxe_sejour'] or 0
+                total = sous_total - remise + taxe_sejour
+
+                # Créer facture
+                numero = gen_numero('FAC', 'factures')
+                c.execute("""INSERT INTO factures
+                    (numero, sejour_id, client_id, date_facture,
+                     sous_total_hebergement, sous_total_resto, sous_total_services,
+                     remise, tva, taxe_sejour, total, statut, user_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Impayé', ?)""",
+                    (numero, sid, s['client_id'], datetime.now().isoformat(),
+                     sous_total_heb, sous_total_resto, sous_total_services,
+                     remise, tva, taxe_sejour, total,
+                     current_user.id if current_user else None))
+                facture_id = c.lastrowid
+
+                # Ajouter lignes facture
+                # Hébergement
+                c.execute("""INSERT INTO facture_lignes
+                    (facture_id, categorie, designation, quantite, prix_unitaire, total_ligne)
+                    VALUES (?, 'Hébergement', ?, ?, ?, ?)""",
+                    (facture_id, f"Chambre {s['chambre_numero']} - {nb_nuits_reelles} nuit(s)",
+                     nb_nuits_reelles, s['tarif_nuit'], sous_total_heb))
+
+                # Mise à jour séjour
+                c.execute("""UPDATE sejours SET
+                    date_checkout=?, nb_nuits_reelles=?, statut='Terminé',
+                    user_checkout=? WHERE id=?""",
+                    (datetime.now().isoformat(), nb_nuits_reelles,
+                     current_user.id if current_user else None, sid))
+
+                # Réservation → Terminée
+                c.execute("UPDATE reservations SET statut='Terminée' WHERE id=?", (s['reservation_id'],))
+
+                # Chambre → À nettoyer
+                c.execute("UPDATE chambres SET statut='Disponible', etat_proprete='À nettoyer' WHERE id=?",
+                          (s['chambre_id'],))
+
+                # Créer tâche housekeeping
+                num_hk = gen_numero('HK', 'taches_housekeeping')
+                c.execute("""INSERT INTO taches_housekeeping
+                    (numero, chambre_id, type_tache, priorite, statut, date_creation, signale_par)
+                    VALUES (?, ?, 'Nettoyage complet', 'Haute', 'À faire', ?, ?)""",
+                    (num_hk, s['chambre_id'], datetime.now().isoformat(),
+                     current_user.id if current_user else None))
+
+                conn.commit()
+                conn.close()
+
+                if current_user:
+                    log_action(current_user.id, 'CHECK_OUT', f'Séjour {sid} → Facture {numero}')
+
+                flash(f"✅ Check-out effectué. Facture {numero} créée", "success")
+                return redirect(f'/facturation/{facture_id}')
+            except Exception as e:
+                conn.close()
+                flash(f"❌ Erreur : {e}", "danger")
+
+        # GET
+        # Sous-totaux pour affichage
+        c.execute("""SELECT COALESCE(SUM(total), 0) FROM commandes_resto
+                     WHERE sejour_id = ? AND statut != 'Annulée'""", (sid,))
+        sous_total_resto = c.fetchone()[0]
+        c.execute("""SELECT COALESCE(SUM(total), 0) FROM consommation_services
+                     WHERE sejour_id = ? AND statut = 'À facturer'""", (sid,))
+        sous_total_services = c.fetchone()[0]
+        conn.close()
+
+        try:
+            nb_nuits = max(1, (datetime.now().date() - datetime.fromisoformat(s['date_checkin']).date()).days)
+        except Exception:
+            nb_nuits = 1
+
+        sous_total_heb = s['tarif_nuit'] * nb_nuits
+
+        content = f"""
+        <div class="page-header">
+          <h2><i class="fas fa-sign-out-alt"></i> Check-out — {s['cl_nom']} {s['cl_prenom']}</h2>
+          <a href="/sejours" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+        </div>
+
+        <div class="card">
+          <div class="form-grid">
+            <div><strong>Client :</strong> {s['cl_nom']} {s['cl_prenom']}</div>
+            <div><strong>Chambre :</strong> {s['chambre_numero']}</div>
+            <div><strong>Check-in :</strong> {s['date_checkin'][:16]}</div>
+            <div><strong>Check-out :</strong> {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>
+            <div><strong>Nuits réelles :</strong> {nb_nuits}</div>
+            <div><strong>Réservation :</strong> {s['res_numero']}</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><h3><i class="fas fa-receipt"></i> Détail de la facture</h3></div>
+          <table style="width:100%;border-collapse:collapse">
+            <tr style="border-bottom:1px solid #f3f4f6">
+              <td style="padding:10px">Hébergement ({nb_nuits} nuit × {s['tarif_nuit']:,.0f})</td>
+              <td style="text-align:right;padding:10px"><strong>{sous_total_heb:,.0f} FCFA</strong></td>
+            </tr>
+            <tr style="border-bottom:1px solid #f3f4f6">
+              <td style="padding:10px">Restaurant / Room service</td>
+              <td style="text-align:right;padding:10px"><strong>{sous_total_resto:,.0f} FCFA</strong></td>
+            </tr>
+            <tr style="border-bottom:1px solid #f3f4f6">
+              <td style="padding:10px">Autres services</td>
+              <td style="text-align:right;padding:10px"><strong>{sous_total_services:,.0f} FCFA</strong></td>
+            </tr>
+          </table>
+
+          <form method="POST" style="margin-top:20px">
+            <div class="form-grid">
+              <div class="form-group"><label>Remise (FCFA)</label>
+                <input type="number" name="remise" step="100" value="0">
+              </div>
+            </div>
+            <div style="margin-top:20px;padding-top:20px;border-top:2px solid #fffbeb">
+              <div style="display:flex;justify-content:space-between;font-size:1.2rem">
+                <strong>SOUS-TOTAL</strong>
+                <strong>{sous_total_heb + sous_total_resto + sous_total_services:,.0f} FCFA</strong>
+              </div>
+              <div style="display:flex;justify-content:space-between;margin-top:8px">
+                <span>Taxe de séjour</span>
+                <strong>{s['taxe_sejour'] or 0:,.0f} FCFA</strong>
+              </div>
+            </div>
+            <div style="margin-top:25px;display:flex;gap:10px">
+              <button type="submit" class="btn btn-success" style="padding:15px 30px;font-size:1rem">
+                <i class="fas fa-check"></i> Valider le check-out et générer la facture
+              </button>
+              <a href="/sejours" class="btn btn-info"><i class="fas fa-arrow-left"></i> Annuler</a>
+            </div>
+          </form>
+        </div>
+        """
+        return render_page(content, active='sejours', page_title='Check-out')
+
+    print("[HOTEL_LOGIC] ✅ Routes check-in/out enregistrées")
+
+    # ==================== HOUSEKEEPING ====================
+    @app.route('/housekeeping')
+    @menage_required
+    def housekeeping_liste():
+        conn = get_db()
+        c = conn.cursor()
+
+        statut_filter = request.args.get('statut', '')
+
+        query = """SELECT t.*, ch.numero as chambre_numero,
+                          u.nom as u_nom, u.prenom as u_prenom
+                   FROM taches_housekeeping t
+                   JOIN chambres ch ON t.chambre_id = ch.id
+                   LEFT JOIN utilisateurs u ON t.assignee_a = u.id
+                   WHERE 1=1"""
+        params = []
+
+        if statut_filter:
+            query += " AND t.statut = ?"
+            params.append(statut_filter)
+
+        query += " ORDER BY CASE t.priorite WHEN 'Urgente' THEN 1 WHEN 'Haute' THEN 2 WHEN 'Normale' THEN 3 ELSE 4 END, t.date_creation DESC LIMIT 100"
+        c.execute(query, params)
+        rows = c.fetchall()
+
+        # Stats
+        c.execute("SELECT COUNT(*) FROM taches_housekeeping WHERE statut='À faire'")
+        a_faire = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM taches_housekeeping WHERE statut='En cours'")
+        en_cours = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM chambres WHERE etat_proprete='Propre' AND actif=1")
+        propres = c.fetchone()[0]
+        conn.close()
+
+        statuts = ['À faire', 'En cours', 'Terminée', 'Vérifiée']
+        statuts_opts = "".join(f'<option value="{s}" {"selected" if statut_filter == s else ""}>{s}</option>' for s in statuts)
+
+        content = f"""
+        <div class="page-header">
+          <div>
+            <h2><i class="fas fa-broom"></i> Housekeeping</h2>
+            <div class="page-subtitle">Tâches ménage en cours</div>
+          </div>
+          <a href="/housekeeping/nouvelle" class="btn btn-primary"><i class="fas fa-plus"></i> Nouvelle tâche</a>
+        </div>
+
+        <div class="stats">
+          <div class="stat-card amber">
+            <i class="fas fa-list stat-icon"></i>
+            <div class="stat-value">{a_faire}</div>
+            <div class="stat-label">À faire</div>
+          </div>
+          <div class="stat-card blue">
+            <i class="fas fa-spinner stat-icon"></i>
+            <div class="stat-value">{en_cours}</div>
+            <div class="stat-label">En cours</div>
+          </div>
+          <div class="stat-card green">
+            <i class="fas fa-check stat-icon"></i>
+            <div class="stat-value">{propres}</div>
+            <div class="stat-label">Chambres propres</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3><i class="fas fa-list"></i> Tâches</h3>
+            <form method="GET" style="display:flex;gap:8px">
+              <select name="statut" style="padding:8px 12px;border:2px solid #f1f5f9;border-radius:8px">
+                <option value="">Tous statuts</option>
+                {statuts_opts}
+              </select>
+              <button type="submit" class="btn btn-primary btn-sm"><i class="fas fa-search"></i></button>
+            </form>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>N°</th><th>Chambre</th><th>Type tâche</th>
+                  <th>Priorité</th><th>Assignée à</th><th>Statut</th>
+                  <th>Date création</th><th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+        """
+        for t in rows:
+            prio_badge = 'badge-success'
+            if t['priorite'] == 'Urgente': prio_badge = 'badge-danger'
+            elif t['priorite'] == 'Haute': prio_badge = 'badge-warning'
+
+            statut_badge = 'badge-warning'
+            if t['statut'] == 'En cours': statut_badge = 'badge-info'
+            elif t['statut'] == 'Terminée': statut_badge = 'badge-success'
+            elif t['statut'] == 'Vérifiée': statut_badge = 'badge-gold'
+
+            content += f"""
+            <tr>
+              <td><strong>{t['numero']}</strong></td>
+              <td><span class="badge badge-gold">Ch. {t['chambre_numero']}</span></td>
+              <td>{t['type_tache']}</td>
+              <td><span class="badge {prio_badge}">{t['priorite']}</span></td>
+              <td>{t['u_prenom'] or '?'} {t['u_nom'] or ''}</td>
+              <td><span class="badge {statut_badge}">{t['statut']}</span></td>
+              <td>{t['date_creation'][:16]}</td>
+              <td>
+                {f'<a href="/housekeeping/{t["id"]}/demarrer" class="btn btn-warning btn-sm"><i class="fas fa-play"></i></a>' if t['statut'] == 'À faire' else ''}
+                {f'<a href="/housekeeping/{t["id"]}/terminer" class="btn btn-success btn-sm"><i class="fas fa-check"></i></a>' if t['statut'] == 'En cours' else ''}
+              </td>
+            </tr>
+            """
+        if not rows:
+            content += '<tr><td colspan="8" class="empty"><i class="fas fa-broom"></i><br>Aucune tâche</td></tr>'
+
+        content += "</tbody></table></div></div>"
+        return render_page(content, active='housekeeping', page_title='Housekeeping')
+
+    @app.route('/housekeeping/nouvelle', methods=['GET', 'POST'])
+    @menage_required
+    def housekeeping_nouvelle():
+        conn = get_db()
+        c = conn.cursor()
+        if request.method == 'POST':
+            try:
+                numero = gen_numero('HK', 'taches_housekeeping')
+                c.execute("""INSERT INTO taches_housekeeping
+                    (numero, chambre_id, type_tache, priorite, statut,
+                     date_creation, observations, signale_par)
+                    VALUES (?, ?, ?, ?, 'À faire', ?, ?, ?)""",
+                    (numero, int(request.form['chambre_id']),
+                     request.form['type_tache'],
+                     request.form.get('priorite', 'Normale'),
+                     datetime.now().isoformat(),
+                     request.form.get('observations', ''),
+                     current_user.id if current_user else None))
+                conn.commit()
+                conn.close()
+                flash(f"✅ Tâche {numero} créée", "success")
+                return redirect('/housekeeping')
+            except Exception as e:
+                conn.close()
+                flash(f"❌ Erreur : {e}", "danger")
+
+        c.execute("SELECT id, numero FROM chambres WHERE actif=1 ORDER BY numero")
+        chambres = c.fetchall()
+        conn.close()
+
+        chambres_opts = "".join(f'<option value="{ch["id"]}">Chambre {ch["numero"]}</option>' for ch in chambres)
+
+        content = f"""
+        <div class="page-header">
+          <h2><i class="fas fa-broom"></i> Nouvelle Tâche Housekeeping</h2>
+          <a href="/housekeeping" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+        </div>
+        <div class="card">
+          <form method="POST">
+            <div class="form-grid">
+              <div class="form-group"><label>Chambre *</label><select name="chambre_id" required><option value="">--</option>{chambres_opts}</select></div>
+              <div class="form-group"><label>Type de tâche *</label>
+                <select name="type_tache" required>
+                  <option value="Nettoyage complet">Nettoyage complet</option>
+                  <option value="Nettoyage léger">Nettoyage léger</option>
+                  <option value="Changement draps">Changement draps</option>
+                  <option value="Changement serviettes">Changement serviettes</option>
+                  <option value="Mini-bar">Réapprovisionnement mini-bar</option>
+                  <option value="Réparation">Réparation</option>
+                </select>
+              </div>
+              <div class="form-group"><label>Priorité</label>
+                <select name="priorite">
+                  <option value="Normale">Normale</option>
+                  <option value="Haute">Haute</option>
+                  <option value="Urgente">Urgente</option>
+                </select>
+              </div>
+              <div class="form-group form-full"><label>Observations</label><textarea name="observations" rows="2"></textarea></div>
+            </div>
+            <div style="margin-top:25px;display:flex;gap:10px">
+              <button type="submit" class="btn btn-success"><i class="fas fa-save"></i> Créer la tâche</button>
+              <a href="/housekeeping" class="btn btn-info"><i class="fas fa-arrow-left"></i> Annuler</a>
+            </div>
+          </form>
+        </div>
+        """
+        return render_page(content, active='housekeeping', page_title='Nouvelle tâche')
+
+    @app.route('/housekeeping/<int:tid>/demarrer')
+    @menage_required
+    def housekeeping_demarrer(tid):
+        conn = get_db()
+        c = conn.cursor()
+        try:
+            c.execute("""UPDATE taches_housekeeping SET statut='En cours',
+                         date_debut=?, assignee_a=? WHERE id=?""",
+                      (datetime.now().isoformat(),
+                       current_user.id if current_user else None, tid))
+            conn.commit()
+            conn.close()
+            flash("✅ Tâche démarrée", "success")
+        except Exception as e:
+            conn.close()
+            flash(f"❌ Erreur : {e}", "danger")
+        return redirect('/housekeeping')
+
+    @app.route('/housekeeping/<int:tid>/terminer')
+    @menage_required
+    def housekeeping_terminer(tid):
+        conn = get_db()
+        c = conn.cursor()
+        try:
+            c.execute("""SELECT chambre_id FROM taches_housekeeping WHERE id=?""", (tid,))
+            t = c.fetchone()
+            c.execute("""UPDATE taches_housekeeping SET statut='Terminée',
+                         date_fin=? WHERE id=?""",
+                      (datetime.now().isoformat(), tid))
+            # Chambre propre
+            if t:
+                c.execute("UPDATE chambres SET etat_proprete='Propre' WHERE id=?", (t['chambre_id'],))
+            conn.commit()
+            conn.close()
+            flash("✅ Tâche terminée", "success")
+        except Exception as e:
+            conn.close()
+            flash(f"❌ Erreur : {e}", "danger")
+        return redirect('/housekeeping')
+
+    print("[HOTEL_LOGIC] ✅ Routes housekeeping enregistrées")
+
+    # ==================== RESTAURANT ====================
+    @app.route('/restaurant')
+    @reception_required
+    def restaurant_dashboard():
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""SELECT co.*, ch.numero as chambre_numero,
+                            cl.nom as cl_nom, cl.prenom as cl_prenom
+                     FROM commandes_resto co
+                     LEFT JOIN chambres ch ON co.chambre_id = ch.id
+                     LEFT JOIN clients cl ON co.client_id = cl.id
+                     WHERE co.statut IN ('Nouvelle', 'En cours')
+                     ORDER BY co.date_commande DESC LIMIT 20""")
+        commandes = c.fetchall()
+
+        c.execute("SELECT COALESCE(SUM(total), 0) FROM commandes_resto WHERE date(date_commande) = date('now')")
+        ca_jour = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM commandes_resto WHERE statut IN ('Nouvelle', 'En cours')")
+        en_cours = c.fetchone()[0]
+        conn.close()
+
+        content = f"""
+        <div class="page-header">
+          <div>
+            <h2><i class="fas fa-utensils"></i> Restaurant & Room Service</h2>
+            <div class="page-subtitle">Commandes en cours</div>
+          </div>
+          <a href="/restaurant/nouvelle" class="btn btn-primary"><i class="fas fa-plus"></i> Nouvelle commande</a>
+        </div>
+
+        <div class="stats">
+          <div class="stat-card green">
+            <i class="fas fa-money-bill-wave stat-icon"></i>
+            <div class="stat-value">{ca_jour:,.0f}</div>
+            <div class="stat-label">CA restaurant jour (FCFA)</div>
+          </div>
+          <div class="stat-card amber">
+            <i class="fas fa-clock stat-icon"></i>
+            <div class="stat-value">{en_cours}</div>
+            <div class="stat-label">Commandes en cours</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><h3><i class="fas fa-list"></i> Commandes récentes</h3></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>N°</th><th>Type</th><th>Client/Chambre</th><th>Nb</th><th>Total</th><th>Statut</th><th>Date</th></tr></thead>
+              <tbody>
+        """
+        for co in commandes:
+            badge = 'badge-warning' if co['statut'] == 'Nouvelle' else 'badge-info'
+            client_info = f"Ch. {co['chambre_numero']}" if co['chambre_numero'] else (f"{co['cl_nom']} {co['cl_prenom']}" if co['cl_nom'] else '-')
+            content += f"""
+            <tr>
+              <td><strong>{co['numero']}</strong></td>
+              <td><span class="badge badge-gold">{co['type_service']}</span></td>
+              <td>{client_info}</td>
+              <td>{co['nb_couverts']}</td>
+              <td><strong style="color:#92400e">{co['total']:,.0f}</strong> FCFA</td>
+              <td><span class="badge {badge}">{co['statut']}</span></td>
+              <td>{co['date_commande'][:16]}</td>
+            </tr>
+            """
+        if not commandes:
+            content += '<tr><td colspan="7" class="empty"><i class="fas fa-utensils"></i><br>Aucune commande</td></tr>'
+        content += "</tbody></table></div></div>"
+        return render_page(content, active='restaurant', page_title='Restaurant')
+
+    print("[HOTEL_LOGIC] ✅ Routes restaurant enregistrées")
+
+    # ==================== FACTURATION ====================
+    @app.route('/facturation')
+    @reception_required
+    def facturation_liste():
+        conn = get_db()
+        c = conn.cursor()
+        statut_filter = request.args.get('statut', '')
+        query = """SELECT f.*, cl.nom, cl.prenom, cl.societe
+                   FROM factures f
+                   JOIN clients cl ON f.client_id = cl.id
+                   WHERE 1=1"""
+        params = []
+        if statut_filter:
+            query += " AND f.statut = ?"
+            params.append(statut_filter)
+        query += " ORDER BY f.date_facture DESC LIMIT 100"
+        c.execute(query, params)
+        rows = c.fetchall()
+
+        c.execute("SELECT COALESCE(SUM(total), 0), COALESCE(SUM(montant_paye), 0) FROM factures")
+        totaux = c.fetchone()
+        conn.close()
+
+        content = f"""
+        <div class="page-header">
+          <div>
+            <h2><i class="fas fa-file-invoice-dollar"></i> Facturation</h2>
+            <div class="page-subtitle">{len(rows)} facture(s)</div>
+          </div>
+        </div>
+
+        <div class="stats">
+          <div class="stat-card">
+            <i class="fas fa-file-invoice stat-icon"></i>
+            <div class="stat-value">{totaux[0]:,.0f}</div>
+            <div class="stat-label">Total facturé</div>
+          </div>
+          <div class="stat-card green">
+            <i class="fas fa-check stat-icon"></i>
+            <div class="stat-value">{totaux[1]:,.0f}</div>
+            <div class="stat-label">Total encaissé</div>
+          </div>
+          <div class="stat-card rose">
+            <i class="fas fa-exclamation stat-icon"></i>
+            <div class="stat-value">{totaux[0] - totaux[1]:,.0f}</div>
+            <div class="stat-label">Impayés</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3><i class="fas fa-list"></i> Liste des factures</h3>
+            <form method="GET" style="display:flex;gap:8px">
+              <select name="statut" style="padding:8px 12px;border:2px solid #f1f5f9;border-radius:8px">
+                <option value="">Tous statuts</option>
+                <option value="Impayé" {"selected" if statut_filter == "Impayé" else ""}>Impayé</option>
+                <option value="Partiel" {"selected" if statut_filter == "Partiel" else ""}>Partiel</option>
+                <option value="Payé" {"selected" if statut_filter == "Payé" else ""}>Payé</option>
+              </select>
+              <button type="submit" class="btn btn-primary btn-sm"><i class="fas fa-search"></i></button>
+            </form>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>N°</th><th>Client</th><th>Date</th><th>Total</th><th>Payé</th><th>Solde</th><th>Statut</th><th>Actions</th></tr></thead>
+              <tbody>
+        """
+        for f in rows:
+            badge = 'badge-danger'
+            if f['statut'] == 'Payé': badge = 'badge-success'
+            elif f['statut'] == 'Partiel': badge = 'badge-warning'
+
+            content += f"""
+            <tr>
+              <td><strong>{f['numero']}</strong></td>
+              <td>{f['nom']} {f['prenom'] or ''}<br><small style="color:#94a3b8">{f['societe'] or ''}</small></td>
+              <td>{f['date_facture'][:10]}</td>
+              <td><strong style="color:#92400e">{f['total']:,.0f}</strong> FCFA</td>
+              <td style="color:#16a34a">{f['montant_paye']:,.0f}</td>
+              <td style="color:#dc2626"><strong>{f['total'] - f['montant_paye']:,.0f}</strong></td>
+              <td><span class="badge {badge}">{f['statut']}</span></td>
+              <td>
+                <a href="/facturation/{f['id']}" class="btn btn-info btn-sm"><i class="fas fa-eye"></i></a>
+              </td>
+            </tr>
+            """
+        if not rows:
+            content += '<tr><td colspan="8" class="empty"><i class="fas fa-file-invoice"></i><br>Aucune facture</td></tr>'
+        content += "</tbody></table></div></div>"
+        return render_page(content, active='facturation', page_title='Facturation')
+
+    @app.route('/facturation/<int:fid>')
+    @reception_required
+    def facture_detail(fid):
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""SELECT f.*, cl.nom, cl.prenom, cl.telephone, cl.email,
+                            cl.adresse, cl.ville, cl.societe, cl.numero_tva
+                     FROM factures f
+                     JOIN clients cl ON f.client_id = cl.id
+                     WHERE f.id=?""", (fid,))
+        f = c.fetchone()
+        if not f:
+            conn.close()
+            flash("Facture introuvable", "danger")
+            return redirect('/facturation')
+
+        c.execute("SELECT * FROM facture_lignes WHERE facture_id=?", (fid,))
+        lignes = c.fetchall()
+        c.execute("SELECT * FROM paiements WHERE facture_id=? ORDER BY date_paiement DESC", (fid,))
+        paiements = c.fetchall()
+        conn.close()
+
+        solde = f['total'] - f['montant_paye']
+
+        content = f"""
+        <style>
+        .facture {{ max-width: 800px; margin: 20px auto; padding: 40px; background:white; box-shadow:0 4px 20px rgba(0,0,0,0.08); border-radius:8px; }}
+        .facture .header {{ display:flex; justify-content:space-between; padding-bottom:25px; border-bottom:3px solid #d97706; margin-bottom:25px; }}
+        .facture h1 {{ color:#92400e; font-size:1.8rem; letter-spacing:-0.5px; }}
+        .facture .stars {{ color:#fbbf24; font-size:0.9rem; letter-spacing:2px; }}
+        @media print {{
+          body * {{ visibility: hidden; }}
+          .facture, .facture * {{ visibility: visible; }}
+          .facture {{ position: absolute; left: 0; top: 0; box-shadow: none; }}
+          .no-print {{ display: none !important; }}
+        }}
+        </style>
+
+        <div class="no-print" style="text-align:center;margin-bottom:15px">
+          <button onclick="window.print()" class="btn btn-primary"><i class="fas fa-print"></i> Imprimer</button>
+          <a href="/facturation" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+        </div>
+
+        <div class="facture">
+          <div class="header">
+            <div>
+              <h1>OMEGA HÔTEL</h1>
+              <div class="stars">★★★★★</div>
+              <p style="color:#64748b;font-size:0.85rem;margin-top:8px">
+                Corniche Ouest, Dakar<br>
+                Tél : +221 33 800 00 00<br>
+                NIF : SN-123456789
+              </p>
+            </div>
+            <div style="text-align:right">
+              <h2 style="color:#451a03;font-size:1.5rem;font-weight:900">FACTURE</h2>
+              <p style="color:#92400e;font-weight:800;margin-top:8px">N° {f['numero']}</p>
+              <p style="color:#64748b;font-size:0.85rem">Date : {f['date_facture'][:10]}</p>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-bottom:30px">
+            <div>
+              <div style="font-weight:800;color:#d97706;text-transform:uppercase;font-size:0.75rem;letter-spacing:1px;margin-bottom:10px">Facturé à</div>
+              <div><strong>{f['nom']} {f['prenom'] or ''}</strong></div>
+              {f'<div>{f["societe"]}</div>' if f['societe'] else ''}
+              <div>{f['adresse'] or ''}</div>
+              <div>{f['ville'] or ''}</div>
+              <div>Tél : {f['telephone']}</div>
+              {f'<div>Email : {f["email"]}</div>' if f['email'] else ''}
+              {f'<div>N° TVA : {f["numero_tva"]}</div>' if f['numero_tva'] else ''}
+            </div>
+          </div>
+
+          <table style="width:100%;border-collapse:collapse;margin-bottom:20px">
+            <thead>
+              <tr style="background:#fffbeb">
+                <th style="padding:12px;text-align:left;color:#92400e;font-size:0.8rem">Désignation</th>
+                <th style="padding:12px;text-align:right;color:#92400e;font-size:0.8rem">Qté</th>
+                <th style="padding:12px;text-align:right;color:#92400e;font-size:0.8rem">P.U.</th>
+                <th style="padding:12px;text-align:right;color:#92400e;font-size:0.8rem">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+        """
+        for l in lignes:
+            content += f"""
+            <tr style="border-bottom:1px solid #f3f4f6">
+              <td style="padding:12px">
+                <strong>{l['designation']}</strong>
+                {f'<br><small style="color:#94a3b8">{l["categorie"]}</small>' if l['categorie'] else ''}
+              </td>
+              <td style="padding:12px;text-align:right">{l['quantite']}</td>
+              <td style="padding:12px;text-align:right">{l['prix_unitaire']:,.0f}</td>
+              <td style="padding:12px;text-align:right"><strong>{l['total_ligne']:,.0f} FCFA</strong></td>
+            </tr>
+            """
+
+        content += f"""
+            </tbody>
+            <tfoot>
+              {f'<tr><td colspan="3" style="text-align:right;padding:10px">Sous-total hébergement</td><td style="text-align:right;padding:10px"><strong>{f["sous_total_hebergement"]:,.0f} FCFA</strong></td></tr>' if f['sous_total_hebergement'] > 0 else ''}
+              {f'<tr><td colspan="3" style="text-align:right;padding:10px">Sous-total restaurant</td><td style="text-align:right;padding:10px"><strong>{f["sous_total_resto"]:,.0f} FCFA</strong></td></tr>' if f['sous_total_resto'] > 0 else ''}
+              {f'<tr><td colspan="3" style="text-align:right;padding:10px">Sous-total services</td><td style="text-align:right;padding:10px"><strong>{f["sous_total_services"]:,.0f} FCFA</strong></td></tr>' if f['sous_total_services'] > 0 else ''}
+              {f'<tr style="color:#16a34a"><td colspan="3" style="text-align:right;padding:10px">Remise</td><td style="text-align:right;padding:10px"><strong>-{f["remise"]:,.0f} FCFA</strong></td></tr>' if f['remise'] > 0 else ''}
+              <tr><td colspan="3" style="text-align:right;padding:10px">TVA (18%)</td><td style="text-align:right;padding:10px"><strong>{f['tva']:,.0f} FCFA</strong></td></tr>
+              <tr><td colspan="3" style="text-align:right;padding:10px">Taxe de séjour</td><td style="text-align:right;padding:10px"><strong>{f['taxe_sejour']:,.0f} FCFA</strong></td></tr>
+              <tr style="background:#fffbeb">
+                <td colspan="3" style="text-align:right;padding:15px;font-weight:900;font-size:1.1rem">TOTAL TTC</td>
+                <td style="text-align:right;padding:15px;font-weight:900;font-size:1.3rem;color:#92400e">{f['total']:,.0f} FCFA</td>
+              </tr>
+              {f'<tr style="color:#16a34a"><td colspan="3" style="text-align:right;padding:10px">Payé</td><td style="text-align:right;padding:10px"><strong>-{f["montant_paye"]:,.0f} FCFA</strong></td></tr>' if f['montant_paye'] > 0 else ''}
+              {f'<tr style="background:#fee2e2"><td colspan="3" style="text-align:right;padding:15px;font-weight:900">SOLDE DÛ</td><td style="text-align:right;padding:15px;font-weight:900;color:#dc2626;font-size:1.2rem">{solde:,.0f} FCFA</td></tr>' if solde > 0 else ''}
+            </tfoot>
+          </table>
+
+          <div style="margin-top:40px;padding-top:25px;border-top:2px dashed #cbd5e0;text-align:center;color:#64748b;font-size:0.85rem">
+            <p><strong>Merci de votre séjour à l'OMEGA HÔTEL</strong></p>
+            <p style="margin-top:8px">Nous espérons vous revoir très bientôt</p>
+            <p class="stars" style="margin-top:15px">★★★★★</p>
+          </div>
+        </div>
+        """
+        return render_page(content, active='facturation', page_title=f"Facture {f['numero']}")
+
+    print("[HOTEL_LOGIC] ✅ Routes facturation enregistrées")
+
+    # ==================== RAPPORTS ====================
+    @app.route('/rapports')
+    @directeur_required
+    def rapports():
+        conn = get_db()
+        c = conn.cursor()
+
+        # KPIs hôteliers
+        c.execute("SELECT COUNT(*) FROM chambres WHERE actif=1")
+        total_chambres = c.fetchone()[0]
+
+        today = datetime.now().date().isoformat()
+        c.execute("""SELECT COUNT(*) FROM sejours WHERE statut='En cours'""")
+        chambres_occupees = c.fetchone()[0]
+
+        taux_occupation = (chambres_occupees / total_chambres * 100) if total_chambres else 0
+
+        # ADR (Average Daily Rate) - Tarif moyen
+        c.execute("""SELECT COALESCE(AVG(tarif_nuit), 0) FROM reservations
+                     WHERE statut IN ('Confirmée', 'En cours', 'Terminée')
+                     AND strftime('%Y-%m', date_arrivee) = strftime('%Y-%m', 'now')""")
+        adr = c.fetchone()[0]
+
+        # RevPAR (Revenue Per Available Room)
+        c.execute("""SELECT COALESCE(SUM(total), 0) FROM paiements
+                     WHERE strftime('%Y-%m', date_paiement) = strftime('%Y-%m', 'now')""")
+        ca_mois = c.fetchone()[0]
+        revpar = ca_mois / (total_chambres * 30) if total_chambres else 0
+
+        # CA par source
+        c.execute("""SELECT source, COUNT(*) as nb, COALESCE(SUM(total), 0) as ca
+                     FROM reservations WHERE statut IN ('Confirmée', 'En cours', 'Terminée')
+                     GROUP BY source ORDER BY ca DESC""")
+        par_source = c.fetchall()
+
+        # Top 10 clients
+        c.execute("""SELECT nom, prenom, societe, nb_sejours, total_depense, vip
+                     FROM clients WHERE nb_sejours > 0
+                     ORDER BY total_depense DESC LIMIT 10""")
+        top_clients = c.fetchall()
+
+        # Taux par type de chambre
+        c.execute("""SELECT tc.nom, COUNT(ch.id) as total,
+                     SUM(CASE WHEN ch.statut='Occupée' THEN 1 ELSE 0 END) as occ
+                     FROM types_chambres tc
+                     LEFT JOIN chambres ch ON ch.type_id = tc.id AND ch.actif=1
+                     WHERE tc.actif=1 GROUP BY tc.id ORDER BY tc.ordre""")
+        par_type = c.fetchall()
+
+        # CA par mois
+        c.execute("""SELECT strftime('%Y-%m', date_paiement) as mois,
+                            COUNT(*) as nb,
+                            COALESCE(SUM(montant), 0) as ca
+                     FROM paiements
+                     WHERE date_paiement >= date('now', '-6 months')
+                     GROUP BY mois ORDER BY mois DESC""")
+        par_mois = c.fetchall()
+
+        conn.close()
+
+        content = f"""
+        <div class="page-header">
+          <div>
+            <h2><i class="fas fa-chart-line"></i> Rapports & Analytics</h2>
+            <div class="page-subtitle">Performance hôtelière temps réel</div>
+          </div>
+        </div>
+
+        <div class="kpi-grid">
+          <div class="kpi-card" style="border-top-color:#10b981">
+            <div class="kpi-icon" style="background:linear-gradient(135deg,#10b981,#22c55e)">
+              <i class="fas fa-percentage"></i>
+            </div>
+            <div class="kpi-content">
+              <div class="kpi-label">Taux d'occupation</div>
+              <div class="kpi-value">{taux_occupation:.1f}%</div>
+              <div class="kpi-sub">{chambres_occupees} / {total_chambres} chambres</div>
+            </div>
+          </div>
+
+          <div class="kpi-card" style="border-top-color:#d97706">
+            <div class="kpi-icon" style="background:linear-gradient(135deg,#92400e,#d97706)">
+              <i class="fas fa-tag"></i>
+            </div>
+            <div class="kpi-content">
+              <div class="kpi-label">ADR (Tarif moyen)</div>
+              <div class="kpi-value">{adr:,.0f}</div>
+              <div class="kpi-sub">FCFA / nuit</div>
+            </div>
+          </div>
+
+          <div class="kpi-card" style="border-top-color:#0891b2">
+            <div class="kpi-icon" style="background:linear-gradient(135deg,#0891b2,#06b6d4)">
+              <i class="fas fa-chart-line"></i>
+            </div>
+            <div class="kpi-content">
+              <div class="kpi-label">RevPAR</div>
+              <div class="kpi-value">{revpar:,.0f}</div>
+              <div class="kpi-sub">FCFA / chambre disponible</div>
+            </div>
+          </div>
+
+          <div class="kpi-card" style="border-top-color:#fbbf24">
+            <div class="kpi-icon" style="background:linear-gradient(135deg,#d97706,#fbbf24)">
+              <i class="fas fa-money-bill-wave"></i>
+            </div>
+            <div class="kpi-content">
+              <div class="kpi-label">CA du mois</div>
+              <div class="kpi-value">{ca_mois:,.0f}</div>
+              <div class="kpi-sub">FCFA</div>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+          <div class="card">
+            <div class="card-header"><h3><i class="fas fa-globe"></i> CA par source de réservation</h3></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Source</th><th>Réservations</th><th>CA</th></tr></thead>
+                <tbody>
+        """
+        for s in par_source:
+            content += f"""
+            <tr>
+              <td><strong>{s['source'] or 'Direct'}</strong></td>
+              <td>{s['nb']}</td>
+              <td><strong style="color:#92400e">{s['ca']:,.0f}</strong> FCFA</td>
+            </tr>
+            """
+        if not par_source:
+            content += '<tr><td colspan="3" class="empty">Aucune donnée</td></tr>'
+        content += "</tbody></table></div></div>"
+
+        content += """
+          <div class="card">
+            <div class="card-header"><h3><i class="fas fa-bed"></i> Taux d'occupation par type</h3></div>
+        """
+        for t in par_type:
+            taux = (t['occ'] / t['total'] * 100) if t['total'] else 0
+            content += f"""
+            <div style="margin-bottom:15px">
+              <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+                <span style="font-weight:700;font-size:0.9rem">{t['nom']}</span>
+                <strong style="color:#92400e">{t['occ']}/{t['total']} ({taux:.0f}%)</strong>
+              </div>
+              <div style="background:#fffbeb;border-radius:6px;height:12px;overflow:hidden">
+                <div style="background:linear-gradient(90deg,#d97706,#fbbf24);height:100%;width:{taux}%"></div>
+              </div>
+            </div>
+            """
+        content += "</div></div>"
+
+        content += """
+        <div class="card">
+          <div class="card-header"><h3><i class="fas fa-crown"></i> Top 10 clients</h3></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>#</th><th>Client</th><th>Séjours</th><th>CA total</th></tr></thead>
+              <tbody>
+        """
+        for i, cl in enumerate(top_clients, 1):
+            medal = '🥇' if i == 1 else ('🥈' if i == 2 else ('🥉' if i == 3 else ''))
+            vip = ' 👑' if cl['vip'] else ''
+            content += f"""
+            <tr>
+              <td><strong>{medal} {i}</strong></td>
+              <td>{cl['nom']} {cl['prenom'] or ''}{vip}<br><small style="color:#94a3b8">{cl['societe'] or ''}</small></td>
+              <td><span class="badge badge-gold">{cl['nb_sejours']}</span></td>
+              <td><strong style="color:#92400e">{cl['total_depense']:,.0f}</strong> FCFA</td>
+            </tr>
+            """
+        if not top_clients:
+            content += '<tr><td colspan="4" class="empty">Aucun client</td></tr>'
+        content += "</tbody></table></div></div>"
+
+        content += """
+        <div class="card">
+          <div class="card-header"><h3><i class="fas fa-chart-bar"></i> CA des 6 derniers mois</h3></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Mois</th><th>Nb paiements</th><th>CA</th></tr></thead>
+              <tbody>
+        """
+        for m in par_mois:
+            content += f"""
+            <tr>
+              <td><strong>{m['mois']}</strong></td>
+              <td>{m['nb']}</td>
+              <td><strong style="color:#92400e">{m['ca']:,.0f}</strong> FCFA</td>
+            </tr>
+            """
+        if not par_mois:
+            content += '<tr><td colspan="3" class="empty">Aucune donnée</td></tr>'
+        content += "</tbody></table></div></div>"
+        return render_page(content, active='rapports', page_title='Rapports')
+
+    print("[HOTEL_LOGIC] ✅ Routes rapports enregistrées")

@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Modifier' if dossier else 'Nouveau' }} dossier douane{% endblock %}
+{% block page_title %}{{ '✏️ Modifier' if dossier else '➕ Nouveau' }} dossier douane{% endblock %}
+{% block content %}
+<form method="POST" class="card-premium">
+  <div class="row g-3">
+    <div class="col-md-6"><label class="form-label">Véhicule *</label>
+      <select name="vehicule_id" class="form-select" required>
+        <option value="">— Choisir —</option>
+        {% for v in vehicules %}<option value="{{ v.id }}" {% if (dossier and dossier.vehicule_id==v.id) or (not dossier and vehicule_id==v.id) %}selected{% endif %}>{{ v.code }} — {{ v.marque_nom }} {{ v.modele_nom }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="col-md-3"><label class="form-label">N° déclaration</label><input type="text" name="numero_declaration" class="form-control" value="{{ dossier.numero_declaration if dossier else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Bureau douane</label><input type="text" name="bureau_douane" class="form-control" value="{{ dossier.bureau_douane if dossier else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Pays origine</label><input type="text" name="pays_origine" class="form-control" value="{{ dossier.pays_origine if dossier else '' }}"></div>
+    <div class="col-md-3"><label class="form-label">Date import</label><input type="date" name="date_import" class="form-control" value="{{ dossier.date_import if dossier else '' }}"></div>
+    <div class="col-md-2"><label class="form-label">Valeur CAF</label><input type="number" name="valeur_caf" class="form-control" value="{{ dossier.valeur_caf if dossier else 0 }}"></div>
+    <div class="col-md-2"><label class="form-label">Droits & taxes</label><input type="number" name="droits_taxes" class="form-control" value="{{ dossier.droits_taxes if dossier else 0 }}"></div>
+    <div class="col-md-2"><label class="form-label">Statut</label>
+      <select name="statut" class="form-select">
+        <option value="en_cours" {% if dossier and dossier.statut=='en_cours' %}selected{% endif %}>En cours</option>
+        <option value="dedouane" {% if dossier and dossier.statut=='dedouane' %}selected{% endif %}>Dédouané</option>
+      </select>
+    </div>
+    <div class="col-md-2"><label class="form-label">Date dédouanement</label><input type="date" name="date_dedouanement" class="form-control" value="{{ dossier.date_dedouanement if dossier else '' }}"></div>
+  </div>
+  <div class="mt-4 d-flex gap-2">
+    <button class="btn btn-accent"><i class="bi bi-check-lg"></i> Enregistrer</button>
+    <a href="{{ url_for('douane_list') }}" class="btn btn-light">Annuler</a>
+  </div>
+</form>
+{% endblock %}

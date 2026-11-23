@@ -1,0 +1,523 @@
+from flask import Flask, render_template_string, request, redirect, url_for, jsonify
+import sqlite3
+from datetime import datetime
+
+app = Flask(__name__)
+DB_PATH = "ecole.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Tables LMD
+    c.execute("CREATE TABLE IF NOT EXISTS cycles (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, nom TEXT)")
+    c.execute("CREATE TABLE IF NOT EXISTS filieres (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, nom TEXT, cycle_id INTEGER)")
+    c.execute("CREATE TABLE IF NOT EXISTS niveaux (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, nom TEXT, cycle_id INTEGER, ordre INTEGER)")
+    c.execute("CREATE TABLE IF NOT EXISTS classes (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, nom TEXT, niveau_id INTEGER, filiere_id INTEGER, capacite INTEGER)")
+    c.execute("CREATE TABLE IF NOT EXISTS matieres (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, nom TEXT, niveau_id INTEGER, coefficient INTEGER, credit INTEGER)")
+    c.execute("CREATE TABLE IF NOT EXISTS etudiants (id INTEGER PRIMARY KEY AUTOINCREMENT, matricule TEXT UNIQUE, nom TEXT, prenom TEXT, date_naissance TEXT, sexe TEXT, telephone TEXT, email TEXT, classe_id INTEGER, date_inscription TEXT, statut TEXT DEFAULT 'Actif')")
+    c.execute("CREATE TABLE IF NOT EXISTS bulletins (id INTEGER PRIMARY KEY AUTOINCREMENT, etudiant_id INTEGER, matiere_id INTEGER, note_cc REAL, note_tp REAL, note_examen REAL, note_finale REAL, statut TEXT DEFAULT 'En cours')")
+    c.execute("CREATE TABLE IF NOT EXISTS professeurs (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, nom TEXT, prenom TEXT, telephone TEXT, email TEXT, specialite TEXT)")
+    c.execute("CREATE TABLE IF NOT EXISTS affectations (id INTEGER PRIMARY KEY AUTOINCREMENT, professeur_id INTEGER, matiere_id INTEGER, classe_id INTEGER, annee_academique TEXT)")
+    c.execute("CREATE TABLE IF NOT EXISTS scolarite (id INTEGER PRIMARY KEY AUTOINCREMENT, etudiant_id INTEGER, montant REAL, mois TEXT, date_paiement TEXT, statut TEXT DEFAULT 'En attente')")
+    
+    c.execute("SELECT COUNT(*) FROM cycles")
+    if c.fetchone()[0] == 0:
+        c.executemany("INSERT INTO cycles (code, nom) VALUES (?, ?)",
+            [("LIC", "Licence"), ("MAS", "Master"), ("DOC", "Doctorat")])
+        
+        c.executemany("INSERT INTO niveaux (code, nom, cycle_id, ordre) VALUES (?, ?, ?, ?)",
+            [("L1", "Licence 1", 1, 1), ("L2", "Licence 2", 1, 2), ("L3", "Licence 3", 1, 3),
+             ("M1", "Master 1", 2, 1), ("M2", "Master 2", 2, 2),
+             ("D1", "Doctorat 1", 3, 1), ("D2", "Doctorat 2", 3, 2), ("D3", "Doctorat 3", 3, 3)])
+        
+        c.executemany("INSERT INTO filieres (code, nom, cycle_id) VALUES (?, ?, ?)",
+            [("IA", "Informatique Appliquee", 1), ("SE", "Systemes Embarques", 1),
+             ("RS", "Reseaux et Securite", 1), ("DS", "Data Science", 1),
+             ("GL", "Genie Logiciel", 1), ("MIAGE", "MIAGE", 1)])
+        
+        c.executemany("INSERT INTO classes (code, nom, niveau_id, filiere_id, capacite) VALUES (?, ?, ?, ?, ?)",
+            [("IA-L1", "IA - Licence 1", 1, 1, 40), ("IA-L2", "IA - Licence 2", 2, 1, 35),
+             ("IA-L3", "IA - Licence 3", 3, 1, 30), ("DS-M1", "DS - Master 1", 4, 4, 25),
+             ("GL-M1", "GL - Master 1", 4, 5, 25)])
+        
+        c.executemany("INSERT INTO matieres (code, nom, niveau_id, coefficient, credit) VALUES (?, ?, ?, ?, ?)",
+            [("ALGO", "Algorithmique", 1, 3, 4), ("PROG", "Programmation", 1, 4, 5),
+             ("BD", "Bases de Donnees", 1, 3, 4), ("RES", "Reseaux", 1, 2, 3),
+             ("POO", "Programmation Objet", 2, 4, 5), ("WEB", "Developpement Web", 2, 3, 4)])
+        
+        c.executemany("INSERT INTO professeurs (code, nom, prenom, telephone, email, specialite) VALUES (?, ?, ?, ?, ?, ?)",
+            [("P001", "Diop", "Mamadou", "771234567", "mamadou@omega.sn", "Algorithmique"),
+             ("P002", "Fall", "Aminata", "772345678", "aminata@omega.sn", "Bases de Donnees")])
+        
+        c.executemany("INSERT INTO affectations (professeur_id, matiere_id, classe_id, annee_academique) VALUES (?, ?, ?, ?)",
+            [(1, 1, 1, "2025-2026"), (1, 2, 1, "2025-2026"), (2, 3, 1, "2025-2026")])
+        
+        c.executemany("INSERT INTO etudiants (matricule, nom, prenom, date_naissance, sexe, telephone, email, classe_id, date_inscription, statut) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Actif')",
+            [("E001", "Sarr", "Aliou", "2000-05-15", "M", "771234568", "aliou@edu.sn", 1, datetime.now().isoformat()),
+             ("E002", "Ba", "Aissatou", "2001-03-22", "F", "772345679", "aissatou@edu.sn", 1, datetime.now().isoformat())])
+        
+        c.execute("""
+            INSERT INTO bulletins (etudiant_id, matiere_id, note_cc, note_tp, note_examen, note_finale, statut)
+            SELECT e.id, m.id, 0, 0, 0, 0, 'En cours'
+            FROM etudiants e
+            JOIN classes c ON e.classe_id = c.id
+            JOIN matieres m ON m.niveau_id = c.niveau_id
+        """)
+        
+        c.executemany("INSERT INTO scolarite (etudiant_id, montant, mois, date_paiement, statut) VALUES (?, ?, ?, ?, 'Paye')",
+            [(1, 150000, "Septembre", datetime.now().isoformat()),
+             (2, 150000, "Septembre", datetime.now().isoformat())])
+        
+        conn.commit()
+    conn.close()
+
+init_db()
+
+# ===== TEMPLATE HTML COMPLET =====
+HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Omega Ecole - Systeme LMD</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; font-family:'Segoe UI',sans-serif; }
+        body { background:#f0f4f8; }
+        .header { background:linear-gradient(135deg,#1a1a2e,#0f3460); padding:15px 30px; display:flex; justify-content:space-between; align-items:center; border-bottom:4px solid #e94560; flex-wrap:wrap; gap:10px; }
+        .header h1 { color:white; font-size:1.5rem; }
+        .header h1 span { color:#e94560; }
+        .header .badge { background:rgba(233,69,96,0.3); color:white; padding:5px 15px; border-radius:20px; }
+        .nav { background:white; padding:0 20px; display:flex; gap:2px; border-bottom:2px solid #e2e8f0; flex-wrap:wrap; }
+        .nav a { padding:12px 18px; color:#4a5568; text-decoration:none; border-bottom:3px solid transparent; transition:0.3s; font-size:0.9rem; display:flex; align-items:center; gap:6px; }
+        .nav a:hover, .nav a.active { color:#e94560; border-bottom-color:#e94560; background:#f7fafc; }
+        .container { max-width:1400px; margin:20px auto; padding:0 20px; }
+        .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:15px; margin-bottom:20px; }
+        .stat-card { background:white; padding:15px; border-radius:12px; border-left:4px solid #e94560; box-shadow:0 2px 8px rgba(0,0,0,0.05); }
+        .stat-card .num { font-size:1.8rem; font-weight:700; color:#1a1a2e; }
+        .stat-card .label { color:#718096; font-size:0.8rem; text-transform:uppercase; }
+        .stat-card .icon { float:right; font-size:2rem; color:#e94560; opacity:0.2; }
+        .card { background:white; border-radius:12px; padding:20px; box-shadow:0 2px 8px rgba(0,0,0,0.05); margin-top:20px; overflow-x:auto; }
+        .card-header { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:15px; }
+        .card-header h2 { font-size:1.2rem; color:#1a1a2e; }
+        .btn { padding:8px 16px; border:none; border-radius:6px; cursor:pointer; font-weight:600; display:inline-flex; align-items:center; gap:6px; text-decoration:none; transition:0.3s; font-size:0.85rem; }
+        .btn-primary { background:#e94560; color:white; }
+        .btn-primary:hover { background:#c73652; }
+        .btn-success { background:#2ecc71; color:white; }
+        .btn-warning { background:#f39c12; color:white; }
+        .btn-danger { background:#e74c3c; color:white; }
+        .btn-info { background:#3498db; color:white; }
+        .btn-sm { padding:4px 10px; font-size:0.75rem; }
+        table { width:100%; border-collapse:collapse; }
+        th, td { padding:10px 12px; text-align:left; border-bottom:1px solid #e2e8f0; font-size:0.9rem; }
+        th { background:#f7fafc; color:#4a5568; font-size:0.75rem; text-transform:uppercase; }
+        tr:hover { background:#f7fafc; }
+        .badge { padding:3px 10px; border-radius:20px; font-size:0.7rem; font-weight:600; }
+        .badge-success { background:#d1fae5; color:#065f46; }
+        .badge-warning { background:#fef3c7; color:#92400e; }
+        .badge-danger { background:#fee2e2; color:#991b1b; }
+        .form-container { background:white; border-radius:12px; padding:25px; max-width:800px; margin:0 auto; box-shadow:0 2px 8px rgba(0,0,0,0.05); }
+        .form-group { margin-bottom:12px; }
+        .form-group label { display:block; font-weight:600; color:#4a5568; margin-bottom:4px; font-size:0.9rem; }
+        .form-group input, .form-group select { width:100%; padding:8px 12px; border:2px solid #e2e8f0; border-radius:6px; font-size:0.9rem; }
+        .form-group input:focus { outline:none; border-color:#e94560; }
+        .form-row { display:grid; grid-template-columns:1fr 1fr; gap:15px; }
+        .footer { background:#1a1a2e; color:#a8b2d1; text-align:center; padding:15px; margin-top:30px; border-top:4px solid #e94560; font-size:0.85rem; }
+        .footer span { color:#e94560; }
+        @media (max-width:768px){ .form-row{ grid-template-columns:1fr; } .header{ flex-direction:column; } .stats{ grid-template-columns:1fr 1fr; } }
+    </style>
+</head>
+<body>
+<header class="header">
+    <div><h1>🎓 OMEGA <span>CONSULTING</span></h1></div>
+    <div class="badge"><i class="fas fa-school"></i> Systeme LMD</div>
+</header>
+<nav class="nav">
+    <a href="/" class="active"><i class="fas fa-home"></i> Dashboard</a>
+    <a href="/etudiants"><i class="fas fa-users"></i> Etudiants</a>
+    <a href="/inscription"><i class="fas fa-user-plus"></i> Inscription</a>
+    <a href="/classes"><i class="fas fa-chalkboard"></i> Classes</a>
+    <a href="/matieres"><i class="fas fa-book"></i> Matieres</a>
+    <a href="/professeurs"><i class="fas fa-chalkboard-teacher"></i> Professeurs</a>
+    <a href="/bulletins"><i class="fas fa-file-alt"></i> Bulletins</a>
+    <a href="/scolarite"><i class="fas fa-money-bill-wave"></i> Scolarite</a>
+</nav>
+<div class="container">
+    <div class="stats">
+        <div class="stat-card"><div class="icon"><i class="fas fa-users"></i></div><div class="num">{{ stats.total }}</div><div class="label">Total Etudiants</div></div>
+        <div class="stat-card" style="border-left-color:#2ecc71;"><div class="icon"><i class="fas fa-user-check"></i></div><div class="num">{{ stats.actifs }}</div><div class="label">Actifs</div></div>
+        <div class="stat-card" style="border-left-color:#3498db;"><div class="icon"><i class="fas fa-chalkboard"></i></div><div class="num">{{ stats.classes }}</div><div class="label">Classes</div></div>
+        <div class="stat-card" style="border-left-color:#f39c12;"><div class="icon"><i class="fas fa-money-bill-wave"></i></div><div class="num">{{ stats.scolarite }} FCFA</div><div class="label">Scolarite</div></div>
+    </div>
+    <div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-users"></i> Derniers Etudiants</h2>
+            <a href="/inscription" class="btn btn-primary"><i class="fas fa-plus"></i> Inscrire</a>
+        </div>
+        <table>
+            <thead><tr><th>Matricule</th><th>Nom & Prenom</th><th>Classe</th><th>Moyenne</th><th>Statut</th><th>Actions</th></tr></thead>
+            <tbody>
+            {% for e in etudiants %}
+            <tr>
+                <td><strong>{{ e[1] }}</strong></td>
+                <td>{{ e[2] }} {{ e[3] }}</td>
+                <td>{{ e[10] }}</td>
+                <td>{{ e[11] or '-' }}</td>
+                <td><span class="badge badge-success">{{ e[9] }}</span></td>
+                <td>
+                    <a href="/etudiant/{{ e[0] }}" class="btn btn-info btn-sm"><i class="fas fa-eye"></i></a>
+                    <a href="/bulletin/{{ e[0] }}" class="btn btn-primary btn-sm"><i class="fas fa-file-alt"></i></a>
+                    <a href="/notes/{{ e[0] }}" class="btn btn-success btn-sm"><i class="fas fa-star"></i></a>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+<footer class="footer">&copy; 2026 <span>Omega Consulting</span> - Tous droits reserves</footer>
+</body>
+</html>
+"""
+
+# ===== ROUTES =====
+
+@app.route("/")
+def index():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM etudiants")
+    total = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM etudiants WHERE statut='Actif'")
+    actifs = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM classes")
+    classes = c.fetchone()[0]
+    c.execute("SELECT SUM(montant) FROM scolarite WHERE statut='Paye'")
+    scolarite = c.fetchone()[0] or 0
+    c.execute("""
+        SELECT e.*, c.nom as classe_nom,
+               (SELECT AVG(b.note_finale * m.coefficient) / AVG(m.coefficient) 
+                FROM bulletins b 
+                JOIN matieres m ON b.matiere_id = m.id 
+                WHERE b.etudiant_id = e.id) as moyenne
+        FROM etudiants e
+        JOIN classes c ON e.classe_id = c.id
+        ORDER BY e.id DESC LIMIT 15
+    """)
+    etudiants = c.fetchall()
+    conn.close()
+    stats = {'total': total, 'actifs': actifs, 'classes': classes, 'scolarite': scolarite}
+    return render_template_string(HTML, stats=stats, etudiants=etudiants)
+
+@app.route("/etudiants")
+def liste_etudiants():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT e.*, c.nom as classe_nom,
+               (SELECT AVG(b.note_finale * m.coefficient) / AVG(m.coefficient) 
+                FROM bulletins b 
+                JOIN matieres m ON b.matiere_id = m.id 
+                WHERE b.etudiant_id = e.id) as moyenne
+        FROM etudiants e
+        JOIN classes c ON e.classe_id = c.id
+        ORDER BY e.nom
+    """)
+    etudiants = c.fetchall()
+    conn.close()
+    return render_template_string(HTML, stats={'total':0,'actifs':0,'classes':0,'scolarite':0}, etudiants=etudiants)
+
+@app.route("/inscription", methods=["GET", "POST"])
+def inscription():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    if request.method == "POST":
+        c.execute("SELECT COUNT(*) FROM etudiants")
+        count = c.fetchone()[0] + 1
+        matricule = f"E{count:04d}"
+        c.execute("""
+            INSERT INTO etudiants (matricule, nom, prenom, date_naissance, sexe, telephone, email, classe_id, date_inscription, statut)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, date('now'), 'Actif')
+        """, (
+            matricule, request.form['nom'], request.form['prenom'], request.form['date_naissance'],
+            request.form['sexe'], request.form['telephone'], request.form['email'], int(request.form['classe_id'])
+        ))
+        etudiant_id = c.lastrowid
+        c.execute("""
+            INSERT INTO bulletins (etudiant_id, matiere_id, note_cc, note_tp, note_examen, note_finale, statut)
+            SELECT ?, m.id, 0, 0, 0, 0, 'En cours'
+            FROM matieres m
+            WHERE m.niveau_id = (SELECT niveau_id FROM classes WHERE id = ?)
+        """, (etudiant_id, int(request.form['classe_id'])))
+        conn.commit()
+        conn.close()
+        return redirect(url_for('detail_etudiant', id=etudiant_id))
+    
+    c.execute("SELECT id, code, nom FROM classes ORDER BY nom")
+    classes = c.fetchall()
+    conn.close()
+    options = "".join(f'<option value="{c[0]}">{c[2]}</option>' for c in classes)
+    
+    form_html = f"""
+    <div class="form-container">
+        <h2><i class="fas fa-user-plus"></i> Inscription</h2>
+        <p style="color:#718096;margin-bottom:15px;">Le bulletin sera initialise automatiquement.</p>
+        <form method="POST">
+            <div class="form-row"><div class="form-group"><label>Nom *</label><input type="text" name="nom" required></div>
+            <div class="form-group"><label>Prenom *</label><input type="text" name="prenom" required></div></div>
+            <div class="form-row"><div class="form-group"><label>Date naissance *</label><input type="date" name="date_naissance" required></div>
+            <div class="form-group"><label>Sexe *</label><select name="sexe" required><option value="M">Masculin</option><option value="F">Feminin</option></select></div></div>
+            <div class="form-row"><div class="form-group"><label>Telephone *</label><input type="text" name="telephone" required></div>
+            <div class="form-group"><label>Email *</label><input type="email" name="email" required></div></div>
+            <div class="form-group"><label>Classe *</label><select name="classe_id" required>{options}</select></div>
+            <button type="submit" class="btn btn-primary" style="width:100%;"><i class="fas fa-save"></i> Inscrire</button>
+        </form>
+        <br><a href="/" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>
+    """
+    return render_template_string(HTML.replace('{% for e in etudiants %}', '').replace('{% endfor %}', ''), stats={'total':0,'actifs':0,'classes':0,'scolarite':0}, etudiants=[])
+
+@app.route("/etudiant/<int:id>")
+def detail_etudiant(id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT e.*, c.nom as classe_nom
+        FROM etudiants e
+        JOIN classes c ON e.classe_id = c.id
+        WHERE e.id = ?
+    """, (id,))
+    e = c.fetchone()
+    if not e:
+        conn.close()
+        return redirect(url_for('index'))
+    c.execute("""
+        SELECT b.*, m.nom as matiere_nom, m.coefficient
+        FROM bulletins b
+        JOIN matieres m ON b.matiere_id = m.id
+        WHERE b.etudiant_id = ?
+        ORDER BY m.nom
+    """, (id,))
+    bulletins = c.fetchall()
+    conn.close()
+    rows = "".join(f'<tr><td>{b[9]}</td><td>{b[10]}</td><td>{b[3]}</td><td>{b[4]}</td><td>{b[5]}</td><td><strong>{b[6]}</strong></td></tr>' for b in bulletins)
+    
+    detail_html = f"""
+    <div class="card">
+        <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+            <div><h2>{e[2]} {e[3]}</h2>
+            <p>Matricule: <strong>{e[1]}</strong> | Classe: {e[10]} | Statut: <span class="badge badge-success">{e[9]}</span></p>
+            <p>📞 {e[7]} | ✉️ {e[8]}</p></div>
+            <div><a href="/notes/{id}" class="btn btn-success"><i class="fas fa-star"></i> Notes</a>
+            <a href="/bulletin/{id}" class="btn btn-primary"><i class="fas fa-file-alt"></i> Bulletin</a></div>
+        </div>
+        <hr><h3>Bulletin</h3>
+        <table><thead><tr><th>Matiere</th><th>Coeff</th><th>CC</th><th>TP</th><th>Examen</th><th>Finale</th></tr></thead><tbody>{rows}</tbody></table>
+        <br><a href="/etudiants" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>
+    """
+    return render_template_string(HTML.replace('{% for e in etudiants %}', '').replace('{% endfor %}', ''), stats={'total':0,'actifs':0,'classes':0,'scolarite':0}, etudiants=[])
+
+@app.route("/notes/<int:etudiant_id>", methods=["GET", "POST"])
+def notes(etudiant_id):
+    if request.method == "POST":
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        for key, value in request.form.items():
+            if key.startswith('note_'):
+                parts = key.split('_')
+                bid = int(parts[1])
+                if parts[2] == 'cc':
+                    c.execute("UPDATE bulletins SET note_cc=? WHERE id=?", (float(value), bid))
+                elif parts[2] == 'tp':
+                    c.execute("UPDATE bulletins SET note_tp=? WHERE id=?", (float(value), bid))
+                elif parts[2] == 'examen':
+                    c.execute("UPDATE bulletins SET note_examen=? WHERE id=?", (float(value), bid))
+        c.execute("UPDATE bulletins SET note_finale = (note_cc + note_tp + note_examen) / 3 WHERE etudiant_id = ?", (etudiant_id,))
+        conn.commit()
+        conn.close()
+        return redirect(url_for('bulletin_etudiant', etudiant_id=etudiant_id))
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT e.* FROM etudiants e WHERE e.id = ?", (etudiant_id,))
+    e = c.fetchone()
+    c.execute("SELECT b.*, m.nom FROM bulletins b JOIN matieres m ON b.matiere_id = m.id WHERE b.etudiant_id = ?", (etudiant_id,))
+    bulletins = c.fetchall()
+    conn.close()
+    rows = "".join(f'<tr><td>{b[9]}</td><td>{b[10]}</td><td><input type="number" name="note_{b[0]}_cc" value="{b[3]}" step="0.5" min="0" max="20" style="width:70px;"></td><td><input type="number" name="note_{b[0]}_tp" value="{b[4]}" step="0.5" min="0" max="20" style="width:70px;"></td><td><input type="number" name="note_{b[0]}_examen" value="{b[5]}" step="0.5" min="0" max="20" style="width:70px;"></td></tr>' for b in bulletins)
+    notes_html = f"""
+    <div class="form-container" style="max-width:1000px;">
+        <h2>Saisie des Notes - {e[2]} {e[3]}</h2>
+        <form method="POST">
+            <table><thead><tr><th>Matiere</th><th>Coeff</th><th>CC</th><th>TP</th><th>Examen</th></tr></thead><tbody>{rows}</tbody></table>
+            <br><button type="submit" class="btn btn-success" style="width:100%;"><i class="fas fa-save"></i> Enregistrer</button>
+        </form>
+        <br><a href="/etudiant/{etudiant_id}" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>
+    """
+    return render_template_string(HTML.replace('{% for e in etudiants %}', '').replace('{% endfor %}', ''), stats={'total':0,'actifs':0,'classes':0,'scolarite':0}, etudiants=[])
+
+@app.route("/bulletin/<int:etudiant_id>")
+def bulletin_etudiant(etudiant_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT e.*, c.nom as classe_nom
+        FROM etudiants e
+        JOIN classes c ON e.classe_id = c.id
+        WHERE e.id = ?
+    """, (etudiant_id,))
+    e = c.fetchone()
+    if not e:
+        conn.close()
+        return redirect(url_for('index'))
+    c.execute("""
+        SELECT b.*, m.nom as matiere_nom, m.coefficient, m.credit
+        FROM bulletins b
+        JOIN matieres m ON b.matiere_id = m.id
+        WHERE b.etudiant_id = ?
+        ORDER BY m.nom
+    """, (etudiant_id,))
+    bulletins = c.fetchall()
+    total_coeff = sum(b[10] for b in bulletins) if bulletins else 0
+    total_notes = sum(b[6] * b[10] for b in bulletins) if bulletins else 0
+    moyenne = round(total_notes / total_coeff, 2) if total_coeff > 0 else 0
+    conn.close()
+    rows = "".join(f'<tr><td>{b[9]}</td><td>{b[10]}</td><td>{b[11]}</td><td>{b[3]}</td><td>{b[4]}</td><td>{b[5]}</td><td><strong>{b[6]}</strong></td><td><span class="badge {"badge-success" if b[6]>=10 else "badge-danger"}">{"V" if b[6]>=10 else "NV"}</span></td></tr>' for b in bulletins)
+    bulletin_html = f"""
+    <div class="card">
+        <div style="text-align:center;margin-bottom:15px;">
+            <h2>OMEGA <span style="color:#e94560;">CONSULTING</span></h2>
+            <h3>Bulletin de Notes</h3>
+            <p>{e[2]} {e[3]} - {e[10]}</p>
+            <p><strong>Moyenne: {moyenne}/20</strong></p>
+        </div>
+        <table><thead><tr><th>Matiere</th><th>Coeff</th><th>Credits</th><th>CC</th><th>TP</th><th>Examen</th><th>Finale</th><th>Statut</th></tr></thead><tbody>{rows}</tbody></table>
+        <br><a href="/etudiant/{etudiant_id}" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+        <a href="#" onclick="window.print()" class="btn btn-primary"><i class="fas fa-print"></i> Imprimer</a>
+    </div>
+    """
+    return render_template_string(HTML.replace('{% for e in etudiants %}', '').replace('{% endfor %}', ''), stats={'total':0,'actifs':0,'classes':0,'scolarite':0}, etudiants=[])
+
+@app.route("/classes")
+def classes():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT c.*, f.nom, n.nom, (SELECT COUNT(*) FROM etudiants WHERE classe_id = c.id) as effectif
+        FROM classes c
+        JOIN filieres f ON c.filiere_id = f.id
+        JOIN niveaux n ON c.niveau_id = n.id
+        ORDER BY n.ordre
+    """)
+    classes = c.fetchall()
+    conn.close()
+    rows = "".join(f'<tr><td>{c[1]}</td><td>{c[2]}</td><td>{c[8]}</td><td>{c[9]}</td><td>{c[10] or 0}</td><td>{c[6]}</td></tr>' for c in classes)
+    classes_html = f"""
+    <div class="card">
+        <div class="card-header"><h2><i class="fas fa-chalkboard"></i> Classes</h2></div>
+        <table><thead><tr><th>Code</th><th>Nom</th><th>Filiere</th><th>Niveau</th><th>Effectif</th><th>Capacite</th></tr></thead><tbody>{rows}</tbody></table>
+    </div>
+    """
+    return render_template_string(HTML.replace('{% for e in etudiants %}', '').replace('{% endfor %}', ''), stats={'total':0,'actifs':0,'classes':0,'scolarite':0}, etudiants=[])
+
+@app.route("/matieres")
+def matieres():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT m.*, n.nom as niveau_nom FROM matieres m JOIN niveaux n ON m.niveau_id = n.id ORDER BY n.ordre")
+    matieres = c.fetchall()
+    conn.close()
+    rows = "".join(f'<tr><td>{m[1]}</td><td>{m[2]}</td><td>{m[8]}</td><td>{m[4]}</td><td>{m[5]}</td></tr>' for m in matieres)
+    matieres_html = f"""
+    <div class="card">
+        <div class="card-header"><h2><i class="fas fa-book"></i> Matieres</h2></div>
+        <table><thead><tr><th>Code</th><th>Nom</th><th>Niveau</th><th>Coeff</th><th>Credits</th></tr></thead><tbody>{rows}</tbody></table>
+    </div>
+    """
+    return render_template_string(HTML.replace('{% for e in etudiants %}', '').replace('{% endfor %}', ''), stats={'total':0,'actifs':0,'classes':0,'scolarite':0}, etudiants=[])
+
+@app.route("/professeurs")
+def professeurs():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT p.*, (SELECT COUNT(*) FROM affectations WHERE professeur_id = p.id) as nb_matieres
+        FROM professeurs p
+        ORDER BY p.nom
+    """)
+    profs = c.fetchall()
+    conn.close()
+    rows = "".join(f'<tr><td>{p[1]}</td><td>{p[2]} {p[3]}</td><td>{p[6] or "-"}</td><td>{p[4]}</td><td>{p[8]}</td></tr>' for p in profs)
+    prof_html = f"""
+    <div class="card">
+        <div class="card-header"><h2><i class="fas fa-chalkboard-teacher"></i> Professeurs</h2></div>
+        <table><thead><tr><th>Code</th><th>Nom & Prenom</th><th>Specialite</th><th>Telephone</th><th>Matieres</th></tr></thead><tbody>{rows}</tbody></table>
+    </div>
+    """
+    return render_template_string(HTML.replace('{% for e in etudiants %}', '').replace('{% endfor %}', ''), stats={'total':0,'actifs':0,'classes':0,'scolarite':0}, etudiants=[])
+
+@app.route("/scolarite")
+def scolarite():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT s.*, e.nom, e.prenom, e.matricule
+        FROM scolarite s
+        JOIN etudiants e ON s.etudiant_id = e.id
+        ORDER BY s.date_paiement DESC
+    """)
+    rows = c.fetchall()
+    conn.close()
+    rows_html = "".join(f'<tr><td>{r[8]} {r[9]}</td><td>{r[10]}</td><td>{r[2]} FCFA</td><td>{r[3]}</td><td>{r[4]}</td><td><span class="badge {"badge-success" if r[7]=="Paye" else "badge-warning"}">{r[7]}</span></td></tr>' for r in rows)
+    scolarite_html = f"""
+    <div class="card">
+        <div class="card-header"><h2><i class="fas fa-money-bill-wave"></i> Scolarite</h2></div>
+        <table><thead><tr><th>Etudiant</th><th>Matricule</th><th>Montant</th><th>Mois</th><th>Date</th><th>Statut</th></tr></thead><tbody>{rows_html}</tbody></table>
+    </div>
+    """
+    return render_template_string(HTML.replace('{% for e in etudiants %}', '').replace('{% endfor %}', ''), stats={'total':0,'actifs':0,'classes':0,'scolarite':0}, etudiants=[])
+
+@app.route("/bulletins")
+def liste_bulletins():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT b.*, e.nom, e.prenom, m.nom as matiere_nom
+        FROM bulletins b
+        JOIN etudiants e ON b.etudiant_id = e.id
+        JOIN matieres m ON b.matiere_id = m.id
+        ORDER BY b.id DESC LIMIT 50
+    """)
+    bulletins = c.fetchall()
+    conn.close()
+    rows = "".join(f'<tr><td>{b[10]} {b[11]}</td><td>{b[12]}</td><td>{b[3]}</td><td>{b[4]}</td><td>{b[5]}</td><td><strong>{b[6]}</strong></td></tr>' for b in bulletins)
+    bulletins_html = f"""
+    <div class="card">
+        <div class="card-header"><h2><i class="fas fa-file-alt"></i> Bulletins</h2></div>
+        <table><thead><tr><th>Etudiant</th><th>Matiere</th><th>CC</th><th>TP</th><th>Examen</th><th>Finale</th></tr></thead><tbody>{rows}</tbody></table>
+    </div>
+    """
+    return render_template_string(HTML.replace('{% for e in etudiants %}', '').replace('{% endfor %}', ''), stats={'total':0,'actifs':0,'classes':0,'scolarite':0}, etudiants=[])
+
+@app.route("/api/etudiants")
+def api_etudiants():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT e.id, e.matricule, e.nom, e.prenom, c.nom as classe,
+               (SELECT AVG(b.note_finale * m.coefficient) / AVG(m.coefficient) 
+                FROM bulletins b 
+                JOIN matieres m ON b.matiere_id = m.id 
+                WHERE b.etudiant_id = e.id) as moyenne
+        FROM etudiants e
+        JOIN classes c ON e.classe_id = c.id
+    """)
+    rows = c.fetchall()
+    conn.close()
+    return jsonify([{"id": r[0], "matricule": r[1], "nom": r[2], "prenom": r[3], "classe": r[4], "moyenne": round(r[5] or 0, 2)} for r in rows])
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000, debug=False)

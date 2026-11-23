@@ -1,0 +1,1963 @@
+"""
+🎓 Formation Professionnelle — Application principale
+Formations · Sessions · Apprenants · Évaluations · Certificats · 3FPT
+"""
+from flask import Flask, render_template_string, redirect, url_for, session, request, jsonify, Response, send_file, flash
+from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+from datetime import datetime, timedelta
+import sqlite3
+import os
+import io
+
+app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'omega-formation-secret-2026')
+
+DB_PATH = '/app/data/formation_pro.db'
+
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+
+
+class User(UserMixin):
+    def __init__(self, id, username, role, nom_complet, specialite=''):
+        self.id = id
+        self.username = username
+        self.role = role
+        self.nom_complet = nom_complet
+        self.specialite = specialite
+
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def log_action(user_id, action, details='', entity=None, entity_id=None):
+    try:
+        db = get_db()
+        cur = db.cursor()
+        cur.execute("""
+            INSERT INTO audit_log (user_id, action, entity, entity_id, details, ip, created_at)
+            VALUES (?,?,?,?,?,?,?)
+        """, (user_id, action, entity, entity_id, details,
+              request.remote_addr if request else '', datetime.now().isoformat()))
+        db.commit()
+    except Exception:
+        pass
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT * FROM users WHERE id=?", (user_id,))
+    r = cur.fetchone()
+    if r:
+        return User(r['id'], r['username'], r['role'], r['nom_complet'], r['specialite'] or '')
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════
+# LAYOUT — DESIGN FORMATION PRO
+# ═══════════════════════════════════════════════════════════════
+
+LAYOUT = '''<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title} — OMEGA Formation Pro</title>
+<style>
+*{{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',system-ui,-apple-system,sans-serif}}
+body{{background:#fef7f0;color:#1e293b;font-size:14px}}
+.nav{{background:linear-gradient(135deg,#ea580c,#c2410c);color:#fff;padding:0 22px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 3px 12px rgba(0,0,0,.15);flex-wrap:wrap;border-bottom:4px solid #2563eb}}
+.nav-brand{{font-weight:900;font-size:18px;display:flex;align-items:center;gap:12px;padding:16px 0;letter-spacing:-0.3px}}
+.nav-brand-icon{{width:40px;height:40px;background:#2563eb;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:22px;box-shadow:0 4px 12px rgba(37,99,235,.4)}}
+.nav-links{{display:flex;gap:2px;flex-wrap:wrap}}
+.nav-links a{{color:#fed7aa;text-decoration:none;padding:8px 13px;border-radius:8px;font-size:12.5px;font-weight:600;transition:.2s;display:flex;align-items:center;gap:6px}}
+.nav-links a:hover{{background:rgba(255,255,255,.15);color:#fff}}
+.nav-links a.active{{background:#2563eb;color:#fff;box-shadow:0 4px 10px rgba(37,99,235,.4)}}
+.nav-user{{font-size:12.5px;display:flex;gap:10px;align-items:center;color:#fed7aa}}
+.nav-user a{{color:#fff;text-decoration:none;background:rgba(0,0,0,.25);padding:7px 14px;border-radius:8px;font-weight:600}}
+.container{{max-width:1600px;margin:0 auto;padding:24px}}
+h1{{color:#c2410c;margin-bottom:20px;font-size:24px;font-weight:800;letter-spacing:-0.4px}}
+h2{{color:#ea580c;font-size:18px;margin-bottom:14px;font-weight:700}}
+.card{{background:#fff;padding:22px;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:18px;border-left:4px solid #ea580c}}
+table{{width:100%;border-collapse:collapse}}
+thead{{background:#c2410c;color:#fff}}
+th{{padding:12px;text-align:left;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px}}
+td{{padding:11px;border-bottom:1px solid #f1f5f9;font-size:13.5px}}
+tbody tr:hover{{background:#fff7ed}}
+.btn{{display:inline-block;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:700;font-size:13px;border:none;cursor:pointer;transition:.15s;letter-spacing:.2px}}
+.btn:hover{{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.15)}}
+.btn-primary{{background:#ea580c;color:#fff}}
+.btn-blue{{background:#2563eb;color:#fff}}
+.btn-success{{background:#10b981;color:#fff}}
+.btn-danger{{background:#ef4444;color:#fff}}
+.btn-warning{{background:#f59e0b;color:#fff}}
+.btn-secondary{{background:#64748b;color:#fff}}
+input,select,textarea{{width:100%;padding:11px 14px;border:2px solid #e2e8f0;border-radius:8px;font-size:13.5px;font-family:inherit;transition:.2s}}
+input:focus,select:focus,textarea:focus{{outline:none;border-color:#ea580c;box-shadow:0 0 0 3px rgba(234,88,12,.1)}}
+label{{display:block;font-weight:700;margin-bottom:6px;font-size:12.5px;color:#334155;text-transform:uppercase;letter-spacing:.3px}}
+.kpi{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:22px}}
+.kpi-card{{padding:18px;border-radius:12px;color:#fff;position:relative;overflow:hidden}}
+.kpi-card::after{{content:'';position:absolute;top:-20px;right:-20px;width:80px;height:80px;background:rgba(255,255,255,.1);border-radius:50%}}
+.kpi-card .kpi-label{{font-size:11.5px;opacity:.9;text-transform:uppercase;letter-spacing:.5px;font-weight:600}}
+.kpi-card .kpi-value{{font-size:26px;font-weight:900;margin-top:6px;letter-spacing:-0.5px}}
+.kpi-card .kpi-icon{{position:absolute;top:16px;right:18px;font-size:28px;opacity:.25}}
+.flash{{padding:14px 20px;border-radius:10px;margin-bottom:16px;font-size:13.5px;font-weight:600;border-left:4px solid}}
+.flash-success{{background:#d1fae5;color:#065f46;border-color:#10b981}}
+.flash-error{{background:#fee2e2;color:#991b1b;border-color:#ef4444}}
+.badge{{display:inline-block;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.4px}}
+.badge-blue{{background:#dbeafe;color:#1e40af}}
+.badge-green{{background:#d1fae5;color:#047857}}
+.badge-orange{{background:#fed7aa;color:#c2410c}}
+.badge-red{{background:#fee2e2;color:#b91c1c}}
+.badge-gray{{background:#e2e8f0;color:#475569}}
+.badge-yellow{{background:#fef3c7;color:#b45309}}
+.form-card{{background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08);transition:.2s;border-top:4px solid #ea580c}}
+.form-card:hover{{transform:translateY(-3px);box-shadow:0 8px 20px rgba(234,88,12,.15)}}
+.form-icon{{background:linear-gradient(135deg,#ea580c,#c2410c);color:#fff;height:90px;display:flex;align-items:center;justify-content:center;font-size:40px}}
+.form-body{{padding:16px}}
+</style>
+</head>
+<body>
+<nav class="nav">
+  <div class="nav-brand">
+    <div class="nav-brand-icon">🎓</div>
+    <div>OMEGA FORMATION<span style="display:block;font-size:10px;font-weight:500;letter-spacing:2px;color:#fed7aa">PRO · 3FPT · SÉNÉGAL</span></div>
+  </div>
+  <div class="nav-links">
+    <a href="/" class="{a_dash}">📊 Dashboard</a>
+    <a href="/formations" class="{a_form}">🎓 Formations</a>
+    <a href="/sessions" class="{a_sess}">📅 Sessions</a>
+    <a href="/apprenants" class="{a_appr}">👥 Apprenants</a>
+    <a href="/formateurs" class="{a_ftr}">👨‍🏫 Formateurs</a>
+    <a href="/centres" class="{a_ctr}">🏫 Centres</a>
+    <a href="/certificats" class="{a_cert}">📜 Certificats</a>
+    <a href="/financements" class="{a_fin}">💰 Financements</a>
+    <a href="/partenariats" class="{a_part}">🔗 Partenariats</a>
+    <a href="/placements" class="{a_plac}">📈 Placement</a>
+    <a href="/rapports" class="{a_rap}">📊 Rapports</a>
+  </div>
+  <div class="nav-user">
+    <span>👤 {user_name}</span>
+    <a href="/logout">Déconnexion</a>
+  </div>
+</nav>
+<div class="container">
+  {flashes}
+  {content}
+</div>
+</body>
+</html>'''
+
+
+def render_page(content, active='dashboard', page_title='Formation'):
+    from flask import get_flashed_messages
+    user_name = current_user.nom_complet if current_user.is_authenticated else ''
+    msgs = get_flashed_messages(with_categories=True)
+    flashes = ''
+    for cat, msg in msgs:
+        flashes += f'<div class="flash flash-{cat}">{msg}</div>'
+
+    return LAYOUT.format(
+        title=page_title,
+        user_name=user_name,
+        content=content,
+        flashes=flashes,
+        a_dash='active' if active == 'dashboard' else '',
+        a_form='active' if active == 'formations' else '',
+        a_sess='active' if active == 'sessions' else '',
+        a_appr='active' if active == 'apprenants' else '',
+        a_ftr='active' if active == 'formateurs' else '',
+        a_ctr='active' if active == 'centres' else '',
+        a_cert='active' if active == 'certificats' else '',
+        a_fin='active' if active == 'financements' else '',
+        a_part='active' if active == 'partenariats' else '',
+        a_plac='active' if active == 'placements' else '',
+        a_rap='active' if active == 'rapports' else '',
+    )
+
+
+@app.route('/health')
+def health():
+    return {'project': 'OMEGA FORMATION PRO', 'service': 'formation-professionnelle',
+            'status': 'ok', 'timestamp': datetime.now().isoformat(), 'version': '1.0'}
+
+
+LOGIN_HTML = '''<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Connexion — OMEGA Formation Pro</title>
+<style>body{{font-family:system-ui;background:linear-gradient(135deg,#ea580c,#c2410c);min-height:100vh;display:flex;align-items:center;justify-content:center;margin:0}}
+.box{{background:#fff;padding:42px;border-radius:16px;box-shadow:0 25px 70px rgba(0,0,0,.4);width:100%;max-width:420px;border-top:5px solid #2563eb}}
+.logo{{text-align:center;font-size:56px;margin-bottom:12px}}
+h1{{color:#c2410c;margin:0 0 6px;text-align:center;font-size:22px;font-weight:900;letter-spacing:-0.3px}}
+.subtitle{{text-align:center;color:#64748b;font-size:12px;margin-bottom:24px;letter-spacing:1.5px;text-transform:uppercase;font-weight:600}}
+input{{width:100%;padding:14px;border:2px solid #e2e8f0;border-radius:10px;margin-bottom:14px;font-size:15px;box-sizing:border-box}}
+input:focus{{outline:none;border-color:#ea580c;box-shadow:0 0 0 3px rgba(234,88,12,.1)}}
+button{{width:100%;background:#2563eb;color:#fff;padding:15px;border:none;border-radius:10px;font-weight:800;font-size:15px;cursor:pointer;letter-spacing:.5px;text-transform:uppercase}}
+button:hover{{background:#1e40af}}
+.err{{background:#fee2e2;color:#991b1b;padding:11px;border-radius:8px;margin-bottom:14px;font-size:13px;border-left:4px solid #ef4444}}
+.hint{{margin-top:20px;padding:12px;background:#fff7ed;border-radius:8px;font-size:12px;color:#c2410c;text-align:center;border:1px dashed #fdba74}}</style></head>
+<body><div class="box">
+<div class="logo">🎓</div>
+<h1>OMEGA FORMATION PRO</h1>
+<div class="subtitle">3FPT · Insertion Jeunes · Sénégal</div>
+{error}
+<form method="post">
+<input type="text" name="username" placeholder="Nom d'utilisateur" required autofocus>
+<input type="password" name="password" placeholder="Mot de passe" required>
+<button type="submit">Se connecter</button>
+</form>
+<div class="hint">admin / admin123</div></div></body></html>'''
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        from werkzeug.security import check_password_hash
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+        db = get_db()
+        cur = db.cursor()
+        cur.execute("SELECT * FROM users WHERE username=? AND actif=1", (username,))
+        r = cur.fetchone()
+        if r and check_password_hash(r['password_hash'], password):
+            user = User(r['id'], r['username'], r['role'], r['nom_complet'], r['specialite'] or '')
+            login_user(user)
+            log_action(user.id, 'LOGIN', f'{username} connecté', 'users', user.id)
+            return redirect(url_for('dashboard'))
+        return LOGIN_HTML.format(error='<div class="err">Identifiants invalides</div>'), 401
+    return LOGIN_HTML.format(error='')
+
+
+@app.route('/logout')
+@login_required
+def logout():
+    log_action(current_user.id, 'LOGOUT', current_user.username, 'users', current_user.id)
+    logout_user()
+    return redirect(url_for('login'))
+
+
+@app.route('/')
+@login_required
+def dashboard():
+    db = get_db()
+    cur = db.cursor()
+
+    def sc(sql, default=0):
+        try:
+            cur.execute(sql)
+            r = cur.fetchone()
+            return r[0] if r and r[0] is not None else default
+        except Exception:
+            return default
+
+    stats = {
+        'formations': sc("SELECT COUNT(*) FROM formations WHERE statut='actif'"),
+        'sessions_encours': sc("SELECT COUNT(*) FROM sessions WHERE statut='en_cours'"),
+        'sessions_planifiees': sc("SELECT COUNT(*) FROM sessions WHERE statut='planifiee'"),
+        'sessions_terminees': sc("SELECT COUNT(*) FROM sessions WHERE statut='terminee'"),
+        'apprenants': sc("SELECT COUNT(*) FROM apprenants WHERE statut='actif'"),
+        'inscriptions': sc("SELECT COUNT(*) FROM inscriptions"),
+        'certificats': sc("SELECT COUNT(*) FROM certificats WHERE statut='valide'"),
+        'placements': sc("SELECT COUNT(*) FROM placements WHERE statut='actif'"),
+        'partenariats': sc("SELECT COUNT(*) FROM partenariats WHERE statut='actif'"),
+        'formations_financees': sc("SELECT COALESCE(SUM(montant_total),0) FROM financements"),
+        'formations_utilisees': sc("SELECT COALESCE(SUM(montant_utilise),0) FROM financements"),
+    }
+
+    # Taux d'employabilité (placements / certificats)
+    taux_emploi = (stats['placements'] / stats['certificats'] * 100) if stats['certificats'] > 0 else 0
+
+    # Sessions en cours
+    cur.execute("""
+        SELECT s.*, f.nom AS formation_nom, f.domaine,
+               c.nom AS centre_nom, ftr.nom_complet AS formateur_nom
+        FROM sessions s
+        LEFT JOIN formations f ON f.id=s.formation_id
+        LEFT JOIN centres c ON c.id=s.centre_id
+        LEFT JOIN formateurs ftr ON ftr.id=s.formateur_id
+        WHERE s.statut IN ('en_cours', 'planifiee')
+        ORDER BY s.date_debut ASC LIMIT 6
+    """)
+    sessions = cur.fetchall()
+
+    sess_html = ''
+    for s in sessions:
+        statut_badge = {
+            'planifiee': 'badge-blue',
+            'en_cours': 'badge-orange',
+            'terminee': 'badge-green',
+        }.get(s['statut'], 'badge-gray')
+        rows = ''
+        sess_html += (
+            '<tr><td><strong style="color:#ea580c">' + str(s["code"] or "—") + '</strong></td>'
+            + '<td><strong>' + str(s["formation_nom"] or "—") + '</strong><br><small style="color:#64748b">' + str(s["domaine"] or "") + '</small></td>'
+            + '<td>' + str(s["centre_nom"] or "—") + '</td>'
+            + '<td>' + str(s["formateur_nom"] or "—") + '</td>'
+            + '<td>' + str((s["date_debut"] or "—")[:10]) + '</td>'
+            + '<td style="text-align:center">' + str(s["nb_inscrits"]) + '/' + str(s["capacite"]) + '</td>'
+            + '<td><span class="badge ' + statut_badge + '">' + str(s["statut"]) + '</span></td></tr>'
+        )
+
+    # Top formations
+    cur.execute("""
+        SELECT f.nom, f.domaine, f.duree_heures, f.cout_formation,
+               COUNT(i.id) AS nb_inscrits
+        FROM formations f
+        LEFT JOIN sessions s ON s.formation_id=f.id
+        LEFT JOIN inscriptions i ON i.session_id=s.id
+        GROUP BY f.id
+        ORDER BY nb_inscrits DESC LIMIT 6
+    """)
+    top_form = cur.fetchall()
+    top_html = ''.join(
+        '<tr><td><strong>' + str(f["nom"]) + '</strong><br><small style="color:#64748b">' + str(f["domaine"] or "") + '</small></td>'
+        + '<td style="text-align:center">' + str(f["duree_heures"]) + 'h</td>'
+        + '<td style="text-align:right">' + f'{f["cout_formation"]:,.0f}' + ' F</td>'
+        + '<td style="text-align:center;font-weight:800;color:#10b981">' + str(f["nb_inscrits"]) + '</td></tr>'
+        for f in top_form
+    )
+
+    content = '<h1>🎓 Tableau de bord Formation Pro</h1>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#ea580c,#c2410c)"><div class="kpi-icon">🎓</div><div class="kpi-label">Formations</div><div class="kpi-value">' + str(stats["formations"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#2563eb,#1e40af)"><div class="kpi-icon">📅</div><div class="kpi-label">Sessions en cours</div><div class="kpi-value">' + str(stats["sessions_encours"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-icon">👥</div><div class="kpi-label">Apprenants</div><div class="kpi-value">' + str(stats["apprenants"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#b45309)"><div class="kpi-icon">📜</div><div class="kpi-label">Certificats</div><div class="kpi-value">' + str(stats["certificats"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9)"><div class="kpi-icon">💼</div><div class="kpi-label">Placements</div><div class="kpi-value">' + str(stats["placements"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#ec4899,#be185d)"><div class="kpi-icon">📈</div><div class="kpi-label">Taux employabilité</div><div class="kpi-value">' + f'{taux_emploi:.0f}' + '%</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#0891b2,#0e7490)"><div class="kpi-icon">🔗</div><div class="kpi-label">Partenariats</div><div class="kpi-value">' + str(stats["partenariats"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#64748b,#475569)"><div class="kpi-icon">💰</div><div class="kpi-label">Financement 3FPT</div><div class="kpi-value" style="font-size:16px">' + f'{stats["formations_financees"]:,.0f}' + ' F</div></div>'
+    content += '</div>'
+
+    content += '<div style="display:grid;grid-template-columns:2fr 1fr;gap:18px">'
+    content += '<div class="card"><h2>📅 Sessions actives</h2>'
+    content += '<table><thead><tr><th>Code</th><th>Formation</th><th>Centre</th><th>Formateur</th><th>Début</th><th style="text-align:center">Inscrits</th><th>Statut</th></tr></thead>'
+    content += '<tbody>' + (sess_html or '<tr><td colspan="7" style="text-align:center;color:#94a3b8;padding:30px">Aucune session active</td></tr>') + '</tbody></table></div>'
+
+    content += '<div class="card"><h2>🎓 Top 6 formations</h2>'
+    content += '<table><thead><tr><th>Formation</th><th style="text-align:center">Durée</th><th style="text-align:right">Coût</th><th style="text-align:center">Inscrits</th></tr></thead>'
+    content += '<tbody>' + (top_html or '<tr><td colspan="4" style="text-align:center;color:#94a3b8;padding:30px">Aucune formation</td></tr>') + '</tbody></table></div>'
+    content += '</div>'
+
+    # Financement 3FPT
+    cur.execute("SELECT bailleur, montant_total, montant_utilise FROM financements WHERE statut='actif'")
+    fins = cur.fetchall()
+    fin_html = ''
+    for f in fins:
+        pct = (f['montant_utilise'] / f['montant_total'] * 100) if f['montant_total'] > 0 else 0
+        fin_html += (
+            '<div style="margin-bottom:14px">'
+            + '<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px">'
+            + '<strong>' + str(f["bailleur"]) + '</strong>'
+            + '<span style="color:#64748b">' + f'{f["montant_utilise"]:,.0f}' + ' / ' + f'{f["montant_total"]:,.0f}' + ' F</span></div>'
+            + '<div style="background:#e2e8f0;border-radius:6px;overflow:hidden;height:12px">'
+            + '<div style="background:linear-gradient(90deg,#10b981,#047857);height:100%;width:' + f'{pct:.0f}' + '%"></div></div></div>'
+        )
+
+    content += '<div class="card"><h2>💰 Utilisation des financements</h2>' + fin_html + '</div>'
+
+    return render_page(content, active='dashboard', page_title='Dashboard')
+
+
+# ═══════════════════════════════════════════════════════════════
+# 🎓 FORMATIONS (Catalogue)
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/formations')
+@login_required
+def formations_liste():
+    db = get_db()
+    cur = db.cursor()
+    q = request.args.get('q', '').strip()
+    domaine_f = request.args.get('domaine', '')
+
+    sql = """
+        SELECT f.*,
+               (SELECT COUNT(DISTINCT s.id) FROM sessions s WHERE s.formation_id=f.id) AS nb_sessions,
+               (SELECT COUNT(i.id) FROM inscriptions i JOIN sessions s ON s.id=i.session_id WHERE s.formation_id=f.id) AS nb_apprenants
+        FROM formations f
+        WHERE 1=1
+    """
+    params = []
+    if q:
+        sql += " AND (f.nom LIKE ? OR f.description LIKE ? OR f.domaine LIKE ?)"
+        params += [f'%{q}%'] * 3
+    if domaine_f:
+        sql += " AND f.domaine=?"
+        params.append(domaine_f)
+    sql += " ORDER BY f.domaine, f.nom LIMIT 200"
+    cur.execute(sql, params)
+    formations = cur.fetchall()
+
+    cur.execute("SELECT DISTINCT domaine FROM formations WHERE domaine IS NOT NULL ORDER BY domaine")
+    domaines = [r[0] for r in cur.fetchall()]
+
+    stats = {}
+    cur.execute("SELECT COUNT(*) FROM formations WHERE statut='actif'")
+    stats['total'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(DISTINCT domaine) FROM formations")
+    stats['domaines'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM sessions")
+    stats['sessions'] = cur.fetchone()[0]
+    cur.execute("SELECT COALESCE(AVG(cout_formation),0) FROM formations")
+    stats['cout_moy'] = cur.fetchone()[0]
+
+    # Grille
+    cards = ''
+    for f in formations:
+        domain_icons = {
+            'BTP': '🏗️', 'Agro': '🌾', 'Numérique': '💻',
+            'Commerce': '💼', 'Santé': '🏥', 'Hôtellerie': '🍽️',
+        }
+        icon = domain_icons.get(f['domaine'], '🎓')
+        cards += '<div class="form-card">'
+        cards += '<div class="form-icon">' + icon + '</div>'
+        cards += '<div class="form-body">'
+        cards += '<div style="font-weight:800;color:#1e293b;font-size:14px;margin-bottom:4px">' + str(f["nom"]) + '</div>'
+        cards += '<div style="font-size:11.5px;color:#64748b;margin-bottom:8px"><span class="badge badge-orange">' + str(f["domaine"] or "—") + '</span></div>'
+        cards += '<div style="font-size:12px;color:#475569;margin-bottom:10px">' + str(f["description"] or "")[:70] + '...</div>'
+        cards += '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:10px">'
+        cards += '<span style="color:#64748b">⏱ ' + str(f["duree_heures"]) + 'h</span>'
+        cards += '<span style="color:#64748b">📚 ' + str(f["nb_sessions"]) + ' sessions</span>'
+        cards += '</div>'
+        cards += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+        cards += '<div style="font-size:16px;font-weight:900;color:#10b981">' + f'{f["cout_formation"]:,.0f}' + ' F</div>'
+        cards += '<span style="font-size:11.5px;color:#64748b">👥 ' + str(f["nb_apprenants"]) + '</span>'
+        cards += '</div>'
+        cards += '<a href="/formations/' + str(f["id"]) + '" class="btn btn-primary" style="padding:6px 10px;font-size:11.5px;width:100%;text-align:center;display:block">👁 Voir détails</a>'
+        cards += '</div></div>'
+
+    cats_html = '<a href="/formations" class="btn ' + ('btn-primary' if not domaine_f else 'btn-secondary') + '">Tous</a> '
+    for d in domaines:
+        active_cls = 'btn-primary' if domaine_f == d else 'btn-secondary'
+        cats_html += '<a href="/formations?domaine=' + d + '" class="btn ' + active_cls + '" style="margin-left:6px">' + d + '</a> '
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">🎓 Catalogue Formations — ' + str(len(formations)) + '</h1>'
+    content += '<a href="/formations/nouvelle" class="btn btn-primary">+ Nouvelle formation</a></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#ea580c,#c2410c)"><div class="kpi-icon">🎓</div><div class="kpi-label">Formations actives</div><div class="kpi-value">' + str(stats["total"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#2563eb,#1e40af)"><div class="kpi-icon">📚</div><div class="kpi-label">Domaines</div><div class="kpi-value">' + str(stats["domaines"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-icon">📅</div><div class="kpi-label">Sessions totales</div><div class="kpi-value">' + str(stats["sessions"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#b45309)"><div class="kpi-icon">💰</div><div class="kpi-label">Coût moyen</div><div class="kpi-value" style="font-size:18px">' + f'{stats["cout_moy"]:,.0f}' + ' F</div></div>'
+    content += '</div>'
+
+    content += '<form method="get" style="margin-bottom:16px;display:flex;gap:10px">'
+    content += '<input type="text" name="q" value="' + q + '" placeholder="Rechercher formation..." style="max-width:500px">'
+    content += '<button type="submit" class="btn btn-primary">🔍 Rechercher</button></form>'
+
+    content += '<div style="margin-bottom:20px;display:flex;gap:6px;flex-wrap:wrap">' + cats_html + '</div>'
+
+    content += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px">' + (cards or '<p style="grid-column:1/-1;text-align:center;color:#94a3b8;padding:40px">Aucune formation</p>') + '</div>'
+
+    return render_page(content, active='formations', page_title='Formations')
+
+
+@app.route('/formations/nouvelle', methods=['GET', 'POST'])
+@login_required
+def formations_nouvelle():
+    db = get_db()
+    cur = db.cursor()
+
+    if request.method == 'POST':
+        try:
+            cur.execute("""
+                INSERT INTO formations
+                (code, nom, domaine, description, niveau, duree_heures, duree_mois,
+                 cout_formation, prerequis, debouches, certification, statut, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?, 'actif', ?)
+            """, (None,
+                  request.form.get('nom'),
+                  request.form.get('domaine'),
+                  request.form.get('description'),
+                  request.form.get('niveau'),
+                  int(request.form.get('duree_heures') or 0),
+                  int(request.form.get('duree_mois') or 0),
+                  float(request.form.get('cout_formation') or 0),
+                  request.form.get('prerequis'),
+                  request.form.get('debouches'),
+                  request.form.get('certification'),
+                  datetime.now().isoformat()))
+            db.commit()
+            flash('✅ Formation créée', 'success')
+            return redirect('/formations')
+        except Exception as e:
+            db.rollback()
+            flash('❌ ' + str(e), 'error')
+
+    content = '<h1>🎓 Nouvelle formation</h1>'
+    content += '<form method="post" class="card" style="max-width:900px">'
+    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+    content += '<div style="grid-column:1/-1"><label>Nom de la formation *</label>'
+    content += '<input type="text" name="nom" required autofocus placeholder="Maçonnerie moderne"></div>'
+    content += '<div><label>Domaine *</label><select name="domaine" required>'
+    content += '<option value="BTP">🏗️ BTP</option>'
+    content += '<option value="Agro">🌾 Agro</option>'
+    content += '<option value="Numérique">💻 Numérique</option>'
+    content += '<option value="Commerce">💼 Commerce</option>'
+    content += '<option value="Santé">🏥 Santé</option>'
+    content += '<option value="Hôtellerie">🍽️ Hôtellerie</option>'
+    content += '<option value="Industrie">⚙️ Industrie</option>'
+    content += '<option value="Autre">📚 Autre</option>'
+    content += '</select></div>'
+    content += '<div><label>Niveau</label><select name="niveau">'
+    content += '<option value="Débutant">Débutant</option>'
+    content += '<option value="Intermédiaire">Intermédiaire</option>'
+    content += '<option value="Avancé">Avancé</option>'
+    content += '</select></div>'
+    content += '<div><label>Durée (heures)</label><input type="number" name="duree_heures" value="120"></div>'
+    content += '<div><label>Durée (mois)</label><input type="number" name="duree_mois" value="3"></div>'
+    content += '<div><label>Coût formation (FCFA)</label><input type="number" step="1000" name="cout_formation" value="150000"></div>'
+    content += '<div><label>Certification délivrée</label>'
+    content += '<input type="text" name="certification" placeholder="Certificat professionnel, Attestation..."></div>'
+    content += '<div style="grid-column:1/-1"><label>Description</label>'
+    content += '<textarea name="description" rows="3"></textarea></div>'
+    content += '<div><label>Prérequis</label><input type="text" name="prerequis" placeholder="Aucun, BEPC, Bac..."></div>'
+    content += '<div><label>Débouchés</label><input type="text" name="debouches" placeholder="Maçon, Chef d\'équipe..."></div>'
+    content += '</div>'
+    content += '<div style="margin-top:24px"><button type="submit" class="btn btn-success">💾 Créer</button>'
+    content += '<a href="/formations" class="btn btn-secondary" style="margin-left:8px">Annuler</a></div>'
+    content += '</form>'
+    return render_page(content, active='formations', page_title='Nouvelle formation')
+
+
+@app.route('/formations/<int:fid>')
+@login_required
+def formations_detail(fid):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT * FROM formations WHERE id=?", (fid,))
+    f = cur.fetchone()
+    if not f:
+        flash('❌ Formation introuvable', 'error')
+        return redirect('/formations')
+
+    cur.execute("""
+        SELECT s.*, c.nom AS centre_nom, ftr.nom_complet AS formateur_nom
+        FROM sessions s
+        LEFT JOIN centres c ON c.id=s.centre_id
+        LEFT JOIN formateurs ftr ON ftr.id=s.formateur_id
+        WHERE s.formation_id=?
+        ORDER BY s.date_debut DESC
+    """, (fid,))
+    sessions = cur.fetchall()
+
+    sess_html = ''
+    for s in sessions:
+        statut_badge = {'planifiee': 'badge-blue', 'en_cours': 'badge-orange', 'terminee': 'badge-green'}.get(s['statut'], 'badge-gray')
+        sess_html += (
+            '<tr><td><strong>' + str(s["code"]) + '</strong></td>'
+            + '<td>' + str(s["centre_nom"] or "—") + '</td>'
+            + '<td>' + str(s["formateur_nom"] or "—") + '</td>'
+            + '<td>' + str((s["date_debut"] or "—")[:10]) + '</td>'
+            + '<td>' + str((s["date_fin"] or "—")[:10]) + '</td>'
+            + '<td style="text-align:center">' + str(s["nb_inscrits"]) + '/' + str(s["capacite"]) + '</td>'
+            + '<td><span class="badge ' + statut_badge + '">' + str(s["statut"]) + '</span></td></tr>'
+        )
+
+    domain_icons = {'BTP': '🏗️', 'Agro': '🌾', 'Numérique': '💻', 'Commerce': '💼', 'Santé': '🏥', 'Hôtellerie': '🍽️'}
+    icon = domain_icons.get(f['domaine'], '🎓')
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">' + icon + ' ' + str(f["nom"]) + '</h1>'
+    content += '<a href="/formations" class="btn btn-secondary">← Retour</a></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#ea580c,#c2410c)"><div class="kpi-label">Code</div><div class="kpi-value" style="font-size:16px">' + str(f["code"] or "—") + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#2563eb,#1e40af)"><div class="kpi-label">Durée</div><div class="kpi-value">' + str(f["duree_heures"]) + 'h</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-label">Coût</div><div class="kpi-value" style="font-size:18px">' + f'{f["cout_formation"]:,.0f}' + ' F</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#b45309)"><div class="kpi-label">Sessions</div><div class="kpi-value">' + str(len(sessions)) + '</div></div>'
+    content += '</div>'
+
+    content += '<div class="card"><h2>📋 Informations formation</h2><table>'
+    content += '<tr><td><strong>Domaine</strong></td><td>' + str(f["domaine"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Niveau</strong></td><td>' + str(f["niveau"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Durée</strong></td><td>' + str(f["duree_heures"]) + 'h sur ' + str(f["duree_mois"]) + ' mois</td></tr>'
+    content += '<tr><td><strong>Prérequis</strong></td><td>' + str(f["prerequis"] or "Aucun") + '</td></tr>'
+    content += '<tr><td><strong>Débouchés</strong></td><td>' + str(f["debouches"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Certification</strong></td><td>' + str(f["certification"] or "—") + '</td></tr>'
+    content += '</table>'
+    content += '<div style="margin-top:16px;padding:14px;background:#fff7ed;border-radius:8px">'
+    content += '<div style="font-size:12.5px;color:#c2410c;font-weight:700;text-transform:uppercase;margin-bottom:6px">Description</div>'
+    content += '<div style="font-size:13.5px;color:#475569;line-height:1.7">' + str(f["description"] or "Aucune description") + '</div>'
+    content += '</div></div>'
+
+    content += '<div class="card"><h2>📅 Sessions de cette formation (' + str(len(sessions)) + ')</h2>'
+    content += '<table><thead><tr><th>Code</th><th>Centre</th><th>Formateur</th><th>Début</th><th>Fin</th><th style="text-align:center">Inscrits</th><th>Statut</th></tr></thead>'
+    content += '<tbody>' + (sess_html or '<tr><td colspan="7" style="text-align:center;color:#94a3b8;padding:20px">Aucune session planifiée</td></tr>') + '</tbody></table>'
+    content += '<div style="margin-top:14px;text-align:right"><a href="/sessions/nouvelle?formation_id=' + str(fid) + '" class="btn btn-primary">+ Planifier une session</a></div></div>'
+
+    return render_page(content, active='formations', page_title='Formation')
+
+
+# ═══════════════════════════════════════════════════════════════
+# 👨‍🏫 FORMATEURS
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/formateurs')
+@login_required
+def formateurs_liste():
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT f.*,
+               (SELECT COUNT(*) FROM sessions WHERE formateur_id=f.id) AS nb_sessions
+        FROM formateurs f
+        ORDER BY f.nom_complet
+    """)
+    formateurs = cur.fetchall()
+
+    stats = {}
+    cur.execute("SELECT COUNT(*) FROM formateurs WHERE statut='disponible'")
+    stats['dispo'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM formateurs")
+    stats['total'] = cur.fetchone()[0]
+    cur.execute("SELECT COALESCE(AVG(tarif_horaire),0) FROM formateurs")
+    stats['tarif'] = cur.fetchone()[0]
+    cur.execute("SELECT COALESCE(AVG(annees_experience),0) FROM formateurs")
+    stats['exp'] = cur.fetchone()[0]
+
+    rows = ''
+    for f in formateurs:
+        statut_badge = 'badge-green' if f['statut'] == 'disponible' else 'badge-orange'
+        rows += (
+            '<tr><td><strong style="color:#ea580c">' + str(f["code"] or "—") + '</strong></td>'
+            + '<td><strong>' + str(f["nom_complet"]) + '</strong></td>'
+            + '<td>' + str(f["specialite"] or "—") + '<br><small style="color:#64748b">' + str(f["diplome"] or "") + '</small></td>'
+            + '<td>' + str(f["telephone"] or "—") + '</td>'
+            + '<td style="text-align:center">' + str(f["annees_experience"]) + ' ans</td>'
+            + '<td style="text-align:right">' + f'{f["tarif_horaire"]:,.0f}' + ' F/h</td>'
+            + '<td style="text-align:center">' + str(f["nb_sessions"]) + '</td>'
+            + '<td><span class="badge ' + statut_badge + '">' + str(f["statut"]) + '</span></td></tr>'
+        )
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">👨‍🏫 Formateurs — ' + str(len(formateurs)) + '</h1>'
+    content += '<a href="/formateurs/nouveau" class="btn btn-primary">+ Nouveau formateur</a></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#ea580c,#c2410c)"><div class="kpi-icon">👨‍🏫</div><div class="kpi-label">Total formateurs</div><div class="kpi-value">' + str(stats["total"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-icon">✅</div><div class="kpi-label">Disponibles</div><div class="kpi-value">' + str(stats["dispo"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#2563eb,#1e40af)"><div class="kpi-icon">📊</div><div class="kpi-label">Exp. moyenne</div><div class="kpi-value">' + f'{stats["exp"]:.0f}' + ' ans</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#b45309)"><div class="kpi-icon">💰</div><div class="kpi-label">Tarif moyen</div><div class="kpi-value" style="font-size:18px">' + f'{stats["tarif"]:,.0f}' + ' F/h</div></div>'
+    content += '</div>'
+
+    content += '<div class="card" style="padding:0;overflow:hidden">'
+    content += '<table><thead><tr><th>Code</th><th>Nom</th><th>Spécialité</th><th>Téléphone</th>'
+    content += '<th style="text-align:center">Exp.</th><th style="text-align:right">Tarif</th>'
+    content += '<th style="text-align:center">Sessions</th><th>Statut</th></tr></thead>'
+    content += '<tbody>' + (rows or '<tr><td colspan="8" style="padding:40px;text-align:center;color:#94a3b8">Aucun formateur</td></tr>') + '</tbody></table></div>'
+
+    return render_page(content, active='formateurs', page_title='Formateurs')
+
+
+@app.route('/formateurs/nouveau', methods=['GET', 'POST'])
+@login_required
+def formateurs_nouveau():
+    db = get_db()
+    cur = db.cursor()
+
+    if request.method == 'POST':
+        try:
+            cur.execute("""
+                INSERT INTO formateurs
+                (code, nom_complet, telephone, email, specialite, diplome,
+                 annees_experience, tarif_horaire, statut, created_at)
+                VALUES (?,?,?,?,?,?,?,?, 'disponible', ?)
+            """, (None,
+                  request.form.get('nom_complet'),
+                  request.form.get('telephone'),
+                  request.form.get('email'),
+                  request.form.get('specialite'),
+                  request.form.get('diplome'),
+                  int(request.form.get('annees_experience') or 0),
+                  float(request.form.get('tarif_horaire') or 0),
+                  datetime.now().isoformat()))
+            db.commit()
+            flash('✅ Formateur créé', 'success')
+            return redirect('/formateurs')
+        except Exception as e:
+            db.rollback()
+            flash('❌ ' + str(e), 'error')
+
+    content = '<h1>👨‍🏫 Nouveau formateur</h1>'
+    content += '<form method="post" class="card" style="max-width:800px">'
+    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+    content += '<div style="grid-column:1/-1"><label>Nom complet *</label>'
+    content += '<input type="text" name="nom_complet" required autofocus></div>'
+    content += '<div><label>Téléphone</label><input type="text" name="telephone"></div>'
+    content += '<div><label>Email</label><input type="email" name="email"></div>'
+    content += '<div><label>Spécialité</label><input type="text" name="specialite" placeholder="BTP, Numérique, Agro..."></div>'
+    content += '<div><label>Diplôme</label><input type="text" name="diplome"></div>'
+    content += '<div><label>Années d\'expérience</label><input type="number" name="annees_experience" value="5"></div>'
+    content += '<div><label>Tarif horaire (FCFA)</label><input type="number" step="500" name="tarif_horaire" value="15000"></div>'
+    content += '</div>'
+    content += '<div style="margin-top:24px"><button type="submit" class="btn btn-success">💾 Créer</button>'
+    content += '<a href="/formateurs" class="btn btn-secondary" style="margin-left:8px">Annuler</a></div>'
+    content += '</form>'
+    return render_page(content, active='formateurs', page_title='Nouveau formateur')
+
+
+# ═══════════════════════════════════════════════════════════════
+# 🎓 FORMATIONS (Catalogue)
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/formations')
+@login_required
+def formations_liste():
+    db = get_db()
+    cur = db.cursor()
+    q = request.args.get('q', '').strip()
+    domaine_f = request.args.get('domaine', '')
+
+    sql = """
+        SELECT f.*,
+               (SELECT COUNT(DISTINCT s.id) FROM sessions s WHERE s.formation_id=f.id) AS nb_sessions,
+               (SELECT COUNT(i.id) FROM inscriptions i JOIN sessions s ON s.id=i.session_id WHERE s.formation_id=f.id) AS nb_apprenants
+        FROM formations f
+        WHERE 1=1
+    """
+    params = []
+    if q:
+        sql += " AND (f.nom LIKE ? OR f.description LIKE ? OR f.domaine LIKE ?)"
+        params += [f'%{q}%'] * 3
+    if domaine_f:
+        sql += " AND f.domaine=?"
+        params.append(domaine_f)
+    sql += " ORDER BY f.domaine, f.nom LIMIT 200"
+    cur.execute(sql, params)
+    formations = cur.fetchall()
+
+    cur.execute("SELECT DISTINCT domaine FROM formations WHERE domaine IS NOT NULL ORDER BY domaine")
+    domaines = [r[0] for r in cur.fetchall()]
+
+    stats = {}
+    cur.execute("SELECT COUNT(*) FROM formations WHERE statut='actif'")
+    stats['total'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(DISTINCT domaine) FROM formations")
+    stats['domaines'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM sessions")
+    stats['sessions'] = cur.fetchone()[0]
+    cur.execute("SELECT COALESCE(AVG(cout_formation),0) FROM formations")
+    stats['cout_moy'] = cur.fetchone()[0]
+
+    cards = ''
+    for f in formations:
+        domain_icons = {
+            'BTP': '🏗️', 'Agro': '🌾', 'Numérique': '💻',
+            'Commerce': '💼', 'Santé': '🏥', 'Hôtellerie': '🍽️',
+        }
+        icon = domain_icons.get(f['domaine'], '🎓')
+        cards += '<div class="form-card">'
+        cards += '<div class="form-icon">' + icon + '</div>'
+        cards += '<div class="form-body">'
+        cards += '<div style="font-weight:800;color:#1e293b;font-size:14px;margin-bottom:4px">' + str(f["nom"]) + '</div>'
+        cards += '<div style="font-size:11.5px;color:#64748b;margin-bottom:8px"><span class="badge badge-orange">' + str(f["domaine"] or "—") + '</span></div>'
+        cards += '<div style="font-size:12px;color:#475569;margin-bottom:10px">' + str(f["description"] or "")[:70] + '...</div>'
+        cards += '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:10px">'
+        cards += '<span style="color:#64748b">⏱ ' + str(f["duree_heures"]) + 'h</span>'
+        cards += '<span style="color:#64748b">📚 ' + str(f["nb_sessions"]) + ' sessions</span>'
+        cards += '</div>'
+        cards += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+        cards += '<div style="font-size:16px;font-weight:900;color:#10b981">' + f'{f["cout_formation"]:,.0f}' + ' F</div>'
+        cards += '<span style="font-size:11.5px;color:#64748b">👥 ' + str(f["nb_apprenants"]) + '</span>'
+        cards += '</div>'
+        cards += '<a href="/formations/' + str(f["id"]) + '" class="btn btn-primary" style="padding:6px 10px;font-size:11.5px;width:100%;text-align:center;display:block">👁 Voir détails</a>'
+        cards += '</div></div>'
+
+    cats_html = '<a href="/formations" class="btn ' + ('btn-primary' if not domaine_f else 'btn-secondary') + '">Tous</a> '
+    for d in domaines:
+        active_cls = 'btn-primary' if domaine_f == d else 'btn-secondary'
+        cats_html += '<a href="/formations?domaine=' + d + '" class="btn ' + active_cls + '" style="margin-left:6px">' + d + '</a> '
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">🎓 Catalogue Formations — ' + str(len(formations)) + '</h1>'
+    content += '<a href="/formations/nouvelle" class="btn btn-primary">+ Nouvelle formation</a></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#ea580c,#c2410c)"><div class="kpi-icon">🎓</div><div class="kpi-label">Formations actives</div><div class="kpi-value">' + str(stats["total"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#2563eb,#1e40af)"><div class="kpi-icon">📚</div><div class="kpi-label">Domaines</div><div class="kpi-value">' + str(stats["domaines"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-icon">📅</div><div class="kpi-label">Sessions totales</div><div class="kpi-value">' + str(stats["sessions"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#b45309)"><div class="kpi-icon">💰</div><div class="kpi-label">Coût moyen</div><div class="kpi-value" style="font-size:18px">' + f'{stats["cout_moy"]:,.0f}' + ' F</div></div>'
+    content += '</div>'
+
+    content += '<form method="get" style="margin-bottom:16px;display:flex;gap:10px">'
+    content += '<input type="text" name="q" value="' + q + '" placeholder="Rechercher formation..." style="max-width:500px">'
+    content += '<button type="submit" class="btn btn-primary">🔍 Rechercher</button></form>'
+
+    content += '<div style="margin-bottom:20px;display:flex;gap:6px;flex-wrap:wrap">' + cats_html + '</div>'
+
+    content += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px">' + (cards or '<p style="grid-column:1/-1;text-align:center;color:#94a3b8;padding:40px">Aucune formation</p>') + '</div>'
+
+    return render_page(content, active='formations', page_title='Formations')
+
+
+@app.route('/formations/nouvelle', methods=['GET', 'POST'])
+@login_required
+def formations_nouvelle():
+    db = get_db()
+    cur = db.cursor()
+
+    if request.method == 'POST':
+        try:
+            cur.execute("""
+                INSERT INTO formations
+                (code, nom, domaine, description, niveau, duree_heures, duree_mois,
+                 cout_formation, prerequis, debouches, certification, statut, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?, 'actif', ?)
+            """, (None,
+                  request.form.get('nom'),
+                  request.form.get('domaine'),
+                  request.form.get('description'),
+                  request.form.get('niveau'),
+                  int(request.form.get('duree_heures') or 0),
+                  int(request.form.get('duree_mois') or 0),
+                  float(request.form.get('cout_formation') or 0),
+                  request.form.get('prerequis'),
+                  request.form.get('debouches'),
+                  request.form.get('certification'),
+                  datetime.now().isoformat()))
+            db.commit()
+            flash('✅ Formation créée', 'success')
+            return redirect('/formations')
+        except Exception as e:
+            db.rollback()
+            flash('❌ ' + str(e), 'error')
+
+    content = '<h1>🎓 Nouvelle formation</h1>'
+    content += '<form method="post" class="card" style="max-width:900px">'
+    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+    content += '<div style="grid-column:1/-1"><label>Nom de la formation *</label>'
+    content += '<input type="text" name="nom" required autofocus></div>'
+    content += '<div><label>Domaine *</label><select name="domaine" required>'
+    content += '<option value="BTP">🏗️ BTP</option>'
+    content += '<option value="Agro">🌾 Agro</option>'
+    content += '<option value="Numérique">💻 Numérique</option>'
+    content += '<option value="Commerce">💼 Commerce</option>'
+    content += '<option value="Santé">🏥 Santé</option>'
+    content += '<option value="Hôtellerie">🍽️ Hôtellerie</option>'
+    content += '<option value="Industrie">⚙️ Industrie</option>'
+    content += '</select></div>'
+    content += '<div><label>Niveau</label><select name="niveau">'
+    content += '<option value="Débutant">Débutant</option>'
+    content += '<option value="Intermédiaire">Intermédiaire</option>'
+    content += '<option value="Avancé">Avancé</option>'
+    content += '</select></div>'
+    content += '<div><label>Durée (heures)</label><input type="number" name="duree_heures" value="120"></div>'
+    content += '<div><label>Durée (mois)</label><input type="number" name="duree_mois" value="3"></div>'
+    content += '<div><label>Coût formation (FCFA)</label><input type="number" step="1000" name="cout_formation" value="150000"></div>'
+    content += '<div><label>Certification</label><input type="text" name="certification" placeholder="Certificat professionnel"></div>'
+    content += '<div style="grid-column:1/-1"><label>Description</label><textarea name="description" rows="3"></textarea></div>'
+    content += '<div><label>Prérequis</label><input type="text" name="prerequis"></div>'
+    content += '<div><label>Débouchés</label><input type="text" name="debouches"></div>'
+    content += '</div>'
+    content += '<div style="margin-top:24px"><button type="submit" class="btn btn-success">💾 Créer</button>'
+    content += '<a href="/formations" class="btn btn-secondary" style="margin-left:8px">Annuler</a></div>'
+    content += '</form>'
+    return render_page(content, active='formations', page_title='Nouvelle formation')
+
+
+@app.route('/formations/<int:fid>')
+@login_required
+def formations_detail(fid):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT * FROM formations WHERE id=?", (fid,))
+    f = cur.fetchone()
+    if not f:
+        flash('❌ Formation introuvable', 'error')
+        return redirect('/formations')
+
+    cur.execute("""
+        SELECT s.*, c.nom AS centre_nom, ftr.nom_complet AS formateur_nom
+        FROM sessions s
+        LEFT JOIN centres c ON c.id=s.centre_id
+        LEFT JOIN formateurs ftr ON ftr.id=s.formateur_id
+        WHERE s.formation_id=?
+        ORDER BY s.date_debut DESC
+    """, (fid,))
+    sessions = cur.fetchall()
+
+    sess_html = ''
+    for s in sessions:
+        statut_badge = {'planifiee': 'badge-blue', 'en_cours': 'badge-orange', 'terminee': 'badge-green'}.get(s['statut'], 'badge-gray')
+        sess_html += (
+            '<tr><td><strong>' + str(s["code"]) + '</strong></td>'
+            + '<td>' + str(s["centre_nom"] or "—") + '</td>'
+            + '<td>' + str(s["formateur_nom"] or "—") + '</td>'
+            + '<td>' + str((s["date_debut"] or "—")[:10]) + '</td>'
+            + '<td>' + str((s["date_fin"] or "—")[:10]) + '</td>'
+            + '<td style="text-align:center">' + str(s["nb_inscrits"]) + '/' + str(s["capacite"]) + '</td>'
+            + '<td><span class="badge ' + statut_badge + '">' + str(s["statut"]) + '</span></td></tr>'
+        )
+
+    domain_icons = {'BTP': '🏗️', 'Agro': '🌾', 'Numérique': '💻', 'Commerce': '💼', 'Santé': '🏥', 'Hôtellerie': '🍽️'}
+    icon = domain_icons.get(f['domaine'], '🎓')
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">' + icon + ' ' + str(f["nom"]) + '</h1>'
+    content += '<a href="/formations" class="btn btn-secondary">← Retour</a></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#ea580c,#c2410c)"><div class="kpi-label">Code</div><div class="kpi-value" style="font-size:16px">' + str(f["code"] or "—") + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#2563eb,#1e40af)"><div class="kpi-label">Durée</div><div class="kpi-value">' + str(f["duree_heures"]) + 'h</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-label">Coût</div><div class="kpi-value" style="font-size:18px">' + f'{f["cout_formation"]:,.0f}' + ' F</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#b45309)"><div class="kpi-label">Sessions</div><div class="kpi-value">' + str(len(sessions)) + '</div></div>'
+    content += '</div>'
+
+    content += '<div class="card"><h2>📋 Informations formation</h2><table>'
+    content += '<tr><td><strong>Domaine</strong></td><td>' + str(f["domaine"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Niveau</strong></td><td>' + str(f["niveau"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Durée</strong></td><td>' + str(f["duree_heures"]) + 'h sur ' + str(f["duree_mois"]) + ' mois</td></tr>'
+    content += '<tr><td><strong>Prérequis</strong></td><td>' + str(f["prerequis"] or "Aucun") + '</td></tr>'
+    content += '<tr><td><strong>Débouchés</strong></td><td>' + str(f["debouches"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Certification</strong></td><td>' + str(f["certification"] or "—") + '</td></tr>'
+    content += '</table></div>'
+
+    content += '<div class="card"><h2>📅 Sessions (' + str(len(sessions)) + ')</h2>'
+    content += '<table><thead><tr><th>Code</th><th>Centre</th><th>Formateur</th><th>Début</th><th>Fin</th><th style="text-align:center">Inscrits</th><th>Statut</th></tr></thead>'
+    content += '<tbody>' + (sess_html or '<tr><td colspan="7" style="text-align:center;color:#94a3b8;padding:20px">Aucune session</td></tr>') + '</tbody></table>'
+    content += '<div style="margin-top:14px;text-align:right"><a href="/sessions/nouvelle?formation_id=' + str(fid) + '" class="btn btn-primary">+ Planifier</a></div></div>'
+
+    return render_page(content, active='formations', page_title='Formation')
+
+
+# ═══════════════════════════════════════════════════════════════
+# 👨‍🏫 FORMATEURS
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/formateurs')
+@login_required
+def formateurs_liste():
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT f.*, (SELECT COUNT(*) FROM sessions WHERE formateur_id=f.id) AS nb_sessions
+        FROM formateurs f ORDER BY f.nom_complet
+    """)
+    formateurs = cur.fetchall()
+
+    stats = {}
+    cur.execute("SELECT COUNT(*) FROM formateurs WHERE statut='disponible'")
+    stats['dispo'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM formateurs")
+    stats['total'] = cur.fetchone()[0]
+    cur.execute("SELECT COALESCE(AVG(tarif_horaire),0) FROM formateurs")
+    stats['tarif'] = cur.fetchone()[0]
+    cur.execute("SELECT COALESCE(AVG(annees_experience),0) FROM formateurs")
+    stats['exp'] = cur.fetchone()[0]
+
+    rows = ''
+    for f in formateurs:
+        statut_badge = 'badge-green' if f['statut'] == 'disponible' else 'badge-orange'
+        rows += (
+            '<tr><td><strong style="color:#ea580c">' + str(f["code"] or "—") + '</strong></td>'
+            + '<td><strong>' + str(f["nom_complet"]) + '</strong></td>'
+            + '<td>' + str(f["specialite"] or "—") + '</td>'
+            + '<td>' + str(f["telephone"] or "—") + '</td>'
+            + '<td style="text-align:center">' + str(f["annees_experience"]) + ' ans</td>'
+            + '<td style="text-align:right">' + f'{f["tarif_horaire"]:,.0f}' + ' F/h</td>'
+            + '<td style="text-align:center">' + str(f["nb_sessions"]) + '</td>'
+            + '<td><span class="badge ' + statut_badge + '">' + str(f["statut"]) + '</span></td></tr>'
+        )
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">👨‍🏫 Formateurs — ' + str(len(formateurs)) + '</h1>'
+    content += '<a href="/formateurs/nouveau" class="btn btn-primary">+ Nouveau formateur</a></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#ea580c,#c2410c)"><div class="kpi-icon">👨‍🏫</div><div class="kpi-label">Total</div><div class="kpi-value">' + str(stats["total"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-icon">✅</div><div class="kpi-label">Disponibles</div><div class="kpi-value">' + str(stats["dispo"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#2563eb,#1e40af)"><div class="kpi-icon">📊</div><div class="kpi-label">Exp. moyenne</div><div class="kpi-value">' + f'{stats["exp"]:.0f}' + ' ans</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#b45309)"><div class="kpi-icon">💰</div><div class="kpi-label">Tarif moyen</div><div class="kpi-value" style="font-size:18px">' + f'{stats["tarif"]:,.0f}' + ' F/h</div></div>'
+    content += '</div>'
+
+    content += '<div class="card" style="padding:0;overflow:hidden">'
+    content += '<table><thead><tr><th>Code</th><th>Nom</th><th>Spécialité</th><th>Téléphone</th><th style="text-align:center">Exp.</th><th style="text-align:right">Tarif</th><th style="text-align:center">Sessions</th><th>Statut</th></tr></thead>'
+    content += '<tbody>' + (rows or '<tr><td colspan="8" style="padding:40px;text-align:center;color:#94a3b8">Aucun formateur</td></tr>') + '</tbody></table></div>'
+
+    return render_page(content, active='formateurs', page_title='Formateurs')
+
+
+@app.route('/formateurs/nouveau', methods=['GET', 'POST'])
+@login_required
+def formateurs_nouveau():
+    db = get_db()
+    cur = db.cursor()
+
+    if request.method == 'POST':
+        try:
+            cur.execute("""
+                INSERT INTO formateurs
+                (code, nom_complet, telephone, email, specialite, diplome,
+                 annees_experience, tarif_horaire, statut, created_at)
+                VALUES (?,?,?,?,?,?,?,?, 'disponible', ?)
+            """, (None,
+                  request.form.get('nom_complet'),
+                  request.form.get('telephone'),
+                  request.form.get('email'),
+                  request.form.get('specialite'),
+                  request.form.get('diplome'),
+                  int(request.form.get('annees_experience') or 0),
+                  float(request.form.get('tarif_horaire') or 0),
+                  datetime.now().isoformat()))
+            db.commit()
+            flash('✅ Formateur créé', 'success')
+            return redirect('/formateurs')
+        except Exception as e:
+            db.rollback()
+            flash('❌ ' + str(e), 'error')
+
+    content = '<h1>👨‍🏫 Nouveau formateur</h1>'
+    content += '<form method="post" class="card" style="max-width:800px">'
+    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+    content += '<div style="grid-column:1/-1"><label>Nom complet *</label><input type="text" name="nom_complet" required autofocus></div>'
+    content += '<div><label>Téléphone</label><input type="text" name="telephone"></div>'
+    content += '<div><label>Email</label><input type="email" name="email"></div>'
+    content += '<div><label>Spécialité</label><input type="text" name="specialite"></div>'
+    content += '<div><label>Diplôme</label><input type="text" name="diplome"></div>'
+    content += '<div><label>Années d\'expérience</label><input type="number" name="annees_experience" value="5"></div>'
+    content += '<div><label>Tarif horaire (FCFA)</label><input type="number" step="500" name="tarif_horaire" value="15000"></div>'
+    content += '</div>'
+    content += '<div style="margin-top:24px"><button type="submit" class="btn btn-success">💾 Créer</button>'
+    content += '<a href="/formateurs" class="btn btn-secondary" style="margin-left:8px">Annuler</a></div>'
+    content += '</form>'
+    return render_page(content, active='formateurs', page_title='Nouveau formateur')
+
+
+# ═══════════════════════════════════════════════════════════════
+# 🏫 CENTRES DE FORMATION
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/centres')
+@login_required
+def centres_liste():
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT c.*,
+               (SELECT COUNT(*) FROM salles WHERE centre_id=c.id) AS nb_salles,
+               (SELECT COUNT(*) FROM sessions WHERE centre_id=c.id) AS nb_sessions
+        FROM centres c
+        ORDER BY c.nom
+    """)
+    centres = cur.fetchall()
+
+    stats = {}
+    cur.execute("SELECT COUNT(*) FROM centres WHERE statut='actif'")
+    stats['total'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM centres WHERE type='public'")
+    stats['public'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM centres WHERE type='prive'")
+    stats['prive'] = cur.fetchone()[0]
+    cur.execute("SELECT COALESCE(SUM(capacite_totale),0) FROM centres")
+    stats['capacite'] = cur.fetchone()[0]
+
+    cards = ''
+    for c in centres:
+        type_icon = '🏛️' if c['type'] == 'public' else '🏢'
+        cards += '<div class="form-card">'
+        cards += '<div class="form-icon">' + type_icon + '</div>'
+        cards += '<div class="form-body">'
+        cards += '<div style="font-weight:800;color:#1e293b;font-size:14px;margin-bottom:4px">' + str(c["nom"]) + '</div>'
+        cards += '<div style="font-size:11.5px;color:#64748b;margin-bottom:8px">📍 ' + str(c["ville"] or "") + ' · ' + str(c["region"] or "") + '</div>'
+        cards += '<div style="font-size:12px;color:#475569;margin-bottom:10px">📞 ' + str(c["telephone"] or "—") + '</div>'
+        cards += '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:10px">'
+        cards += '<span style="color:#64748b">🚪 ' + str(c["nb_salles"]) + ' salles</span>'
+        cards += '<span style="color:#64748b">👥 ' + str(c["capacite_totale"]) + ' places</span>'
+        cards += '</div>'
+        cards += '<a href="/centres/' + str(c["id"]) + '" class="btn btn-primary" style="padding:6px 10px;font-size:11.5px;width:100%;text-align:center;display:block">👁 Voir détails</a>'
+        cards += '</div></div>'
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">🏫 Centres de formation — ' + str(len(centres)) + '</h1>'
+    content += '<a href="/centres/nouveau" class="btn btn-primary">+ Nouveau centre</a></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#ea580c,#c2410c)"><div class="kpi-icon">🏫</div><div class="kpi-label">Centres actifs</div><div class="kpi-value">' + str(stats["total"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#2563eb,#1e40af)"><div class="kpi-icon">🏛️</div><div class="kpi-label">Publics</div><div class="kpi-value">' + str(stats["public"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-icon">🏢</div><div class="kpi-label">Privés</div><div class="kpi-value">' + str(stats["prive"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#b45309)"><div class="kpi-icon">👥</div><div class="kpi-label">Capacité totale</div><div class="kpi-value">' + str(stats["capacite"]) + '</div></div>'
+    content += '</div>'
+
+    content += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px">' + (cards or '<p style="grid-column:1/-1;text-align:center;color:#94a3b8;padding:40px">Aucun centre</p>') + '</div>'
+
+    return render_page(content, active='centres', page_title='Centres')
+
+
+@app.route('/centres/nouveau', methods=['GET', 'POST'])
+@login_required
+def centres_nouveau():
+    db = get_db()
+    cur = db.cursor()
+
+    if request.method == 'POST':
+        try:
+            cur.execute("""
+                INSERT INTO centres
+                (code, nom, type, adresse, ville, region, telephone, email,
+                 responsable, num_agrement, capacite_totale, statut, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?, 'actif', ?)
+            """, (None,
+                  request.form.get('nom'),
+                  request.form.get('type') or 'public',
+                  request.form.get('adresse'),
+                  request.form.get('ville'),
+                  request.form.get('region'),
+                  request.form.get('telephone'),
+                  request.form.get('email'),
+                  request.form.get('responsable'),
+                  request.form.get('num_agrement'),
+                  int(request.form.get('capacite_totale') or 0),
+                  datetime.now().isoformat()))
+            db.commit()
+            flash('✅ Centre créé', 'success')
+            return redirect('/centres')
+        except Exception as e:
+            db.rollback()
+            flash('❌ ' + str(e), 'error')
+
+    content = '<h1>🏫 Nouveau centre</h1>'
+    content += '<form method="post" class="card" style="max-width:800px">'
+    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+    content += '<div style="grid-column:1/-1"><label>Nom du centre *</label><input type="text" name="nom" required autofocus></div>'
+    content += '<div><label>Type</label><select name="type">'
+    content += '<option value="public">🏛️ Public</option>'
+    content += '<option value="prive">🏢 Privé</option>'
+    content += '</select></div>'
+    content += '<div><label>Numéro d\'agrément</label><input type="text" name="num_agrement"></div>'
+    content += '<div style="grid-column:1/-1"><label>Adresse</label><input type="text" name="adresse"></div>'
+    content += '<div><label>Ville</label><input type="text" name="ville" value="Dakar"></div>'
+    content += '<div><label>Région</label><input type="text" name="region" value="Dakar"></div>'
+    content += '<div><label>Téléphone</label><input type="text" name="telephone"></div>'
+    content += '<div><label>Email</label><input type="email" name="email"></div>'
+    content += '<div><label>Responsable</label><input type="text" name="responsable"></div>'
+    content += '<div><label>Capacité totale</label><input type="number" name="capacite_totale" value="200"></div>'
+    content += '</div>'
+    content += '<div style="margin-top:24px"><button type="submit" class="btn btn-success">💾 Créer</button>'
+    content += '<a href="/centres" class="btn btn-secondary" style="margin-left:8px">Annuler</a></div>'
+    content += '</form>'
+    return render_page(content, active='centres', page_title='Nouveau centre')
+
+
+@app.route('/centres/<int:cid>')
+@login_required
+def centres_detail(cid):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT * FROM centres WHERE id=?", (cid,))
+    c = cur.fetchone()
+    if not c:
+        flash('❌ Centre introuvable', 'error')
+        return redirect('/centres')
+
+    cur.execute("SELECT * FROM salles WHERE centre_id=? ORDER BY nom", (cid,))
+    salles = cur.fetchall()
+    salles_html = ''
+    for s in salles:
+        salles_html += (
+            '<tr><td><strong>' + str(s["nom"]) + '</strong></td>'
+            + '<td style="text-align:center">' + str(s["capacite"]) + '</td>'
+            + '<td>' + str(s["equipements"] or "—") + '</td>'
+            + '<td>' + str(s["etage"] or "—") + '</td></tr>'
+        )
+
+    cur.execute("""
+        SELECT s.*, f.nom AS formation_nom, ftr.nom_complet AS formateur_nom
+        FROM sessions s
+        LEFT JOIN formations f ON f.id=s.formation_id
+        LEFT JOIN formateurs ftr ON ftr.id=s.formateur_id
+        WHERE s.centre_id=?
+        ORDER BY s.date_debut DESC LIMIT 20
+    """, (cid,))
+    sessions = cur.fetchall()
+    sess_html = ''
+    for s in sessions:
+        statut_badge = {'planifiee': 'badge-blue', 'en_cours': 'badge-orange', 'terminee': 'badge-green'}.get(s['statut'], 'badge-gray')
+        sess_html += (
+            '<tr><td><strong>' + str(s["code"]) + '</strong></td>'
+            + '<td>' + str(s["formation_nom"] or "—") + '</td>'
+            + '<td>' + str(s["formateur_nom"] or "—") + '</td>'
+            + '<td>' + str((s["date_debut"] or "—")[:10]) + '</td>'
+            + '<td><span class="badge ' + statut_badge + '">' + str(s["statut"]) + '</span></td></tr>'
+        )
+
+    type_icon = '🏛️' if c['type'] == 'public' else '🏢'
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">' + type_icon + ' ' + str(c["nom"]) + '</h1>'
+    content += '<a href="/centres" class="btn btn-secondary">← Retour</a></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#ea580c,#c2410c)"><div class="kpi-label">Code</div><div class="kpi-value" style="font-size:16px">' + str(c["code"] or "—") + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#2563eb,#1e40af)"><div class="kpi-label">Type</div><div class="kpi-value" style="font-size:16px">' + str(c["type"] or "—") + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-label">Salles</div><div class="kpi-value">' + str(len(salles)) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#b45309)"><div class="kpi-label">Capacité</div><div class="kpi-value">' + str(c["capacite_totale"]) + '</div></div>'
+    content += '</div>'
+
+    content += '<div class="card"><h2>📋 Informations</h2><table>'
+    content += '<tr><td><strong>Adresse</strong></td><td>' + str(c["adresse"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Ville / Région</strong></td><td>' + str(c["ville"] or "—") + ' / ' + str(c["region"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Téléphone</strong></td><td>' + str(c["telephone"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Email</strong></td><td>' + str(c["email"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Responsable</strong></td><td>' + str(c["responsable"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>N° agrément</strong></td><td>' + str(c["num_agrement"] or "—") + '</td></tr>'
+    content += '</table></div>'
+
+    content += '<div class="card"><h2>🚪 Salles (' + str(len(salles)) + ')</h2>'
+    content += '<table><thead><tr><th>Nom</th><th style="text-align:center">Capacité</th><th>Équipements</th><th>Étage</th></tr></thead>'
+    content += '<tbody>' + (salles_html or '<tr><td colspan="4" style="text-align:center;color:#94a3b8;padding:20px">Aucune salle</td></tr>') + '</tbody></table>'
+    content += '<div style="margin-top:14px;text-align:right"><a href="/centres/' + str(cid) + '/salles/nouvelle" class="btn btn-primary">+ Ajouter une salle</a></div></div>'
+
+    content += '<div class="card"><h2>📅 Sessions (' + str(len(sessions)) + ')</h2>'
+    content += '<table><thead><tr><th>Code</th><th>Formation</th><th>Formateur</th><th>Début</th><th>Statut</th></tr></thead>'
+    content += '<tbody>' + (sess_html or '<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:20px">Aucune session</td></tr>') + '</tbody></table></div>'
+
+    return render_page(content, active='centres', page_title='Centre')
+
+
+@app.route('/centres/<int:cid>/salles/nouvelle', methods=['GET', 'POST'])
+@login_required
+def salles_nouvelle(cid):
+    db = get_db()
+    cur = db.cursor()
+
+    if request.method == 'POST':
+        try:
+            cur.execute("""
+                INSERT INTO salles (centre_id, nom, capacite, equipements, etage, disponible, created_at)
+                VALUES (?,?,?,?,?,1,?)
+            """, (cid,
+                  request.form.get('nom'),
+                  int(request.form.get('capacite') or 20),
+                  request.form.get('equipements'),
+                  request.form.get('etage'),
+                  datetime.now().isoformat()))
+            db.commit()
+            flash('✅ Salle ajoutée', 'success')
+            return redirect('/centres/' + str(cid))
+        except Exception as e:
+            db.rollback()
+            flash('❌ ' + str(e), 'error')
+
+    content = '<h1>🚪 Nouvelle salle</h1>'
+    content += '<form method="post" class="card" style="max-width:700px">'
+    content += '<div style="margin-bottom:16px"><label>Nom de la salle *</label>'
+    content += '<input type="text" name="nom" required autofocus></div>'
+    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+    content += '<div><label>Capacité</label><input type="number" name="capacite" value="20"></div>'
+    content += '<div><label>Étage</label><input type="text" name="etage"></div>'
+    content += '</div>'
+    content += '<div style="margin-top:16px"><label>Équipements</label>'
+    content += '<textarea name="equipements" rows="3"></textarea></div>'
+    content += '<div style="margin-top:24px"><button type="submit" class="btn btn-success">💾 Créer</button>'
+    content += '<a href="/centres/' + str(cid) + '" class="btn btn-secondary" style="margin-left:8px">Annuler</a></div>'
+    content += '</form>'
+    return render_page(content, active='centres', page_title='Nouvelle salle')
+
+
+# ═══════════════════════════════════════════════════════════════
+# 📅 SESSIONS DE FORMATION
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/sessions')
+@login_required
+def sessions_liste():
+    db = get_db()
+    cur = db.cursor()
+    statut_f = request.args.get('statut', '')
+
+    sql = """
+        SELECT s.*, f.nom AS formation_nom, f.domaine,
+               c.nom AS centre_nom, ftr.nom_complet AS formateur_nom
+        FROM sessions s
+        LEFT JOIN formations f ON f.id=s.formation_id
+        LEFT JOIN centres c ON c.id=s.centre_id
+        LEFT JOIN formateurs ftr ON ftr.id=s.formateur_id
+        WHERE 1=1
+    """
+    params = []
+    if statut_f:
+        sql += " AND s.statut=?"
+        params.append(statut_f)
+    sql += " ORDER BY s.date_debut DESC LIMIT 200"
+    cur.execute(sql, params)
+    sessions = cur.fetchall()
+
+    stats = {}
+    for k, s in [
+        ('total', "SELECT COUNT(*) FROM sessions"),
+        ('planifiee', "SELECT COUNT(*) FROM sessions WHERE statut='planifiee'"),
+        ('en_cours', "SELECT COUNT(*) FROM sessions WHERE statut='en_cours'"),
+        ('terminee', "SELECT COUNT(*) FROM sessions WHERE statut='terminee'"),
+    ]:
+        cur.execute(s)
+        stats[k] = cur.fetchone()[0]
+
+    rows = ''
+    for s in sessions:
+        statut_badge = {
+            'planifiee': 'badge-blue',
+            'en_cours': 'badge-orange',
+            'terminee': 'badge-green',
+            'annulee': 'badge-red',
+        }.get(s['statut'], 'badge-gray')
+        remplissage = (s['nb_inscrits'] / s['capacite'] * 100) if s['capacite'] > 0 else 0
+        rows += (
+            '<tr><td><strong style="color:#ea580c">' + str(s["code"]) + '</strong></td>'
+            + '<td><strong>' + str(s["formation_nom"] or "—") + '</strong><br><small style="color:#64748b">' + str(s["domaine"] or "") + '</small></td>'
+            + '<td>' + str(s["centre_nom"] or "—") + '</td>'
+            + '<td>' + str(s["formateur_nom"] or "—") + '</td>'
+            + '<td>' + str((s["date_debut"] or "—")[:10]) + '<br><small style="color:#64748b">→ ' + str((s["date_fin"] or "—")[:10]) + '</small></td>'
+            + '<td style="text-align:center">' + str(s["nb_inscrits"]) + '/' + str(s["capacite"]) + '<br><small style="color:#64748b">' + f'{remplissage:.0f}' + '%</small></td>'
+            + '<td>' + str(s["financement"] or "—") + '</td>'
+            + '<td><span class="badge ' + statut_badge + '">' + str(s["statut"]) + '</span></td>'
+            + '<td><a href="/sessions/' + str(s["id"]) + '" class="btn btn-primary" style="padding:4px 10px;font-size:11px">👁</a></td></tr>'
+        )
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">📅 Sessions — ' + str(len(sessions)) + '</h1>'
+    content += '<a href="/sessions/nouvelle" class="btn btn-primary">+ Nouvelle session</a></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#ea580c,#c2410c)"><div class="kpi-icon">📅</div><div class="kpi-label">Total</div><div class="kpi-value">' + str(stats["total"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#3b82f6,#1e40af)"><div class="kpi-icon">📋</div><div class="kpi-label">Planifiées</div><div class="kpi-value">' + str(stats["planifiee"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f97316,#ea580c)"><div class="kpi-icon">🔴</div><div class="kpi-label">En cours</div><div class="kpi-value">' + str(stats["en_cours"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-icon">✅</div><div class="kpi-label">Terminées</div><div class="kpi-value">' + str(stats["terminee"]) + '</div></div>'
+    content += '</div>'
+
+    content += '<div style="margin-bottom:16px">'
+    content += '<a href="/sessions" class="btn ' + ('btn-primary' if not statut_f else 'btn-secondary') + '">Toutes</a> '
+    for s in ['planifiee', 'en_cours', 'terminee']:
+        active_cls = 'btn-primary' if statut_f == s else 'btn-secondary'
+        content += '<a href="/sessions?statut=' + s + '" class="btn ' + active_cls + '" style="margin-left:6px">' + s + '</a> '
+    content += '</div>'
+
+    content += '<div class="card" style="padding:0;overflow:hidden">'
+    content += '<table><thead><tr><th>Code</th><th>Formation</th><th>Centre</th><th>Formateur</th>'
+    content += '<th>Dates</th><th style="text-align:center">Inscrits</th><th>Financement</th><th>Statut</th><th>Actions</th></tr></thead>'
+    content += '<tbody>' + (rows or '<tr><td colspan="9" style="padding:40px;text-align:center;color:#94a3b8">Aucune session</td></tr>') + '</tbody></table></div>'
+
+    return render_page(content, active='sessions', page_title='Sessions')
+
+
+@app.route('/sessions/nouvelle', methods=['GET', 'POST'])
+@login_required
+def sessions_nouvelle():
+    db = get_db()
+    cur = db.cursor()
+    formation_id_pre = int(request.args.get('formation_id') or 0)
+
+    if request.method == 'POST':
+        try:
+            cur.execute("""
+                INSERT INTO sessions
+                (code, formation_id, centre_id, salle_id, formateur_id, date_debut, date_fin,
+                 horaire, capacite, nb_inscrits, financement, cout_total, statut, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,0,?,?,?,?)
+            """, (None,
+                  int(request.form.get('formation_id') or 0),
+                  int(request.form.get('centre_id') or 0) or None,
+                  int(request.form.get('salle_id') or 0) or None,
+                  int(request.form.get('formateur_id') or 0) or None,
+                  request.form.get('date_debut'),
+                  request.form.get('date_fin'),
+                  request.form.get('horaire'),
+                  int(request.form.get('capacite') or 20),
+                  request.form.get('financement') or 'autofinance',
+                  float(request.form.get('cout_total') or 0),
+                  request.form.get('statut') or 'planifiee',
+                  datetime.now().isoformat()))
+            db.commit()
+            flash('✅ Session créée', 'success')
+            return redirect('/sessions')
+        except Exception as e:
+            db.rollback()
+            flash('❌ ' + str(e), 'error')
+
+    cur.execute("SELECT id, nom, domaine FROM formations WHERE statut='actif' ORDER BY nom")
+    formations = cur.fetchall()
+    cur.execute("SELECT id, nom FROM centres ORDER BY nom")
+    centres = cur.fetchall()
+    cur.execute("SELECT id, nom_complet, specialite FROM formateurs WHERE statut='disponible' ORDER BY nom_complet")
+    formateurs = cur.fetchall()
+
+    opts_f = ''.join('<option value="' + str(f["id"]) + '"' + (' selected' if f["id"] == formation_id_pre else '') + '>' + str(f["nom"]) + ' (' + str(f["domaine"] or "") + ')</option>' for f in formations)
+    opts_c = ''.join('<option value="' + str(c["id"]) + '">' + str(c["nom"]) + '</option>' for c in centres)
+    opts_ftr = ''.join('<option value="' + str(f["id"]) + '">' + str(f["nom_complet"]) + ' — ' + str(f["specialite"] or "") + '</option>' for f in formateurs)
+
+    content = '<h1>📅 Nouvelle session</h1>'
+    content += '<form method="post" class="card" style="max-width:900px">'
+    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+    content += '<div style="grid-column:1/-1"><label>Formation *</label><select name="formation_id" required>'
+    content += '<option value="">— Sélectionner —</option>' + opts_f + '</select></div>'
+    content += '<div><label>Centre</label><select name="centre_id"><option value="">— Aucun —</option>' + opts_c + '</select></div>'
+    content += '<div><label>Formateur</label><select name="formateur_id"><option value="">— Aucun —</option>' + opts_ftr + '</select></div>'
+    content += '<div><label>Date début *</label><input type="date" name="date_debut" required value="' + datetime.now().strftime('%Y-%m-%d') + '"></div>'
+    content += '<div><label>Date fin</label><input type="date" name="date_fin" value="' + (datetime.now() + timedelta(days=90)).strftime('%Y-%m-%d') + '"></div>'
+    content += '<div><label>Horaire</label><select name="horaire">'
+    content += '<option value="8h-12h">8h-12h</option>'
+    content += '<option value="14h-18h">14h-18h</option>'
+    content += '<option value="8h-17h">8h-17h</option>'
+    content += '</select></div>'
+    content += '<div><label>Capacité</label><input type="number" name="capacite" value="20"></div>'
+    content += '<div><label>Financement</label><select name="financement">'
+    content += '<option value="3FPT">🏛️ 3FPT</option>'
+    content += '<option value="autofinance">💰 Autofinancement</option>'
+    content += '<option value="entreprise">🏢 Entreprise</option>'
+    content += '<option value="cooperation">🤝 Coopération</option>'
+    content += '</select></div>'
+    content += '<div><label>Coût total (FCFA)</label><input type="number" step="1000" name="cout_total" value="500000"></div>'
+    content += '<div><label>Statut</label><select name="statut">'
+    content += '<option value="planifiee">📋 Planifiée</option>'
+    content += '<option value="en_cours">🔴 En cours</option>'
+    content += '</select></div>'
+    content += '</div>'
+    content += '<div style="margin-top:24px"><button type="submit" class="btn btn-success">💾 Créer la session</button>'
+    content += '<a href="/sessions" class="btn btn-secondary" style="margin-left:8px">Annuler</a></div>'
+    content += '</form>'
+    return render_page(content, active='sessions', page_title='Nouvelle session')
+
+
+@app.route('/sessions/<int:sid>')
+@login_required
+def sessions_detail(sid):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT s.*, f.nom AS formation_nom, f.domaine, f.duree_heures,
+               c.nom AS centre_nom, c.ville AS centre_ville,
+               ftr.nom_complet AS formateur_nom, ftr.telephone AS formateur_tel,
+               sa.nom AS salle_nom
+        FROM sessions s
+        LEFT JOIN formations f ON f.id=s.formation_id
+        LEFT JOIN centres c ON c.id=s.centre_id
+        LEFT JOIN formateurs ftr ON ftr.id=s.formateur_id
+        LEFT JOIN salles sa ON sa.id=s.salle_id
+        WHERE s.id=?
+    """, (sid,))
+    s = cur.fetchone()
+    if not s:
+        flash('❌ Session introuvable', 'error')
+        return redirect('/sessions')
+
+    cur.execute("""
+        SELECT i.*, a.nom, a.prenom, a.numero_apprenant, a.telephone
+        FROM inscriptions i
+        LEFT JOIN apprenants a ON a.id=i.apprenant_id
+        WHERE i.session_id=?
+        ORDER BY a.nom
+    """, (sid,))
+    inscriptions = cur.fetchall()
+
+    ins_html = ''
+    for i in inscriptions:
+        ins_html += (
+            '<tr><td><strong>' + str(i["numero_apprenant"] or "—") + '</strong></td>'
+            + '<td>' + str(i["prenom"] or "") + ' ' + str(i["nom"] or "") + '</td>'
+            + '<td>' + str(i["telephone"] or "—") + '</td>'
+            + '<td>' + str((i["date_inscription"] or "")[:10]) + '</td>'
+            + '<td>' + str(i["financement"] or "—") + '</td>'
+            + '<td style="text-align:right">' + f'{i["frais_payes"]:,.0f}' + ' F</td></tr>'
+        )
+
+    statut_badge = {'planifiee': 'badge-blue', 'en_cours': 'badge-orange', 'terminee': 'badge-green'}.get(s['statut'], 'badge-gray')
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">📅 Session ' + str(s["code"]) + ' <span class="badge ' + statut_badge + '">' + str(s["statut"]) + '</span></h1>'
+    content += '<div>'
+    content += '<a href="/sessions/' + str(sid) + '/presences" class="btn btn-blue">📋 Présences</a> '
+    content += '<a href="/sessions/' + str(sid) + '/inscription" class="btn btn-success">+ Inscrire</a> '
+    content += '<a href="/sessions" class="btn btn-secondary">← Retour</a></div></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#ea580c,#c2410c)"><div class="kpi-label">Formation</div><div class="kpi-value" style="font-size:14px">' + str(s["formation_nom"] or "—") + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#2563eb,#1e40af)"><div class="kpi-label">Centre</div><div class="kpi-value" style="font-size:16px">' + str(s["centre_nom"] or "—") + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-label">Inscrits</div><div class="kpi-value">' + str(len(inscriptions)) + '/' + str(s["capacite"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#b45309)"><div class="kpi-label">Financement</div><div class="kpi-value" style="font-size:16px">' + str(s["financement"] or "—") + '</div></div>'
+    content += '</div>'
+
+    content += '<div class="card"><h2>📋 Informations</h2><table>'
+    content += '<tr><td><strong>Formateur</strong></td><td>' + str(s["formateur_nom"] or "—") + ' · ' + str(s["formateur_tel"] or "") + '</td></tr>'
+    content += '<tr><td><strong>Salle</strong></td><td>' + str(s["salle_nom"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Horaire</strong></td><td>' + str(s["horaire"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Dates</strong></td><td>' + str((s["date_debut"] or "—")[:10]) + ' → ' + str((s["date_fin"] or "—")[:10]) + '</td></tr>'
+    content += '<tr><td><strong>Durée formation</strong></td><td>' + str(s["duree_heures"]) + 'h</td></tr>'
+    content += '<tr><td><strong>Coût total</strong></td><td>' + f'{s["cout_total"]:,.0f}' + ' FCFA</td></tr>'
+    content += '</table></div>'
+
+    content += '<div class="card"><h2>👥 Apprenants inscrits (' + str(len(inscriptions)) + ')</h2>'
+    content += '<table><thead><tr><th>N° Apprenant</th><th>Nom</th><th>Téléphone</th><th>Inscription</th><th>Financement</th><th style="text-align:right">Frais payés</th></tr></thead>'
+    content += '<tbody>' + (ins_html or '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:20px">Aucun apprenant inscrit</td></tr>') + '</tbody></table>'
+    content += '<div style="margin-top:14px;text-align:right"><a href="/sessions/' + str(sid) + '/inscription" class="btn btn-primary">+ Inscrire un apprenant</a></div></div>'
+
+    return render_page(content, active='sessions', page_title='Session')
+
+
+# ═══════════════════════════════════════════════════════════════
+# 🏫 CENTRES DE FORMATION
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/centres')
+@login_required
+def centres_liste():
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT c.*,
+               (SELECT COUNT(*) FROM salles WHERE centre_id=c.id) AS nb_salles,
+               (SELECT COUNT(*) FROM sessions WHERE centre_id=c.id) AS nb_sessions
+        FROM centres c
+        ORDER BY c.nom
+    """)
+    centres = cur.fetchall()
+
+    stats = {}
+    cur.execute("SELECT COUNT(*) FROM centres WHERE statut='actif'")
+    stats['total'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM centres WHERE type='public'")
+    stats['public'] = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM centres WHERE type='prive'")
+    stats['prive'] = cur.fetchone()[0]
+    cur.execute("SELECT COALESCE(SUM(capacite_totale),0) FROM centres")
+    stats['capacite'] = cur.fetchone()[0]
+
+    cards = ''
+    for c in centres:
+        type_icon = '🏛️' if c['type'] == 'public' else '🏢'
+        cards += '<div class="form-card">'
+        cards += '<div class="form-icon">' + type_icon + '</div>'
+        cards += '<div class="form-body">'
+        cards += '<div style="font-weight:800;color:#1e293b;font-size:14px;margin-bottom:4px">' + str(c["nom"]) + '</div>'
+        cards += '<div style="font-size:11.5px;color:#64748b;margin-bottom:8px">📍 ' + str(c["ville"] or "") + ' · ' + str(c["region"] or "") + '</div>'
+        cards += '<div style="font-size:12px;color:#475569;margin-bottom:10px">📞 ' + str(c["telephone"] or "—") + '</div>'
+        cards += '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:10px">'
+        cards += '<span style="color:#64748b">🚪 ' + str(c["nb_salles"]) + ' salles</span>'
+        cards += '<span style="color:#64748b">👥 ' + str(c["capacite_totale"]) + ' places</span>'
+        cards += '</div>'
+        cards += '<a href="/centres/' + str(c["id"]) + '" class="btn btn-primary" style="padding:6px 10px;font-size:11.5px;width:100%;text-align:center;display:block">👁 Voir détails</a>'
+        cards += '</div></div>'
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">🏫 Centres — ' + str(len(centres)) + '</h1>'
+    content += '<a href="/centres/nouveau" class="btn btn-primary">+ Nouveau centre</a></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#ea580c,#c2410c)"><div class="kpi-icon">🏫</div><div class="kpi-label">Centres actifs</div><div class="kpi-value">' + str(stats["total"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#2563eb,#1e40af)"><div class="kpi-icon">🏛️</div><div class="kpi-label">Publics</div><div class="kpi-value">' + str(stats["public"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-icon">🏢</div><div class="kpi-label">Privés</div><div class="kpi-value">' + str(stats["prive"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#b45309)"><div class="kpi-icon">👥</div><div class="kpi-label">Capacité totale</div><div class="kpi-value">' + str(stats["capacite"]) + '</div></div>'
+    content += '</div>'
+
+    content += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px">' + (cards or '<p style="grid-column:1/-1;text-align:center;color:#94a3b8;padding:40px">Aucun centre</p>') + '</div>'
+
+    return render_page(content, active='centres', page_title='Centres')
+
+
+@app.route('/centres/nouveau', methods=['GET', 'POST'])
+@login_required
+def centres_nouveau():
+    db = get_db()
+    cur = db.cursor()
+
+    if request.method == 'POST':
+        try:
+            cur.execute("""
+                INSERT INTO centres
+                (code, nom, type, adresse, ville, region, telephone, email,
+                 responsable, num_agrement, capacite_totale, statut, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?, 'actif', ?)
+            """, (None,
+                  request.form.get('nom'),
+                  request.form.get('type') or 'public',
+                  request.form.get('adresse'),
+                  request.form.get('ville'),
+                  request.form.get('region'),
+                  request.form.get('telephone'),
+                  request.form.get('email'),
+                  request.form.get('responsable'),
+                  request.form.get('num_agrement'),
+                  int(request.form.get('capacite_totale') or 0),
+                  datetime.now().isoformat()))
+            db.commit()
+            flash('✅ Centre créé', 'success')
+            return redirect('/centres')
+        except Exception as e:
+            db.rollback()
+            flash('❌ ' + str(e), 'error')
+
+    content = '<h1>🏫 Nouveau centre</h1>'
+    content += '<form method="post" class="card" style="max-width:800px">'
+    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+    content += '<div style="grid-column:1/-1"><label>Nom du centre *</label><input type="text" name="nom" required autofocus></div>'
+    content += '<div><label>Type</label><select name="type">'
+    content += '<option value="public">🏛️ Public</option>'
+    content += '<option value="prive">🏢 Privé</option>'
+    content += '</select></div>'
+    content += '<div><label>Numéro d\'agrément</label><input type="text" name="num_agrement"></div>'
+    content += '<div style="grid-column:1/-1"><label>Adresse</label><input type="text" name="adresse"></div>'
+    content += '<div><label>Ville</label><input type="text" name="ville" value="Dakar"></div>'
+    content += '<div><label>Région</label><input type="text" name="region" value="Dakar"></div>'
+    content += '<div><label>Téléphone</label><input type="text" name="telephone"></div>'
+    content += '<div><label>Email</label><input type="email" name="email"></div>'
+    content += '<div><label>Responsable</label><input type="text" name="responsable"></div>'
+    content += '<div><label>Capacité totale</label><input type="number" name="capacite_totale" value="200"></div>'
+    content += '</div>'
+    content += '<div style="margin-top:24px"><button type="submit" class="btn btn-success">💾 Créer</button>'
+    content += '<a href="/centres" class="btn btn-secondary" style="margin-left:8px">Annuler</a></div>'
+    content += '</form>'
+    return render_page(content, active='centres', page_title='Nouveau centre')
+
+
+@app.route('/centres/<int:cid>')
+@login_required
+def centres_detail(cid):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("SELECT * FROM centres WHERE id=?", (cid,))
+    c = cur.fetchone()
+    if not c:
+        flash('❌ Centre introuvable', 'error')
+        return redirect('/centres')
+
+    cur.execute("SELECT * FROM salles WHERE centre_id=? ORDER BY nom", (cid,))
+    salles = cur.fetchall()
+    salles_html = ''
+    for s in salles:
+        salles_html += (
+            '<tr><td><strong>' + str(s["nom"]) + '</strong></td>'
+            + '<td style="text-align:center">' + str(s["capacite"]) + '</td>'
+            + '<td>' + str(s["equipements"] or "—") + '</td>'
+            + '<td>' + str(s["etage"] or "—") + '</td></tr>'
+        )
+
+    cur.execute("""
+        SELECT s.*, f.nom AS formation_nom, ftr.nom_complet AS formateur_nom
+        FROM sessions s
+        LEFT JOIN formations f ON f.id=s.formation_id
+        LEFT JOIN formateurs ftr ON ftr.id=s.formateur_id
+        WHERE s.centre_id=?
+        ORDER BY s.date_debut DESC LIMIT 20
+    """, (cid,))
+    sessions = cur.fetchall()
+    sess_html = ''
+    for s in sessions:
+        statut_badge = {'planifiee': 'badge-blue', 'en_cours': 'badge-orange', 'terminee': 'badge-green'}.get(s['statut'], 'badge-gray')
+        sess_html += (
+            '<tr><td><strong>' + str(s["code"]) + '</strong></td>'
+            + '<td>' + str(s["formation_nom"] or "—") + '</td>'
+            + '<td>' + str(s["formateur_nom"] or "—") + '</td>'
+            + '<td>' + str((s["date_debut"] or "—")[:10]) + '</td>'
+            + '<td><span class="badge ' + statut_badge + '">' + str(s["statut"]) + '</span></td></tr>'
+        )
+
+    type_icon = '🏛️' if c['type'] == 'public' else '🏢'
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">' + type_icon + ' ' + str(c["nom"]) + '</h1>'
+    content += '<a href="/centres" class="btn btn-secondary">← Retour</a></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#ea580c,#c2410c)"><div class="kpi-label">Code</div><div class="kpi-value" style="font-size:16px">' + str(c["code"] or "—") + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#2563eb,#1e40af)"><div class="kpi-label">Type</div><div class="kpi-value" style="font-size:16px">' + str(c["type"] or "—") + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-label">Salles</div><div class="kpi-value">' + str(len(salles)) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#b45309)"><div class="kpi-label">Capacité</div><div class="kpi-value">' + str(c["capacite_totale"]) + '</div></div>'
+    content += '</div>'
+
+    content += '<div class="card"><h2>📋 Informations</h2><table>'
+    content += '<tr><td><strong>Adresse</strong></td><td>' + str(c["adresse"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Ville / Région</strong></td><td>' + str(c["ville"] or "—") + ' / ' + str(c["region"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Téléphone</strong></td><td>' + str(c["telephone"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Email</strong></td><td>' + str(c["email"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Responsable</strong></td><td>' + str(c["responsable"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>N° agrément</strong></td><td>' + str(c["num_agrement"] or "—") + '</td></tr>'
+    content += '</table></div>'
+
+    content += '<div class="card"><h2>🚪 Salles (' + str(len(salles)) + ')</h2>'
+    content += '<table><thead><tr><th>Nom</th><th style="text-align:center">Capacité</th><th>Équipements</th><th>Étage</th></tr></thead>'
+    content += '<tbody>' + (salles_html or '<tr><td colspan="4" style="text-align:center;color:#94a3b8;padding:20px">Aucune salle</td></tr>') + '</tbody></table>'
+    content += '<div style="margin-top:14px;text-align:right"><a href="/centres/' + str(cid) + '/salles/nouvelle" class="btn btn-primary">+ Ajouter une salle</a></div></div>'
+
+    content += '<div class="card"><h2>📅 Sessions (' + str(len(sessions)) + ')</h2>'
+    content += '<table><thead><tr><th>Code</th><th>Formation</th><th>Formateur</th><th>Début</th><th>Statut</th></tr></thead>'
+    content += '<tbody>' + (sess_html or '<tr><td colspan="5" style="text-align:center;color:#94a3b8;padding:20px">Aucune session</td></tr>') + '</tbody></table></div>'
+
+    return render_page(content, active='centres', page_title='Centre')
+
+
+@app.route('/centres/<int:cid>/salles/nouvelle', methods=['GET', 'POST'])
+@login_required
+def salles_nouvelle(cid):
+    db = get_db()
+    cur = db.cursor()
+
+    if request.method == 'POST':
+        try:
+            cur.execute("""
+                INSERT INTO salles (centre_id, nom, capacite, equipements, etage, disponible, created_at)
+                VALUES (?,?,?,?,?,1,?)
+            """, (cid,
+                  request.form.get('nom'),
+                  int(request.form.get('capacite') or 20),
+                  request.form.get('equipements'),
+                  request.form.get('etage'),
+                  datetime.now().isoformat()))
+            db.commit()
+            flash('✅ Salle ajoutée', 'success')
+            return redirect('/centres/' + str(cid))
+        except Exception as e:
+            db.rollback()
+            flash('❌ ' + str(e), 'error')
+
+    content = '<h1>🚪 Nouvelle salle</h1>'
+    content += '<form method="post" class="card" style="max-width:700px">'
+    content += '<div style="margin-bottom:16px"><label>Nom de la salle *</label><input type="text" name="nom" required autofocus></div>'
+    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+    content += '<div><label>Capacité</label><input type="number" name="capacite" value="20"></div>'
+    content += '<div><label>Étage</label><input type="text" name="etage"></div>'
+    content += '</div>'
+    content += '<div style="margin-top:16px"><label>Équipements</label><textarea name="equipements" rows="3"></textarea></div>'
+    content += '<div style="margin-top:24px"><button type="submit" class="btn btn-success">💾 Créer</button>'
+    content += '<a href="/centres/' + str(cid) + '" class="btn btn-secondary" style="margin-left:8px">Annuler</a></div>'
+    content += '</form>'
+    return render_page(content, active='centres', page_title='Nouvelle salle')
+
+
+# ═══════════════════════════════════════════════════════════════
+# 📅 SESSIONS DE FORMATION
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/sessions')
+@login_required
+def sessions_liste():
+    db = get_db()
+    cur = db.cursor()
+    statut_f = request.args.get('statut', '')
+
+    sql = """
+        SELECT s.*, f.nom AS formation_nom, f.domaine,
+               c.nom AS centre_nom, ftr.nom_complet AS formateur_nom
+        FROM sessions s
+        LEFT JOIN formations f ON f.id=s.formation_id
+        LEFT JOIN centres c ON c.id=s.centre_id
+        LEFT JOIN formateurs ftr ON ftr.id=s.formateur_id
+        WHERE 1=1
+    """
+    params = []
+    if statut_f:
+        sql += " AND s.statut=?"
+        params.append(statut_f)
+    sql += " ORDER BY s.date_debut DESC LIMIT 200"
+    cur.execute(sql, params)
+    sessions = cur.fetchall()
+
+    stats = {}
+    for k, s in [
+        ('total', "SELECT COUNT(*) FROM sessions"),
+        ('planifiee', "SELECT COUNT(*) FROM sessions WHERE statut='planifiee'"),
+        ('en_cours', "SELECT COUNT(*) FROM sessions WHERE statut='en_cours'"),
+        ('terminee', "SELECT COUNT(*) FROM sessions WHERE statut='terminee'"),
+    ]:
+        cur.execute(s)
+        stats[k] = cur.fetchone()[0]
+
+    rows = ''
+    for s in sessions:
+        statut_badge = {
+            'planifiee': 'badge-blue', 'en_cours': 'badge-orange',
+            'terminee': 'badge-green', 'annulee': 'badge-red',
+        }.get(s['statut'], 'badge-gray')
+        remplissage = (s['nb_inscrits'] / s['capacite'] * 100) if s['capacite'] > 0 else 0
+        rows += (
+            '<tr><td><strong style="color:#ea580c">' + str(s["code"]) + '</strong></td>'
+            + '<td><strong>' + str(s["formation_nom"] or "—") + '</strong><br><small style="color:#64748b">' + str(s["domaine"] or "") + '</small></td>'
+            + '<td>' + str(s["centre_nom"] or "—") + '</td>'
+            + '<td>' + str(s["formateur_nom"] or "—") + '</td>'
+            + '<td>' + str((s["date_debut"] or "—")[:10]) + '</td>'
+            + '<td style="text-align:center">' + str(s["nb_inscrits"]) + '/' + str(s["capacite"]) + '<br><small style="color:#64748b">' + f'{remplissage:.0f}' + '%</small></td>'
+            + '<td>' + str(s["financement"] or "—") + '</td>'
+            + '<td><span class="badge ' + statut_badge + '">' + str(s["statut"]) + '</span></td>'
+            + '<td><a href="/sessions/' + str(s["id"]) + '" class="btn btn-primary" style="padding:4px 10px;font-size:11px">👁</a></td></tr>'
+        )
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">📅 Sessions — ' + str(len(sessions)) + '</h1>'
+    content += '<a href="/sessions/nouvelle" class="btn btn-primary">+ Nouvelle session</a></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#ea580c,#c2410c)"><div class="kpi-icon">📅</div><div class="kpi-label">Total</div><div class="kpi-value">' + str(stats["total"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#3b82f6,#1e40af)"><div class="kpi-icon">📋</div><div class="kpi-label">Planifiées</div><div class="kpi-value">' + str(stats["planifiee"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f97316,#ea580c)"><div class="kpi-icon">🔴</div><div class="kpi-label">En cours</div><div class="kpi-value">' + str(stats["en_cours"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-icon">✅</div><div class="kpi-label">Terminées</div><div class="kpi-value">' + str(stats["terminee"]) + '</div></div>'
+    content += '</div>'
+
+    content += '<div style="margin-bottom:16px">'
+    content += '<a href="/sessions" class="btn ' + ('btn-primary' if not statut_f else 'btn-secondary') + '">Toutes</a> '
+    for s in ['planifiee', 'en_cours', 'terminee']:
+        active_cls = 'btn-primary' if statut_f == s else 'btn-secondary'
+        content += '<a href="/sessions?statut=' + s + '" class="btn ' + active_cls + '" style="margin-left:6px">' + s + '</a> '
+    content += '</div>'
+
+    content += '<div class="card" style="padding:0;overflow:hidden">'
+    content += '<table><thead><tr><th>Code</th><th>Formation</th><th>Centre</th><th>Formateur</th>'
+    content += '<th>Début</th><th style="text-align:center">Inscrits</th><th>Financement</th><th>Statut</th><th>Actions</th></tr></thead>'
+    content += '<tbody>' + (rows or '<tr><td colspan="9" style="padding:40px;text-align:center;color:#94a3b8">Aucune session</td></tr>') + '</tbody></table></div>'
+
+    return render_page(content, active='sessions', page_title='Sessions')
+
+
+@app.route('/sessions/nouvelle', methods=['GET', 'POST'])
+@login_required
+def sessions_nouvelle():
+    db = get_db()
+    cur = db.cursor()
+    formation_id_pre = int(request.args.get('formation_id') or 0)
+
+    if request.method == 'POST':
+        try:
+            cur.execute("""
+                INSERT INTO sessions
+                (code, formation_id, centre_id, salle_id, formateur_id, date_debut, date_fin,
+                 horaire, capacite, nb_inscrits, financement, cout_total, statut, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,0,?,?,?,?)
+            """, (None,
+                  int(request.form.get('formation_id') or 0),
+                  int(request.form.get('centre_id') or 0) or None,
+                  int(request.form.get('salle_id') or 0) or None,
+                  int(request.form.get('formateur_id') or 0) or None,
+                  request.form.get('date_debut'),
+                  request.form.get('date_fin'),
+                  request.form.get('horaire'),
+                  int(request.form.get('capacite') or 20),
+                  request.form.get('financement') or 'autofinance',
+                  float(request.form.get('cout_total') or 0),
+                  request.form.get('statut') or 'planifiee',
+                  datetime.now().isoformat()))
+            db.commit()
+            flash('✅ Session créée', 'success')
+            return redirect('/sessions')
+        except Exception as e:
+            db.rollback()
+            flash('❌ ' + str(e), 'error')
+
+    cur.execute("SELECT id, nom, domaine FROM formations WHERE statut='actif' ORDER BY nom")
+    formations = cur.fetchall()
+    cur.execute("SELECT id, nom FROM centres ORDER BY nom")
+    centres = cur.fetchall()
+    cur.execute("SELECT id, nom_complet, specialite FROM formateurs WHERE statut='disponible' ORDER BY nom_complet")
+    formateurs = cur.fetchall()
+
+    opts_f = ''.join('<option value="' + str(f["id"]) + '"' + (' selected' if f["id"] == formation_id_pre else '') + '>' + str(f["nom"]) + '</option>' for f in formations)
+    opts_c = ''.join('<option value="' + str(c["id"]) + '">' + str(c["nom"]) + '</option>' for c in centres)
+    opts_ftr = ''.join('<option value="' + str(f["id"]) + '">' + str(f["nom_complet"]) + '</option>' for f in formateurs)
+
+    content = '<h1>📅 Nouvelle session</h1>'
+    content += '<form method="post" class="card" style="max-width:900px">'
+    content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+    content += '<div style="grid-column:1/-1"><label>Formation *</label><select name="formation_id" required>'
+    content += '<option value="">— Sélectionner —</option>' + opts_f + '</select></div>'
+    content += '<div><label>Centre</label><select name="centre_id"><option value="">— Aucun —</option>' + opts_c + '</select></div>'
+    content += '<div><label>Formateur</label><select name="formateur_id"><option value="">— Aucun —</option>' + opts_ftr + '</select></div>'
+    content += '<div><label>Date début *</label><input type="date" name="date_debut" required value="' + datetime.now().strftime('%Y-%m-%d') + '"></div>'
+    content += '<div><label>Date fin</label><input type="date" name="date_fin" value="' + (datetime.now() + timedelta(days=90)).strftime('%Y-%m-%d') + '"></div>'
+    content += '<div><label>Horaire</label><select name="horaire">'
+    content += '<option value="8h-12h">8h-12h</option>'
+    content += '<option value="14h-18h">14h-18h</option>'
+    content += '<option value="8h-17h">8h-17h</option>'
+    content += '</select></div>'
+    content += '<div><label>Capacité</label><input type="number" name="capacite" value="20"></div>'
+    content += '<div><label>Financement</label><select name="financement">'
+    content += '<option value="3FPT">🏛️ 3FPT</option>'
+    content += '<option value="autofinance">💰 Autofinancement</option>'
+    content += '<option value="entreprise">🏢 Entreprise</option>'
+    content += '<option value="cooperation">🤝 Coopération</option>'
+    content += '</select></div>'
+    content += '<div><label>Coût total (FCFA)</label><input type="number" step="1000" name="cout_total" value="500000"></div>'
+    content += '<div><label>Statut</label><select name="statut">'
+    content += '<option value="planifiee">📋 Planifiée</option>'
+    content += '<option value="en_cours">🔴 En cours</option>'
+    content += '</select></div>'
+    content += '</div>'
+    content += '<div style="margin-top:24px"><button type="submit" class="btn btn-success">💾 Créer</button>'
+    content += '<a href="/sessions" class="btn btn-secondary" style="margin-left:8px">Annuler</a></div>'
+    content += '</form>'
+    return render_page(content, active='sessions', page_title='Nouvelle session')
+
+
+@app.route('/sessions/<int:sid>')
+@login_required
+def sessions_detail(sid):
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("""
+        SELECT s.*, f.nom AS formation_nom, f.domaine, f.duree_heures,
+               c.nom AS centre_nom, ftr.nom_complet AS formateur_nom,
+               ftr.telephone AS formateur_tel, sa.nom AS salle_nom
+        FROM sessions s
+        LEFT JOIN formations f ON f.id=s.formation_id
+        LEFT JOIN centres c ON c.id=s.centre_id
+        LEFT JOIN formateurs ftr ON ftr.id=s.formateur_id
+        LEFT JOIN salles sa ON sa.id=s.salle_id
+        WHERE s.id=?
+    """, (sid,))
+    s = cur.fetchone()
+    if not s:
+        flash('❌ Session introuvable', 'error')
+        return redirect('/sessions')
+
+    cur.execute("""
+        SELECT i.*, a.nom, a.prenom, a.numero_apprenant, a.telephone
+        FROM inscriptions i
+        LEFT JOIN apprenants a ON a.id=i.apprenant_id
+        WHERE i.session_id=?
+        ORDER BY a.nom
+    """, (sid,))
+    inscriptions = cur.fetchall()
+
+    ins_html = ''
+    for i in inscriptions:
+        ins_html += (
+            '<tr><td><strong>' + str(i["numero_apprenant"] or "—") + '</strong></td>'
+            + '<td>' + str(i["prenom"] or "") + ' ' + str(i["nom"] or "") + '</td>'
+            + '<td>' + str(i["telephone"] or "—") + '</td>'
+            + '<td>' + str((i["date_inscription"] or "")[:10]) + '</td>'
+            + '<td>' + str(i["financement"] or "—") + '</td>'
+            + '<td style="text-align:right">' + f'{i["frais_payes"]:,.0f}' + ' F</td></tr>'
+        )
+
+    statut_badge = {'planifiee': 'badge-blue', 'en_cours': 'badge-orange', 'terminee': 'badge-green'}.get(s['statut'], 'badge-gray')
+
+    content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
+    content += '<h1 style="margin:0">📅 ' + str(s["code"]) + ' <span class="badge ' + statut_badge + '">' + str(s["statut"]) + '</span></h1>'
+    content += '<div><a href="/sessions/' + str(sid) + '/presences" class="btn btn-blue">📋 Présences</a> '
+    content += '<a href="/sessions/' + str(sid) + '/inscription" class="btn btn-success">+ Inscrire</a> '
+    content += '<a href="/sessions" class="btn btn-secondary">← Retour</a></div></div>'
+
+    content += '<div class="kpi">'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#ea580c,#c2410c)"><div class="kpi-label">Formation</div><div class="kpi-value" style="font-size:14px">' + str(s["formation_nom"] or "—") + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#2563eb,#1e40af)"><div class="kpi-label">Centre</div><div class="kpi-value" style="font-size:16px">' + str(s["centre_nom"] or "—") + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#10b981,#047857)"><div class="kpi-label">Inscrits</div><div class="kpi-value">' + str(len(inscriptions)) + '/' + str(s["capacite"]) + '</div></div>'
+    content += '<div class="kpi-card" style="background:linear-gradient(135deg,#f59e0b,#b45309)"><div class="kpi-label">Financement</div><div class="kpi-value" style="font-size:16px">' + str(s["financement"] or "—") + '</div></div>'
+    content += '</div>'
+
+    content += '<div class="card"><h2>📋 Informations</h2><table>'
+    content += '<tr><td><strong>Formateur</strong></td><td>' + str(s["formateur_nom"] or "—") + ' · ' + str(s["formateur_tel"] or "") + '</td></tr>'
+    content += '<tr><td><strong>Salle</strong></td><td>' + str(s["salle_nom"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Horaire</strong></td><td>' + str(s["horaire"] or "—") + '</td></tr>'
+    content += '<tr><td><strong>Dates</strong></td><td>' + str((s["date_debut"] or "—")[:10]) + ' → ' + str((s["date_fin"] or "—")[:10]) + '</td></tr>'
+    content += '<tr><td><strong>Durée</strong></td><td>' + str(s["duree_heures"]) + 'h</td></tr>'
+    content += '<tr><td><strong>Coût total</strong></td><td>' + f'{s["cout_total"]:,.0f}' + ' FCFA</td></tr>'
+    content += '</table></div>'
+
+    content += '<div class="card"><h2>👥 Apprenants (' + str(len(inscriptions)) + ')</h2>'
+    content += '<table><thead><tr><th>N°</th><th>Nom</th><th>Téléphone</th><th>Inscription</th><th>Financement</th><th style="text-align:right">Payé</th></tr></thead>'
+    content += '<tbody>' + (ins_html or '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:20px">Aucun apprenant</td></tr>') + '</tbody></table>'
+    content += '<div style="margin-top:14px;text-align:right"><a href="/sessions/' + str(sid) + '/inscription" class="btn btn-primary">+ Inscrire</a></div></div>'
+
+    return render_page(content, active='sessions', page_title='Session')

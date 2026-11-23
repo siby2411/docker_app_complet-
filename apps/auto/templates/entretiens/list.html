@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Entretiens{% endblock %}
+{% block page_title %}🔧 Entretiens & maintenance{% endblock %}
+{% block content %}
+<div class="row g-3 mb-3">
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-tools"></i></div><div><div class="kpi-val">{{ kpi.total }}</div><div class="kpi-lbl">Total</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-accent-grad"><i class="bi bi-cash-coin"></i></div><div><div class="kpi-val">{{ kpi.cout_total|money }}</div><div class="kpi-lbl">Coût total</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-gold-grad"><i class="bi bi-calendar-month"></i></div><div><div class="kpi-val">{{ kpi.ce_mois }}</div><div class="kpi-lbl">Ce mois</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-graph-up"></i></div><div><div class="kpi-val">{{ kpi.cout_mois|money }}</div><div class="kpi-lbl">Coût du mois</div></div></div></div>
+</div>
+
+<div class="card-premium">
+  <form method="GET" class="row g-2 mb-3">
+    <div class="col-md-4"><input type="search" name="q" class="form-control" placeholder="Description, garage, code…" value="{{ q }}"></div>
+    <div class="col-md-2"><button class="btn btn-primary-omega w-100"><i class="bi bi-funnel"></i></button></div>
+    <div class="col-md-6 text-end"><a href="{{ url_for('entretien_new') }}" class="btn btn-accent"><i class="bi bi-plus-lg"></i> Nouvel entretien</a></div>
+  </form>
+
+  <div class="table-responsive">
+    <table class="table table-omega">
+      <thead><tr><th>Date</th><th>Véhicule</th><th>Type</th><th>Description</th><th>Km</th><th class="text-end">Coût</th><th>Garage</th></tr></thead>
+      <tbody>
+        {% for e in entretiens %}
+        <tr>
+          <td>{{ e.date_entretien|dte }}</td>
+          <td><a href="{{ url_for('vehicule_detail', vid=e.vehicule_id) }}">{{ e.veh_code }}</a><br><small class="text-muted">{{ e.marque_nom }} {{ e.modele_nom }}</small></td>
+          <td>{{ e.type }}</td>
+          <td>{{ e.description or '—' }}</td>
+          <td>{{ e.kilometrage|int }} km</td>
+          <td class="text-end fw-bold">{{ e.cout|money }}</td>
+          <td>{{ e.garage or '—' }}</td>
+        </tr>
+        {% else %}<tr><td colspan="7" class="text-center text-muted py-4">Aucun entretien</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

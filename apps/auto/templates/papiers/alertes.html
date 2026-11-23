@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Alertes papiers{% endblock %}
+{% block page_title %}⚠️ Alertes papiers{% endblock %}
+{% block content %}
+<div class="row g-3">
+  <div class="col-12">
+    <div class="card-premium" style="border-left:4px solid #ef476f">
+      <h5 class="text-danger">❌ Expirés ({{ alertes.expires|length }})</h5>
+      <table class="table table-omega table-sm mb-0">
+        <thead><tr><th>Véhicule</th><th>Type</th><th>Numéro</th><th>Expiration</th><th></th></tr></thead>
+        <tbody>
+          {% for p in alertes.expires %}
+          <tr>
+            <td>{{ p.veh_code }} — {{ p.immatriculation }}</td>
+            <td>{{ p.type }}</td>
+            <td>{{ p.numero or '—' }}</td>
+            <td class="text-danger fw-bold">{{ p.date_expiration|dte }}</td>
+            <td><a href="{{ url_for('papier_edit', pid=p.id) }}" class="btn btn-sm btn-light">Renouveler</a></td>
+          </tr>
+          {% else %}<tr><td colspan="5" class="text-muted text-center py-2">Aucun</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="col-12">
+    <div class="card-premium" style="border-left:4px solid #ff8e5e">
+      <h5 style="color:#b35c00">⚡ Critiques ({{ alertes.critiques|length }}) — Expirent sous 7 jours</h5>
+      <table class="table table-omega table-sm mb-0">
+        <thead><tr><th>Véhicule</th><th>Type</th><th>Numéro</th><th>Expiration</th><th></th></tr></thead>
+        <tbody>
+          {% for p in alertes.critiques %}
+          <tr>
+            <td>{{ p.veh_code }} — {{ p.immatriculation }}</td>
+            <td>{{ p.type }}</td>
+            <td>{{ p.numero or '—' }}</td>
+            <td class="text-warning fw-bold">{{ p.date_expiration|dte }}</td>
+            <td><a href="{{ url_for('papier_edit', pid=p.id) }}" class="btn btn-sm btn-light">Renouveler</a></td>
+          </tr>
+          {% else %}<tr><td colspan="5" class="text-muted text-center py-2">Aucun</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="col-12">
+    <div class="card-premium" style="border-left:4px solid #ffd166">
+      <h5 style="color:#856404">⏰ Bientôt ({{ alertes.bientot|length }}) — 8 à 30 jours</h5>
+      <table class="table table-omega table-sm mb-0">
+        <thead><tr><th>Véhicule</th><th>Type</th><th>Numéro</th><th>Expiration</th><th></th></tr></thead>
+        <tbody>
+          {% for p in alertes.bientot %}
+          <tr>
+            <td>{{ p.veh_code }} — {{ p.immatriculation }}</td>
+            <td>{{ p.type }}</td>
+            <td>{{ p.numero or '—' }}</td>
+            <td>{{ p.date_expiration|dte }}</td>
+            <td><a href="{{ url_for('papier_detail', pid=p.id) }}" class="btn btn-sm btn-light"><i class="bi bi-eye"></i></a></td>
+          </tr>
+          {% else %}<tr><td colspan="5" class="text-muted text-center py-2">Aucun</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

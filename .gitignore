@@ -1,11 +1,47 @@
-*.tar.gz
+# Données et sauvegardes
+data/
+uploads/
+backups/
+backup/
+exports/
+exporting/
 *.sql
 *.sql.gz
-*.env
-.env.*
-uploads/
-data/
-backups/
+*.dump
+*.bak
+*.backup
+*.tar
+*.tar.gz
+*.zip
+*.7z
+
+# Journaux et fichiers temporaires
 *.log
+*.tmp
+*.swp
+.DS_Store
+
+# Dépendances et environnements Python
 node_modules/
-nginx/certs/
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# Secrets et identifiants
+.env
+.env.*
+*.env
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+credentials*
+secrets*
+
+# Fichiers Docker volumineux ou générés
+docker-compose.yml.bak*
+docker-compose.yml.backup*
+docker-compose.yml.broken*

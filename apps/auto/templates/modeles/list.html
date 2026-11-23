@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Modèles{% endblock %}
+{% block page_title %}📋 Modèles{% endblock %}
+{% block content %}
+<div class="card-premium">
+  <div class="d-flex flex-wrap gap-2 mb-3">
+    <form class="d-flex gap-2 flex-grow-1">
+      <select name="marque_id" class="form-select" onchange="this.form.submit()">
+        <option value="">Toutes marques</option>
+        {% for m in marques %}<option value="{{ m.id }}" {% if marque_id==m.id %}selected{% endif %}>{{ m.nom }}</option>{% endfor %}
+      </select>
+    </form>
+    <a href="{{ url_for('modele_new') }}" class="btn btn-accent"><i class="bi bi-plus-lg"></i> Nouveau modèle</a>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-omega">
+      <thead><tr><th>Marque</th><th>Modèle</th><th>Type</th><th>Carburant</th><th>Transmission</th><th>Véhicules</th><th></th></tr></thead>
+      <tbody>
+        {% for mo in modeles %}
+        <tr>
+          <td>{{ mo.marque_nom }}</td>
+          <td class="fw-semibold">{{ mo.nom }}</td>
+          <td>{{ mo.type or '—' }}</td>
+          <td>{{ mo.carburant or '—' }}</td>
+          <td>{{ mo.transmission or '—' }}</td>
+          <td><span class="badge-statut badge-en_cours">{{ mo.nb_vehicules }}</span></td>
+          <td class="text-end">
+            <a href="{{ url_for('modele_edit', mid=mo.id) }}" class="btn btn-sm btn-light"><i class="bi bi-pencil"></i></a>
+            <form method="POST" action="{{ url_for('modele_delete', mid=mo.id) }}" class="d-inline" onsubmit="return confirm('Supprimer ?')">
+              <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="text-center text-muted py-3">Aucun modèle</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

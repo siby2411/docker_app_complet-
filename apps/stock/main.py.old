@@ -1,0 +1,1053 @@
+from flask import Flask, render_template_string, request, redirect, url_for, jsonify
+from werkzeug.middleware.proxy_fix import ProxyFix
+import sqlite3
+from datetime import datetime
+import os
+import secrets
+
+app = Flask(__name__)
+app.secret_key = secrets.token_hex(16)
+
+# FIX: Support pour les préfixes de proxy
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+
+DB_PATH = "/app/data/stock.db"
+
+# ==================== INITIALISATION ====================
+def init_db():
+    os.makedirs("/app/data", exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Table produits simplifiée
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS produits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT UNIQUE NOT NULL,
+            nom TEXT NOT NULL,
+            description TEXT,
+            categorie TEXT,
+            prix_achat REAL DEFAULT 0,
+            prix_vente REAL DEFAULT 0,
+            quantite INTEGER DEFAULT 0,
+            seuil_alerte INTEGER DEFAULT 5,
+            unite TEXT DEFAULT 'pièce',
+            emplacement TEXT,
+            fournisseur_id INTEGER,
+            date_creation TEXT,
+            date_modification TEXT,
+            statut TEXT DEFAULT 'Actif'
+        )
+    """)
+    
+    # Table fournisseurs
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS fournisseurs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT UNIQUE NOT NULL,
+            nom TEXT NOT NULL,
+            contact TEXT,
+            telephone TEXT,
+            email TEXT,
+            adresse TEXT,
+            ville TEXT,
+            pays TEXT,
+            date_creation TEXT,
+            statut TEXT DEFAULT 'Actif'
+        )
+    """)
+    
+    # Table clients
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS clients (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT UNIQUE NOT NULL,
+            nom TEXT NOT NULL,
+            prenom TEXT,
+            email TEXT,
+            telephone TEXT,
+            adresse TEXT,
+            ville TEXT,
+            date_creation TEXT,
+            statut TEXT DEFAULT 'Actif'
+        )
+    """)
+    
+    # Table factures
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS factures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            numero TEXT UNIQUE NOT NULL,
+            client_id INTEGER NOT NULL,
+            date_facture TEXT,
+            date_echeance TEXT,
+            statut TEXT DEFAULT 'En attente',
+            montant_ht REAL DEFAULT 0,
+            tva REAL DEFAULT 18,
+            montant_ttc REAL DEFAULT 0,
+            observations TEXT,
+            date_creation TEXT
+        )
+    """)
+    
+    # Table details factures
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS facture_details (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            facture_id INTEGER NOT NULL,
+            produit_id INTEGER NOT NULL,
+            quantite INTEGER DEFAULT 1,
+            prix_unitaire REAL DEFAULT 0,
+            remise REAL DEFAULT 0,
+            total REAL DEFAULT 0
+        )
+    """)
+    
+    # Insertion des données initiales
+    c.execute("SELECT COUNT(*) FROM produits")
+    if c.fetchone()[0] == 0:
+        # Fournisseurs
+        fournisseurs = [
+            ("F001", "Omega Supplies", "Mamadou Diop", "771234567", "mamadou@omega.sn", "Dakar", "Dakar", "Sénégal", datetime.now().isoformat()),
+            ("F002", "Tech Import", "Aminata Fall", "772345678", "aminata@tech.sn", "Thiès", "Thiès", "Sénégal", datetime.now().isoformat())
+        ]
+        c.executemany("""INSERT INTO fournisseurs (code, nom, contact, telephone, email, adresse, ville, pays, date_creation, statut) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Actif')""", fournisseurs)
+        
+        # Clients
+        clients = [
+            ("C001", "Sarr", "Aliou", "aliou.sarr@client.sn", "771234568", "Dakar", "Dakar", datetime.now().isoformat()),
+            ("C002", "Ba", "Aissatou", "aissatou.ba@client.sn", "772345679", "Thiès", "Thiès", datetime.now().isoformat())
+        ]
+        c.executemany("""INSERT INTO clients (code, nom, prenom, email, telephone, adresse, ville, date_creation, statut) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Actif')""", clients)
+        
+        # Produits
+        produits = [
+            ("P001", "Cahier A4", "Cahier 96 pages", "Fourniture", 500, 1000, 150, 30, "pièce", "Etagère A1", 1, datetime.now().isoformat(), datetime.now().isoformat()),
+            ("P002", "Stylo Bleu", "Stylo à bille bleu", "Fourniture", 300, 600, 200, 50, "pièce", "Etagère A2", 1, datetime.now().isoformat(), datetime.now().isoformat()),
+            ("P003", "Papier A4", "Ramette 500 feuilles", "Fourniture", 2000, 3500, 50, 10, "ramette", "Etagère B1", 2, datetime.now().isoformat(), datetime.now().isoformat())
+        ]
+        c.executemany("""INSERT INTO produits (code, nom, description, categorie, prix_achat, prix_vente, quantite, seuil_alerte, unite, emplacement, fournisseur_id, date_creation, date_modification, statut) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Actif')""", produits)
+        
+        conn.commit()
+    conn.close()
+
+init_db()
+
+# ==================== FONCTIONS UTILITAIRES ====================
+
+def generer_code(prefix, table, champ):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(f"SELECT MAX(CAST(SUBSTR({champ}, LENGTH(?) + 1) AS INTEGER)) FROM {table} WHERE {champ} LIKE ?", (prefix, prefix + '%'))
+    max_id = c.fetchone()[0]
+    conn.close()
+    next_id = (max_id or 0) + 1
+    return f"{prefix}{next_id:04d}"
+
+# ==================== TEMPLATE HTML ====================
+HTML_BASE = """
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Omega Stock</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; font-family:'Segoe UI',sans-serif; }
+        body { background:#f0f4f8; }
+        .header { background:linear-gradient(135deg,#1a365d,#2d3748); padding:15px 30px; display:flex; justify-content:space-between; align-items:center; border-bottom:4px solid #d69e2e; flex-wrap:wrap; gap:10px; }
+        .header h1 { color:white; font-size:1.5rem; }
+        .header h1 span { color:#d69e2e; }
+        .header .badge { background:rgba(214,158,46,0.3); color:white; padding:5px 15px; border-radius:20px; }
+        .nav { background:white; padding:0 20px; display:flex; gap:2px; border-bottom:2px solid #e2e8f0; flex-wrap:wrap; }
+        .nav a { padding:12px 18px; color:#4a5568; text-decoration:none; border-bottom:3px solid transparent; transition:0.3s; font-size:0.9rem; display:flex; align-items:center; gap:6px; }
+        .nav a:hover, .nav a.active { color:#d69e2e; border-bottom-color:#d69e2e; background:#f7fafc; }
+        .container { max-width:1400px; margin:20px auto; padding:0 20px; }
+        .card { background:white; border-radius:12px; padding:20px; box-shadow:0 2px 8px rgba(0,0,0,0.05); margin-top:20px; overflow-x:auto; }
+        .card-header { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:15px; }
+        .card-header h2 { font-size:1.2rem; color:#1a365d; }
+        .btn { padding:8px 16px; border:none; border-radius:6px; cursor:pointer; font-weight:600; display:inline-flex; align-items:center; gap:6px; text-decoration:none; transition:0.3s; font-size:0.85rem; }
+        .btn-primary { background:#d69e2e; color:white; }
+        .btn-primary:hover { background:#b7791f; }
+        .btn-success { background:#38a169; color:white; }
+        .btn-success:hover { background:#2f855a; }
+        .btn-danger { background:#e53e3e; color:white; }
+        .btn-danger:hover { background:#c53030; }
+        .btn-info { background:#3182ce; color:white; }
+        .btn-info:hover { background:#2b6cb0; }
+        .btn-sm { padding:4px 10px; font-size:0.75rem; }
+        table { width:100%; border-collapse:collapse; }
+        th, td { padding:10px 12px; text-align:left; border-bottom:1px solid #e2e8f0; font-size:0.9rem; }
+        th { background:#f7fafc; color:#4a5568; font-size:0.75rem; text-transform:uppercase; }
+        tr:hover { background:#f7fafc; }
+        .badge { padding:3px 10px; border-radius:20px; font-size:0.7rem; font-weight:600; }
+        .badge-success { background:#d1fae5; color:#065f46; }
+        .badge-warning { background:#fef3c7; color:#92400e; }
+        .badge-danger { background:#fee2e2; color:#991b1b; }
+        .badge-info { background:#dbeafe; color:#1e40af; }
+        .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:15px; margin-bottom:20px; }
+        .stat-card { background:white; padding:15px; border-radius:12px; border-left:4px solid #d69e2e; box-shadow:0 2px 8px rgba(0,0,0,0.05); }
+        .stat-card .num { font-size:1.8rem; font-weight:700; color:#1a365d; }
+        .stat-card .label { color:#718096; font-size:0.8rem; text-transform:uppercase; }
+        .stat-card .icon { float:right; font-size:2rem; color:#d69e2e; opacity:0.2; }
+        .form-container { background:white; border-radius:12px; padding:25px; max-width:800px; margin:0 auto; box-shadow:0 2px 8px rgba(0,0,0,0.05); }
+        .form-group { margin-bottom:12px; }
+        .form-group label { display:block; font-weight:600; color:#4a5568; margin-bottom:4px; font-size:0.9rem; }
+        .form-group input, .form-group select { width:100%; padding:8px 12px; border:2px solid #e2e8f0; border-radius:6px; font-size:0.9rem; }
+        .form-group input:focus { outline:none; border-color:#d69e2e; }
+        .form-row { display:grid; grid-template-columns:1fr 1fr; gap:15px; }
+        .footer { background:#1a365d; color:#a8b2d1; text-align:center; padding:15px; margin-top:30px; border-top:4px solid #d69e2e; font-size:0.85rem; }
+        .footer span { color:#d69e2e; }
+        .alert { color:#e53e3e; font-weight:bold; }
+        @media (max-width:768px){ .form-row { grid-template-columns:1fr; } .header { flex-direction:column; } }
+    </style>
+</head>
+<body>
+<header class="header">
+    <div><h1>📦 OMEGA <span>STOCK</span></h1></div>
+    <div class="badge"><i class="fas fa-warehouse"></i> Gestion des Stocks</div>
+</header>
+<nav class="nav">
+    <a href="/stock/"><i class="fas fa-home"></i> Dashboard</a>
+    <a href="/stock/produits"><i class="fas fa-box"></i> Produits</a>
+    <a href="/stock/fournisseurs"><i class="fas fa-truck"></i> Fournisseurs</a>
+    <a href="/stock/clients"><i class="fas fa-users"></i> Clients</a>
+    <a href="/stock/factures"><i class="fas fa-file-invoice"></i> Factures</a>
+</nav>
+<div class="container">
+    {% block content %}{% endblock %}
+</div>
+<footer class="footer">&copy; 2026 <span>Omega Consulting</span> - Gestion des Stocks</footer>
+</body>
+</html>
+"""
+
+# ==================== ROUTES ====================
+
+@app.route("/")
+def index():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    c.execute("SELECT COUNT(*) FROM produits")
+    total_produits = c.fetchone()[0]
+    
+    c.execute("SELECT COUNT(*) FROM produits WHERE quantite <= seuil_alerte")
+    alerte_stock = c.fetchone()[0]
+    
+    c.execute("SELECT COUNT(*) FROM fournisseurs WHERE statut='Actif'")
+    total_fournisseurs = c.fetchone()[0]
+    
+    c.execute("SELECT COUNT(*) FROM clients WHERE statut='Actif'")
+    total_clients = c.fetchone()[0]
+    
+    c.execute("""
+        SELECT p.*, f.nom as fournisseur_nom 
+        FROM produits p 
+        LEFT JOIN fournisseurs f ON p.fournisseur_id = f.id 
+        WHERE p.quantite <= p.seuil_alerte 
+        ORDER BY p.quantite ASC LIMIT 10
+    """)
+    alertes = c.fetchall()
+    
+    c.execute("""
+        SELECT p.*, f.nom as fournisseur_nom 
+        FROM produits p 
+        LEFT JOIN fournisseurs f ON p.fournisseur_id = f.id 
+        ORDER BY p.id DESC LIMIT 10
+    """)
+    produits = c.fetchall()
+    conn.close()
+    
+    content = f"""
+    <div class="stats">
+        <div class="stat-card"><div class="icon"><i class="fas fa-box"></i></div><div class="num">{total_produits}</div><div class="label">Total Produits</div></div>
+        <div class="stat-card" style="border-left-color:#e53e3e;"><div class="icon"><i class="fas fa-exclamation-triangle"></i></div><div class="num">{alerte_stock}</div><div class="label">Alerte Stock</div></div>
+        <div class="stat-card" style="border-left-color:#3182ce;"><div class="icon"><i class="fas fa-truck"></i></div><div class="num">{total_fournisseurs}</div><div class="label">Fournisseurs</div></div>
+        <div class="stat-card" style="border-left-color:#38a169;"><div class="icon"><i class="fas fa-users"></i></div><div class="num">{total_clients}</div><div class="label">Clients</div></div>
+    </div>
+    
+    <div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-exclamation-triangle"></i> Alertes Stock</h2>
+            <a href="/stock/produits" class="btn btn-primary"><i class="fas fa-plus"></i> Gérer Produits</a>
+        </div>
+        <table>
+            <thead><tr><th>Code</th><th>Produit</th><th>Quantité</th><th>Seuil</th><th>Statut</th></tr></thead>
+            <tbody>
+    """
+    if alertes:
+        for a in alertes:
+            content += f"""
+            <tr>
+                <td><strong>{a[1]}</strong></td>
+                <td>{a[2]}</td>
+                <td class="alert">{a[7]}</td>
+                <td>{a[8]}</td>
+                <td><span class="badge badge-danger">URGENT</span></td>
+            </tr>
+            """
+    else:
+        content += "<tr><td colspan='5' style='text-align:center;color:#718096;'>✅ Tous les stocks sont bons</td></tr>"
+    content += """
+            </tbody>
+        </table>
+    </div>
+    
+    <div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-box"></i> Derniers Produits</h2>
+            <a href="/stock/produits/ajouter" class="btn btn-success"><i class="fas fa-plus"></i> Ajouter</a>
+        </div>
+        <table>
+            <thead><tr><th>Code</th><th>Nom</th><th>Catégorie</th><th>Prix Vente</th><th>Quantité</th><th>Actions</th></tr></thead>
+            <tbody>
+    """
+    for p in produits:
+        content += f"""
+            <tr>
+                <td><strong>{p[1]}</strong></td>
+                <td>{p[2]}</td>
+                <td>{p[4] or '-'}</td>
+                <td>{p[6]:,} FCFA</td>
+                <td>{p[7]}</td>
+                <td>
+                    <a href="/stock/produits/{p[0]}" class="btn btn-info btn-sm"><i class="fas fa-eye"></i></a>
+                    <a href="/stock/produits/{p[0]}/edit" class="btn btn-primary btn-sm"><i class="fas fa-edit"></i></a>
+                </td>
+            </tr>
+        """
+    content += """
+            </tbody>
+        </table>
+    </div>
+    """
+    
+    return render_template_string(HTML_BASE.replace('{% block content %}{% endblock %}', content))
+
+@app.route("/produits")
+def produits():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT p.*, f.nom as fournisseur_nom 
+        FROM produits p 
+        LEFT JOIN fournisseurs f ON p.fournisseur_id = f.id 
+        ORDER BY p.nom
+    """)
+    produits = c.fetchall()
+    conn.close()
+    
+    rows = "".join(f"""
+        <tr>
+            <td><strong>{p[1]}</strong></td>
+            <td>{p[2]}</td>
+            <td>{p[4] or '-'}</td>
+            <td>{p[6]:,} FCFA</td>
+            <td>{p[7]}</td>
+            <td>{p[8]}</td>
+            <td><span class="badge {"badge-danger" if p[7] <= p[8] else "badge-success"}">{"CRITIQUE" if p[7] <= p[8] else "OK"}</span></td>
+            <td>
+                <a href="/stock/produits/{p[0]}" class="btn btn-info btn-sm"><i class="fas fa-eye"></i></a>
+                <a href="/stock/produits/{p[0]}/edit" class="btn btn-primary btn-sm"><i class="fas fa-edit"></i></a>
+            </td>
+        </tr>
+    """ for p in produits)
+    
+    content = f"""
+    <div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-box"></i> Liste des Produits</h2>
+            <a href="/stock/produits/ajouter" class="btn btn-success"><i class="fas fa-plus"></i> Ajouter</a>
+        </div>
+        <table>
+            <thead><tr><th>Code</th><th>Nom</th><th>Catégorie</th><th>Prix Vente</th><th>Quantité</th><th>Seuil</th><th>Statut</th><th>Actions</th></tr></thead>
+            <tbody>{rows}</tbody>
+        </table>
+    </div>
+    """
+    return render_template_string(HTML_BASE.replace('{% block content %}{% endblock %}', content))
+
+@app.route("/produits/ajouter", methods=["GET", "POST"])
+def ajouter_produit():
+    if request.method == "POST":
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        code = generer_code("P", "produits", "code")
+        c.execute("""
+            INSERT INTO produits (code, nom, description, categorie, prix_achat, prix_vente, quantite, seuil_alerte, unite, emplacement, fournisseur_id, date_creation, date_modification, statut)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 'Actif')
+        """, (
+            code,
+            request.form['nom'],
+            request.form.get('description', ''),
+            request.form.get('categorie', ''),
+            float(request.form.get('prix_achat', 0)),
+            float(request.form.get('prix_vente', 0)),
+            int(request.form.get('quantite', 0)),
+            int(request.form.get('seuil_alerte', 5)),
+            request.form.get('unite', 'pièce'),
+            request.form.get('emplacement', ''),
+            int(request.form['fournisseur_id']) if request.form.get('fournisseur_id') else None
+        ))
+        conn.commit()
+        conn.close()
+        return redirect("/stock/produits")
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, nom FROM fournisseurs WHERE statut='Actif' ORDER BY nom")
+    fournisseurs = c.fetchall()
+    conn.close()
+    
+    options = "".join(f'<option value="{f[0]}">{f[1]}</option>' for f in fournisseurs)
+    
+    content = f"""
+    <div class="form-container">
+        <h2><i class="fas fa-plus"></i> Ajouter un Produit</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Nom *</label><input type="text" name="nom" required></div>
+                <div class="form-group"><label>Catégorie</label>
+                    <select name="categorie">
+                        <option value="">Sélectionner</option>
+                        <option value="Fourniture">Fourniture</option>
+                        <option value="Informatique">Informatique</option>
+                        <option value="Électroménager">Électroménager</option>
+                        <option value="Alimentaire">Alimentaire</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-group"><label>Description</label><input type="text" name="description"></div>
+            <div class="form-row">
+                <div class="form-group"><label>Prix Achat (FCFA)</label><input type="number" name="prix_achat" step="0.01" min="0"></div>
+                <div class="form-group"><label>Prix Vente (FCFA)</label><input type="number" name="prix_vente" step="0.01" min="0"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Quantité</label><input type="number" name="quantite" min="0" value="0"></div>
+                <div class="form-group"><label>Seuil d'alerte</label><input type="number" name="seuil_alerte" min="0" value="5"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Unité</label>
+                    <select name="unite">
+                        <option value="pièce">pièce</option>
+                        <option value="ramette">ramette</option>
+                        <option value="kg">kg</option>
+                        <option value="litre">litre</option>
+                    </select>
+                </div>
+                <div class="form-group"><label>Emplacement</label><input type="text" name="emplacement"></div>
+            </div>
+            <div class="form-group"><label>Fournisseur</label>
+                <select name="fournisseur_id">
+                    <option value="">Aucun</option>
+                    {options}
+                </select>
+            </div>
+            <button type="submit" class="btn btn-success" style="width:100%;"><i class="fas fa-save"></i> Enregistrer</button>
+        </form>
+        <br><a href="/stock/produits" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>
+    """
+    return render_template_string(HTML_BASE.replace('{% block content %}{% endblock %}', content))
+
+@app.route("/produits/<int:id>")
+def detail_produit(id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT p.*, f.nom as fournisseur_nom 
+        FROM produits p 
+        LEFT JOIN fournisseurs f ON p.fournisseur_id = f.id 
+        WHERE p.id = ?
+    """, (id,))
+    p = c.fetchone()
+    conn.close()
+    
+    if not p:
+        return redirect("/stock/produits")
+    
+    content = f"""
+    <div class="card">
+        <h2>{p[2]}</h2>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:15px;background:#f7fafc;padding:15px;border-radius:8px;margin:15px 0;">
+            <div><strong>Code:</strong> {p[1]}</div>
+            <div><strong>Catégorie:</strong> {p[4] or '-'}</div>
+            <div><strong>Description:</strong> {p[3] or '-'}</div>
+            <div><strong>Prix Achat:</strong> {p[5]:,} FCFA</div>
+            <div><strong>Prix Vente:</strong> {p[6]:,} FCFA</div>
+            <div><strong>Quantité:</strong> {p[7]}</div>
+            <div><strong>Seuil:</strong> {p[8]}</div>
+            <div><strong>Unité:</strong> {p[9]}</div>
+            <div><strong>Emplacement:</strong> {p[10] or '-'}</div>
+            <div><strong>Fournisseur:</strong> {p[14] or '-'}</div>
+            <div><strong>Statut:</strong> <span class="badge {"badge-danger" if p[7] <= p[8] else "badge-success"}">{"CRITIQUE" if p[7] <= p[8] else "OK"}</span></div>
+        </div>
+        <a href="/stock/produits" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+        <a href="/stock/produits/{id}/edit" class="btn btn-primary"><i class="fas fa-edit"></i> Modifier</a>
+    </div>
+    """
+    return render_template_string(HTML_BASE.replace('{% block content %}{% endblock %}', content))
+
+@app.route("/produits/<int:id>/edit", methods=["GET", "POST"])
+def edit_produit(id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    if request.method == "POST":
+        c.execute("""
+            UPDATE produits 
+            SET nom=?, description=?, categorie=?, prix_achat=?, prix_vente=?, 
+                quantite=?, seuil_alerte=?, unite=?, emplacement=?, fournisseur_id=?, date_modification=datetime('now')
+            WHERE id=?
+        """, (
+            request.form['nom'],
+            request.form.get('description', ''),
+            request.form.get('categorie', ''),
+            float(request.form.get('prix_achat', 0)),
+            float(request.form.get('prix_vente', 0)),
+            int(request.form.get('quantite', 0)),
+            int(request.form.get('seuil_alerte', 5)),
+            request.form.get('unite', 'pièce'),
+            request.form.get('emplacement', ''),
+            int(request.form['fournisseur_id']) if request.form.get('fournisseur_id') else None,
+            id
+        ))
+        conn.commit()
+        conn.close()
+        return redirect(f"/stock/produits/{id}")
+    
+    c.execute("SELECT * FROM produits WHERE id = ?", (id,))
+    p = c.fetchone()
+    c.execute("SELECT id, nom FROM fournisseurs WHERE statut='Actif' ORDER BY nom")
+    fournisseurs = c.fetchall()
+    conn.close()
+    
+    if not p:
+        return redirect("/stock/produits")
+    
+    options = "".join(f'<option value="{f[0]}" {"selected" if f[0] == p[11] else ""}>{f[1]}</option>' for f in fournisseurs)
+    
+    content = f"""
+    <div class="form-container">
+        <h2><i class="fas fa-edit"></i> Modifier Produit</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Nom *</label><input type="text" name="nom" value="{p[2]}" required></div>
+                <div class="form-group"><label>Catégorie</label>
+                    <select name="categorie">
+                        <option value="">Sélectionner</option>
+                        <option value="Fourniture" {"selected" if p[4]=="Fourniture" else ""}>Fourniture</option>
+                        <option value="Informatique" {"selected" if p[4]=="Informatique" else ""}>Informatique</option>
+                        <option value="Électroménager" {"selected" if p[4]=="Électroménager" else ""}>Électroménager</option>
+                        <option value="Alimentaire" {"selected" if p[4]=="Alimentaire" else ""}>Alimentaire</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-group"><label>Description</label><input type="text" name="description" value="{p[3] or ''}"></div>
+            <div class="form-row">
+                <div class="form-group"><label>Prix Achat (FCFA)</label><input type="number" name="prix_achat" step="0.01" min="0" value="{p[5]}"></div>
+                <div class="form-group"><label>Prix Vente (FCFA)</label><input type="number" name="prix_vente" step="0.01" min="0" value="{p[6]}"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Quantité</label><input type="number" name="quantite" min="0" value="{p[7]}"></div>
+                <div class="form-group"><label>Seuil d'alerte</label><input type="number" name="seuil_alerte" min="0" value="{p[8]}"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Unité</label>
+                    <select name="unite">
+                        <option value="pièce" {"selected" if p[9]=="pièce" else ""}>pièce</option>
+                        <option value="ramette" {"selected" if p[9]=="ramette" else ""}>ramette</option>
+                        <option value="kg" {"selected" if p[9]=="kg" else ""}>kg</option>
+                        <option value="litre" {"selected" if p[9]=="litre" else ""}>litre</option>
+                    </select>
+                </div>
+                <div class="form-group"><label>Emplacement</label><input type="text" name="emplacement" value="{p[10] or ''}"></div>
+            </div>
+            <div class="form-group"><label>Fournisseur</label>
+                <select name="fournisseur_id">
+                    <option value="">Aucun</option>
+                    {options}
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%;"><i class="fas fa-save"></i> Mettre à jour</button>
+        </form>
+        <br><a href="/stock/produits/{id}" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>
+    """
+    return render_template_string(HTML_BASE.replace('{% block content %}{% endblock %}', content))
+
+@app.route("/fournisseurs")
+def fournisseurs():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT * FROM fournisseurs ORDER BY nom")
+    fournisseurs = c.fetchall()
+    conn.close()
+    
+    rows = "".join(f"""
+        <tr>
+            <td><strong>{f[1]}</strong></td>
+            <td>{f[2]}</td>
+            <td>{f[4]}</td>
+            <td>{f[5]}</td>
+            <td>{f[7]}</td>
+            <td><span class="badge {"badge-success" if f[10]=="Actif" else "badge-danger"}">{f[10]}</span></td>
+        </tr>
+    """ for f in fournisseurs)
+    
+    content = f"""
+    <div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-truck"></i> Fournisseurs</h2>
+            <a href="/stock/fournisseurs/ajouter" class="btn btn-success"><i class="fas fa-plus"></i> Ajouter</a>
+        </div>
+        <table>
+            <thead><tr><th>Code</th><th>Nom</th><th>Contact</th><th>Téléphone</th><th>Ville</th><th>Statut</th></tr></thead>
+            <tbody>{rows}</tbody>
+        </table>
+    </div>
+    """
+    return render_template_string(HTML_BASE.replace('{% block content %}{% endblock %}', content))
+
+@app.route("/fournisseurs/ajouter", methods=["GET", "POST"])
+def ajouter_fournisseur():
+    if request.method == "POST":
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        code = generer_code("F", "fournisseurs", "code")
+        c.execute("""
+            INSERT INTO fournisseurs (code, nom, contact, telephone, email, adresse, ville, pays, date_creation, statut)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 'Actif')
+        """, (
+            code,
+            request.form['nom'],
+            request.form.get('contact', ''),
+            request.form['telephone'],
+            request.form.get('email', ''),
+            request.form.get('adresse', ''),
+            request.form.get('ville', ''),
+            request.form.get('pays', 'Sénégal')
+        ))
+        conn.commit()
+        conn.close()
+        return redirect("/stock/fournisseurs")
+    
+    content = """
+    <div class="form-container">
+        <h2><i class="fas fa-plus"></i> Ajouter un Fournisseur</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Nom *</label><input type="text" name="nom" required></div>
+                <div class="form-group"><label>Contact</label><input type="text" name="contact"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Téléphone *</label><input type="text" name="telephone" required></div>
+                <div class="form-group"><label>Email</label><input type="email" name="email"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Adresse</label><input type="text" name="adresse"></div>
+                <div class="form-group"><label>Ville</label><input type="text" name="ville"></div>
+            </div>
+            <div class="form-group"><label>Pays</label><input type="text" name="pays" value="Sénégal"></div>
+            <button type="submit" class="btn btn-success" style="width:100%;"><i class="fas fa-save"></i> Enregistrer</button>
+        </form>
+        <br><a href="/stock/fournisseurs" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>
+    """
+    return render_template_string(HTML_BASE.replace('{% block content %}{% endblock %}', content))
+
+@app.route("/clients")
+def clients():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT * FROM clients ORDER BY nom")
+    clients = c.fetchall()
+    conn.close()
+    
+    rows = "".join(f"""
+        <tr>
+            <td><strong>{c[1]}</strong></td>
+            <td>{c[2]} {c[3] or ''}</td>
+            <td>{c[4]}</td>
+            <td>{c[5]}</td>
+            <td>{c[7]}</td>
+            <td><span class="badge {"badge-success" if c[9]=="Actif" else "badge-danger"}">{c[9]}</span></td>
+        </tr>
+    """ for c in clients)
+    
+    content = f"""
+    <div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-users"></i> Clients</h2>
+            <a href="/stock/clients/ajouter" class="btn btn-success"><i class="fas fa-plus"></i> Ajouter</a>
+        </div>
+        <table>
+            <thead><tr><th>Code</th><th>Nom & Prénom</th><th>Email</th><th>Téléphone</th><th>Ville</th><th>Statut</th></tr></thead>
+            <tbody>{rows}</tbody>
+        </table>
+    </div>
+    """
+    return render_template_string(HTML_BASE.replace('{% block content %}{% endblock %}', content))
+
+@app.route("/clients/ajouter", methods=["GET", "POST"])
+def ajouter_client():
+    if request.method == "POST":
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        code = generer_code("C", "clients", "code")
+        c.execute("""
+            INSERT INTO clients (code, nom, prenom, email, telephone, adresse, ville, date_creation, statut)
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), 'Actif')
+        """, (
+            code,
+            request.form['nom'],
+            request.form.get('prenom', ''),
+            request.form.get('email', ''),
+            request.form['telephone'],
+            request.form.get('adresse', ''),
+            request.form.get('ville', '')
+        ))
+        conn.commit()
+        conn.close()
+        return redirect("/stock/clients")
+    
+    content = """
+    <div class="form-container">
+        <h2><i class="fas fa-plus"></i> Ajouter un Client</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Nom *</label><input type="text" name="nom" required></div>
+                <div class="form-group"><label>Prénom</label><input type="text" name="prenom"></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Email</label><input type="email" name="email"></div>
+                <div class="form-group"><label>Téléphone *</label><input type="text" name="telephone" required></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Adresse</label><input type="text" name="adresse"></div>
+                <div class="form-group"><label>Ville</label><input type="text" name="ville"></div>
+            </div>
+            <button type="submit" class="btn btn-success" style="width:100%;"><i class="fas fa-save"></i> Enregistrer</button>
+        </form>
+        <br><a href="/stock/clients" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>
+    """
+    return render_template_string(HTML_BASE.replace('{% block content %}{% endblock %}', content))
+
+@app.route("/factures")
+def factures():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT f.*, c.nom, c.prenom 
+        FROM factures f 
+        LEFT JOIN clients c ON f.client_id = c.id 
+        ORDER BY f.id DESC
+    """)
+    factures = c.fetchall()
+    conn.close()
+    
+    if not factures:
+        rows = "<tr><td colspan='7' style='text-align:center;color:#718096;'>Aucune facture</td></tr>"
+    else:
+        rows = "".join(f"""
+            <tr>
+                <td><strong>{f[1]}</strong></td>
+                <td>{f[10]} {f[11] or ''}</td>
+                <td>{f[3][:10] if f[3] else '-'}</td>
+                <td>{f[7]:,} FCFA</td>
+                <td>{f[9]:,} FCFA</td>
+                <td><span class="badge {"badge-warning" if f[5]=="En attente" else "badge-success" if f[5]=="Payée" else "badge-danger"}">{f[5]}</span></td>
+                <td><a href="/stock/factures/{f[0]}" class="btn btn-info btn-sm"><i class="fas fa-eye"></i></a></td>
+            </tr>
+        """ for f in factures)
+    
+    content = f"""
+    <div class="card">
+        <div class="card-header">
+            <h2><i class="fas fa-file-invoice"></i> Factures</h2>
+            <a href="/stock/factures/ajouter" class="btn btn-success"><i class="fas fa-plus"></i> Nouvelle Facture</a>
+        </div>
+        <table>
+            <thead><tr><th>Numéro</th><th>Client</th><th>Date</th><th>HT</th><th>TTC</th><th>Statut</th><th>Actions</th></tr></thead>
+            <tbody>{rows}</tbody>
+        </table>
+    </div>
+    """
+    return render_template_string(HTML_BASE.replace('{% block content %}{% endblock %}', content))
+
+@app.route("/factures/ajouter", methods=["GET", "POST"])
+def ajouter_facture():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    if request.method == "POST":
+        numero = generer_code("FAC", "factures", "numero")
+        c.execute("""
+            INSERT INTO factures (numero, client_id, date_facture, date_echeance, statut, observations, date_creation)
+            VALUES (?, ?, datetime('now'), ?, 'En attente', ?, datetime('now'))
+        """, (
+            numero,
+            int(request.form['client_id']),
+            request.form.get('date_echeance', ''),
+            request.form.get('observations', '')
+        ))
+        facture_id = c.lastrowid
+        
+        # Ajouter les détails
+        produits = request.form.getlist('produit_id[]')
+        quantites = request.form.getlist('quantite[]')
+        prix = request.form.getlist('prix_unitaire[]')
+        
+        for i in range(len(produits)):
+            if produits[i] and int(quantites[i]) > 0:
+                c.execute("""
+                    INSERT INTO facture_details (facture_id, produit_id, quantite, prix_unitaire, total)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (
+                    facture_id,
+                    int(produits[i]),
+                    int(quantites[i]),
+                    float(prix[i] or 0),
+                    int(quantites[i]) * float(prix[i] or 0)
+                ))
+        
+        # Mettre à jour les montants
+        c.execute("""
+            UPDATE factures 
+            SET montant_ht = (
+                SELECT SUM(quantite * prix_unitaire) 
+                FROM facture_details 
+                WHERE facture_id = ?
+            ),
+            montant_ttc = (
+                SELECT SUM(quantite * prix_unitaire) * (1 + tva/100)
+                FROM facture_details 
+                WHERE facture_id = ?
+            )
+            WHERE id = ?
+        """, (facture_id, facture_id, facture_id))
+        
+        conn.commit()
+        conn.close()
+        return redirect("/stock/factures")
+    
+    # GET: Afficher le formulaire
+    c.execute("SELECT id, nom, prenom FROM clients WHERE statut='Actif' ORDER BY nom")
+    clients = c.fetchall()
+    
+    c.execute("SELECT id, code, nom, prix_vente FROM produits WHERE statut='Actif' ORDER BY nom")
+    produits = c.fetchall()
+    conn.close()
+    
+    client_options = "".join(f'<option value="{c[0]}">{c[1]} {c[2] or ""}</option>' for c in clients)
+    produits_options = "".join(f'<option value="{p[0]}" data-prix="{p[3]}">{p[1]} - {p[2]}</option>' for p in produits)
+    
+    content = f"""
+    <div class="form-container" style="max-width:1000px;">
+        <h2><i class="fas fa-plus"></i> Nouvelle Facture</h2>
+        <form method="POST">
+            <div class="form-row">
+                <div class="form-group"><label>Client *</label>
+                    <select name="client_id" required>
+                        <option value="">Sélectionner</option>
+                        {client_options}
+                    </select>
+                </div>
+                <div class="form-group"><label>Date Échéance</label>
+                    <input type="date" name="date_echeance">
+                </div>
+            </div>
+            <div class="form-group"><label>Observations</label>
+                <input type="text" name="observations">
+            </div>
+            
+            <h3 style="margin-top:20px;">Détails de la Facture</h3>
+            <div id="produits-container">
+                <div class="form-row-3 produit-ligne">
+                    <div class="form-group"><label>Produit</label>
+                        <select name="produit_id[]" class="produit-select" onchange="updatePrix(this)">
+                            <option value="">Sélectionner</option>
+                            {produits_options}
+                        </select>
+                    </div>
+                    <div class="form-group"><label>Quantité</label>
+                        <input type="number" name="quantite[]" min="1" value="1" class="quantite-input" onchange="calculerTotal(this)">
+                    </div>
+                    <div class="form-group"><label>Prix Unitaire</label>
+                        <input type="number" name="prix_unitaire[]" step="0.01" min="0" value="0" class="prix-input" onchange="calculerTotal(this)">
+                    </div>
+                </div>
+            </div>
+            <button type="button" class="btn btn-info" onclick="ajouterLigne()" style="margin:10px 0;">
+                <i class="fas fa-plus"></i> Ajouter un produit
+            </button>
+            
+            <button type="submit" class="btn btn-success" style="width:100%;"><i class="fas fa-save"></i> Créer la Facture</button>
+        </form>
+        <br><a href="/stock/factures" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+    </div>
+    
+    <style>
+    .form-row-3 {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:15px; margin-bottom:10px; }}
+    @media (max-width:768px){{ .form-row-3 {{ grid-template-columns:1fr; }} }}
+    </style>
+    
+    <script>
+    function updatePrix(select) {{
+        var prix = select.options[select.selectedIndex].getAttribute('data-prix');
+        var ligne = select.closest('.produit-ligne');
+        var prixInput = ligne.querySelector('.prix-input');
+        if (prix) {{
+            prixInput.value = prix;
+            calculerTotal(prixInput);
+        }}
+    }}
+    
+    function calculerTotal(element) {{
+        var ligne = element.closest('.produit-ligne');
+        var quantite = parseFloat(ligne.querySelector('.quantite-input').value) || 0;
+        var prix = parseFloat(ligne.querySelector('.prix-input').value) || 0;
+        var total = quantite * prix;
+        var totalSpan = ligne.querySelector('.total-display');
+        if (!totalSpan) {{
+            totalSpan = document.createElement('span');
+            totalSpan.className = 'total-display';
+            totalSpan.style.marginLeft = '10px';
+            totalSpan.style.fontWeight = 'bold';
+            ligne.appendChild(totalSpan);
+        }}
+        totalSpan.textContent = 'Total: ' + total.toFixed(0) + ' FCFA';
+    }}
+    
+    function ajouterLigne() {{
+        var container = document.getElementById('produits-container');
+        var firstLigne = container.querySelector('.produit-ligne');
+        var newLigne = firstLigne.cloneNode(true);
+        newLigne.querySelector('.produit-select').selectedIndex = 0;
+        newLigne.querySelector('.quantite-input').value = 1;
+        newLigne.querySelector('.prix-input').value = 0;
+        var totalSpan = newLigne.querySelector('.total-display');
+        if (totalSpan) totalSpan.remove();
+        container.appendChild(newLigne);
+    }}
+    </script>
+    """
+    return render_template_string(HTML_BASE.replace('{% block content %}{% endblock %}', content))
+
+@app.route("/factures/<int:id>")
+def detail_facture(id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    c.execute("""
+        SELECT f.*, c.nom, c.prenom, c.telephone, c.email
+        FROM factures f 
+        LEFT JOIN clients c ON f.client_id = c.id 
+        WHERE f.id = ?
+    """, (id,))
+    facture = c.fetchone()
+    
+    if not facture:
+        conn.close()
+        return redirect("/stock/factures")
+    
+    c.execute("""
+        SELECT fd.*, p.code, p.nom as produit_nom 
+        FROM facture_details fd 
+        JOIN produits p ON fd.produit_id = p.id 
+        WHERE fd.facture_id = ?
+    """, (id,))
+    details = c.fetchall()
+    conn.close()
+    
+    detail_rows = "".join(f"""
+        <tr>
+            <td>{d[7]}</td>
+            <td>{d[8]}</td>
+            <td>{d[3]}</td>
+            <td>{d[4]:,} FCFA</td>
+            <td><strong>{d[6]:,} FCFA</strong></td>
+        </tr>
+    """ for d in details)
+    
+    content = f"""
+    <div class="card">
+        <h2>Facture #{facture[1]}</h2>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;background:#f7fafc;padding:15px;border-radius:8px;margin:15px 0;">
+            <div><strong>Client:</strong> {facture[10]} {facture[11] or ''}</div>
+            <div><strong>Téléphone:</strong> {facture[12] or '-'}</div>
+            <div><strong>Email:</strong> {facture[13] or '-'}</div>
+            <div><strong>Date Facture:</strong> {facture[3][:10] if facture[3] else '-'}</div>
+            <div><strong>Date Échéance:</strong> {facture[4] or '-'}</div>
+            <div><strong>Statut:</strong> <span class="badge {"badge-warning" if facture[5]=="En attente" else "badge-success"}">{facture[5]}</span></div>
+            <div><strong>Montant HT:</strong> {facture[7]:,} FCFA</div>
+            <div><strong>TVA:</strong> {facture[8]}%</div>
+            <div><strong>Montant TTC:</strong> <span style="font-size:1.2rem;color:#d69e2e;">{facture[9]:,} FCFA</span></div>
+        </div>
+        
+        <h3>Détails</h3>
+        <table>
+            <thead><tr><th>Code</th><th>Produit</th><th>Quantité</th><th>Prix Unitaire</th><th>Total</th></tr></thead>
+            <tbody>{detail_rows}</tbody>
+            <tfoot>
+                <tr style="background:#f7fafc;font-weight:bold;">
+                    <td colspan="4" style="text-align:right;">TOTAL TTC</td>
+                    <td>{facture[9]:,} FCFA</td>
+                </tr>
+            </tfoot>
+        </table>
+        <br>
+        <a href="/stock/factures" class="btn btn-info"><i class="fas fa-arrow-left"></i> Retour</a>
+        <a href="#" class="btn btn-primary" onclick="window.print()"><i class="fas fa-print"></i> Imprimer</a>
+    </div>
+    """
+    return render_template_string(HTML_BASE.replace('{% block content %}{% endblock %}', content))
+
+@app.route("/api/produit/<int:id>")
+def api_produit(id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, code, nom, prix_vente, quantite FROM produits WHERE id = ?", (id,))
+    produit = c.fetchone()
+    conn.close()
+    
+    if produit:
+        return jsonify({
+            'id': produit[0],
+            'code': produit[1],
+            'nom': produit[2],
+            'prix_vente': produit[3],
+            'quantite': produit[4]
+        })
+    return jsonify({'error': 'Produit non trouvé'}), 404
+
+@app.route("/api/recherche/produits")
+def api_recherche_produits():
+    q = request.args.get('q', '')
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT id, code, nom, prix_vente, quantite 
+        FROM produits 
+        WHERE statut='Actif' AND (code LIKE ? OR nom LIKE ?)
+        LIMIT 10
+    """, (f'%{q}%', f'%{q}%'))
+    produits = c.fetchall()
+    conn.close()
+    
+    return jsonify([{
+        'id': p[0],
+        'code': p[1],
+        'nom': p[2],
+        'prix_vente': p[3],
+        'quantite': p[4]
+    } for p in produits])
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000, debug=False)

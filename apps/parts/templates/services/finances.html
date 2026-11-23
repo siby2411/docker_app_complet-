@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Finances Services{% endblock %}
+{% block page_title %}Finances par service{% endblock %}
+{% block content %}
+
+<div class="card-premium">
+  <form method="GET" class="row g-2 mb-3">
+    <div class="col-md-3"><input type="date" name="date_from" class="form-control" value="{{ d1 }}"></div>
+    <div class="col-md-3"><input type="date" name="date_to" class="form-control" value="{{ d2 }}"></div>
+    <div class="col-md-2"><button class="btn btn-primary-omega w-100">Filtrer</button></div>
+  </form>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-success-grad"><i class="bi bi-cash-stack"></i></div><div><div class="kpi-val">{{ kpi.recettes_total|money_short }}</div><div class="kpi-lbl">Recettes</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-primary-grad"><i class="bi bi-tools"></i></div><div><div class="kpi-val">{{ kpi.recettes_interventions|money_short }}</div><div class="kpi-lbl">Interventions</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-gold-grad"><i class="bi bi-droplet"></i></div><div><div class="kpi-val">{{ kpi.recettes_lavage|money_short }}</div><div class="kpi-lbl">Lavage</div></div></div></div>
+  <div class="col-md-3"><div class="kpi-card"><div class="icon bg-info-grad"><i class="bi bi-search"></i></div><div><div class="kpi-val">{{ kpi.recettes_diagnostics|money_short }}</div><div class="kpi-lbl">Diagnostics</div></div></div></div>
+</div>
+
+<div class="card-premium">
+  <h5>Detail par service</h5>
+  <div class="table-responsive">
+    <table class="table table-omega">
+      <thead><tr><th>Service</th><th>Categorie</th><th class="text-center">Nb</th><th class="text-end">Recettes</th></tr></thead>
+      <tbody>
+        {% for s in par_service %}
+        <tr>
+          <td><strong>{{ s.icone }} {{ s.nom }}</strong></td>
+          <td><span class="badge-statut badge-en_cours">{{ s.categorie }}</span></td>
+          <td class="text-center">{{ s.nb_interventions }}</td>
+          <td class="text-end fw-bold">{{ s.recettes|money }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="text-center text-muted py-4">Aucune donnee</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

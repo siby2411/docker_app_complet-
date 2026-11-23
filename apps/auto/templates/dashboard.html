@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% block title %}Tableau de bord{% endblock %}
+{% block page_title %}📊 Tableau de bord{% endblock %}
+
+{% block content %}
+<!-- KPI Cards -->
+<div class="row g-3 mb-4">
+  <div class="col-6 col-lg-3">
+    <div class="kpi-card">
+      <div class="icon bg-primary-grad"><i class="bi bi-car-front-fill"></i></div>
+      <div>
+        <div class="kpi-val">{{ kpi.vehicules_total }}</div>
+        <div class="kpi-lbl">Véhicules</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="kpi-card">
+      <div class="icon bg-success-grad"><i class="bi bi-check-circle"></i></div>
+      <div>
+        <div class="kpi-val">{{ kpi.vehicules_dispo }}</div>
+        <div class="kpi-lbl">Disponibles</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="kpi-card">
+      <div class="icon bg-accent-grad"><i class="bi bi-key-fill"></i></div>
+      <div>
+        <div class="kpi-val">{{ kpi.locations_actives }}</div>
+        <div class="kpi-lbl">Locations actives</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="kpi-card">
+      <div class="icon bg-gold-grad"><i class="bi bi-people-fill"></i></div>
+      <div>
+        <div class="kpi-val">{{ kpi.clients_total }}</div>
+        <div class="kpi-lbl">Clients</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- CA et Marge -->
+<div class="row g-3 mb-4">
+  <div class="col-md-4">
+    <div class="card-premium">
+      <div class="d-flex align-items-center gap-3">
+        <div style="width:52px;height:52px;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:22px" class="bg-primary-grad"><i class="bi bi-cash-stack"></i></div>
+        <div>
+          <div class="text-muted" style="font-size:11px;letter-spacing:1px;text-transform:uppercase">CA Ventes</div>
+          <div style="font-size:22px;font-weight:800;color:#0a2540">{{ kpi.ca_ventes|money }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card-premium">
+      <div class="d-flex align-items-center gap-3">
+        <div style="width:52px;height:52px;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:22px" class="bg-success-grad"><i class="bi bi-graph-up-arrow"></i></div>
+        <div>
+          <div class="text-muted" style="font-size:11px;letter-spacing:1px;text-transform:uppercase">Marge totale</div>
+          <div style="font-size:22px;font-weight:800;color:#067a52">{{ kpi.marge_totale|money }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card-premium">
+      <div class="d-flex align-items-center gap-3">
+        <div style="width:52px;height:52px;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:22px" class="bg-accent-grad"><i class="bi bi-box-seam"></i></div>
+        <div>
+          <div class="text-muted" style="font-size:11px;letter-spacing:1px;text-transform:uppercase">Valeur stock</div>
+          <div style="font-size:22px;font-weight:800;color:#ff6b35">{{ kpi.valeur_stock|money }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Graphique + Top marques -->
+<div class="row g-3 mb-4">
+  <div class="col-lg-8">
+    <div class="card-premium">
+      <h5 class="mb-3"><i class="bi bi-bar-chart-line" style="color:#ff6b35"></i> Ventes & Locations — 6 derniers mois</h5>
+      <canvas id="chartVentes" height="80"></canvas>
+    </div>
+  </div>
+  <div class="col-lg-4">
+    <div class="card-premium">
+      <h5 class="mb-3"><i class="bi bi-trophy" style="color:#f4b400"></i> Top 5 marques</h5>
+      {% if top_marques %}
+        {% for m in top_marques %}
+        <div class="d-flex align-items-center gap-2 mb-2">
+          <div style="width:22px;height:22px;border-radius:50%;background:linear-gradient(135deg,#ff6b35,#f4b400);color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700">{{ loop.index }}</div>
+          <div style="flex:1;font-weight:600;font-size:13px">{{ m.nom }}</div>
+          <div class="badge-statut badge-disponible">{{ m.nb }} ventes</div>
+        </div>
+        {% endfor %}
+      {% else %}
+        <p class="text-muted small mb-0">Aucune vente livrée.</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- Dernières ventes + locations -->
+<div class="row g-3 mb-4">
+  <div class="col-lg-6">
+    <div class="card-premium">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <h5 class="mb-0"><i class="bi bi-receipt"></i> Dernières ventes</h5>
+        <a href="{{ url_for('ventes_list') }}" class="btn btn-sm btn-outline-secondary">Voir tout</a>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-omega table-sm mb-0">
+          <thead><tr><th>Réf.</th><th>Véhicule</th><th>Client</th><th class="text-end">Montant</th><th>Statut</th></tr></thead>
+          <tbody>
+            {% for v in dernieres_ventes %}
+            <tr>
+              <td><a href="{{ url_for('vente_detail', vente_id=v.id) }}" style="text-decoration:none;font-weight:600;color:#0a2540">{{ v.numero }}</a></td>
+              <td>{{ v.veh_code or '—' }}</td>
+              <td>{{ v.client_prenom or '' }} {{ v.client_nom or '—' }}</td>
+              <td class="text-end fw-bold">{{ v.montant_ttc|money }}</td>
+              <td><span class="badge-statut badge-{{ v.statut }}">{{ v.statut }}</span></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="text-center text-muted py-3">Aucune vente</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-6">
+    <div class="card-premium">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <h5 class="mb-0"><i class="bi bi-key"></i> Dernières locations</h5>
+        <a href="{{ url_for('locations_list') }}" class="btn btn-sm btn-outline-secondary">Voir tout</a>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-omega table-sm mb-0">
+          <thead><tr><th>Réf.</th><th>Véhicule</th><th>Période</th><th class="text-end">Montant</th><th>Statut</th></tr></thead>
+          <tbody>
+            {% for l in dernieres_locations %}
+            <tr>
+              <td><a href="{{ url_for('location_detail', loc_id=l.id) }}" style="text-decoration:none;font-weight:600;color:#0a2540">{{ l.numero }}</a></td>
+              <td>{{ l.veh_code or '—' }}</td>
+              <td>{{ l.date_debut|dte }} → {{ l.date_fin_prevue|dte }}</td>
+              <td class="text-end fw-bold">{{ l.montant_total|money }}</td>
+              <td><span class="badge-statut badge-{{ l.statut }}">{{ l.statut }}</span></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="text-center text-muted py-3">Aucune location</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Alertes papiers -->
+{% if alertes %}
+<div class="card-premium">
+  <h5 class="mb-3"><i class="bi bi-exclamation-triangle-fill text-danger"></i> Alertes papiers (expiration &lt; 60j)</h5>
+  <div class="table-responsive">
+    <table class="table table-omega table-sm mb-0">
+      <thead><tr><th>Véhicule</th><th>Type</th><th>Numéro</th><th>Expiration</th><th>Statut</th></tr></thead>
+      <tbody>
+        {% for a in alertes %}
+        <tr>
+          <td><a href="{{ url_for('vehicule_detail', vid=a.vehicule_id) }}" style="text-decoration:none">{{ a.veh_code }} — {{ a.immatriculation }}</a></td>
+          <td>{{ a.type }}</td>
+          <td>{{ a.numero or '—' }}</td>
+          <td>{{ a.date_expiration|dte }}</td>
+          <td><span class="badge-statut badge-{{ a.statut }}">{{ a.statut }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const ctx = document.getElementById('chartVentes');
+if (ctx) {
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: [{% for v in ventes_mois %}'{{ v.mois }}',{% endfor %}],
+      datasets: [
+        {
+          label: 'CA Ventes (FCFA)',
+          data: [{% for v in ventes_mois %}{{ v.ca }},{% endfor %}],
+          backgroundColor: 'rgba(10,37,64,.85)',
+          borderRadius: 8,
+        },
+        {
+          label: 'CA Locations (FCFA)',
+          data: [{% for l in locs_mois %}{{ l.ca }},{% endfor %}],
+          backgroundColor: 'rgba(255,107,53,.85)',
+          borderRadius: 8,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { position: 'bottom' } },
+      scales: { y: { beginAtZero: true, ticks: { callback: v => (v/1000000).toFixed(1)+'M' } } }
+    }
+  });
+}
+</script>
+{% endblock %}

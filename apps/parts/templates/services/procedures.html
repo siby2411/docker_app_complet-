@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Procedures{% endblock %}
+{% block page_title %}Procedures de depannage{% endblock %}
+{% block content %}
+
+<div class="card-premium">
+  <h5>Procedures</h5>
+  <div class="row g-3">
+    {% for p in procedures %}
+    <div class="col-md-6">
+      <div class="card-premium" style="border-left:4px solid #ff6b35">
+        <div class="d-flex justify-content-between mb-2">
+          <div style="font-weight:700;color:#0a2540">{{ p.titre }}</div>
+          <span class="badge-statut badge-{{ 'disponible' if p.niveau == 'debutant' else 'en_cours' if p.niveau == 'intermediaire' else 'critique' }}">{{ p.niveau }}</span>
+        </div>
+        <div class="text-muted small mb-2"><strong>Symptomes :</strong> {{ p.symptomes }}</div>
+        <small>{{ p.duree_estimee }} min - Difficulte : {{ p.difficulte }}/5</small>
+      </div>
+    </div>
+    {% else %}
+    <div class="col-12 text-center text-muted py-4">Aucune procedure</div>
+    {% endfor %}
+  </div>
+</div>
+
+{% endblock %}

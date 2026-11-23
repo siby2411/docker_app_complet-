@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+{% block title %}{{ v.immatriculation }}{% endblock %}
+{% block page_title %}🚗 {{ v.immatriculation }} — {{ v.marque }} {{ v.modele }}{% endblock %}
+{% block content %}
+
+{% if alertes %}
+<div class="alert alert-warning">
+  <strong>⚠️ Alertes :</strong>
+  <ul class="mb-0">{% for a in alertes %}<li>{{ a }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3"><div class="card-premium p-3 text-center">
+    <small>Kilométrage</small><h3>{{ '{:,}'.format(kpi.km_actuel).replace(',', ' ') }} km</h3>
+  </div></div>
+  <div class="col-md-3"><div class="card-premium p-3 text-center">
+    <small>Interventions</small><h3>{{ kpi.nb_interventions }}</h3>
+  </div></div>
+  <div class="col-md-3"><div class="card-premium p-3 text-center">
+    <small>Fiches</small><h3>{{ kpi.nb_fiches }}</h3>
+  </div></div>
+  <div class="col-md-3"><div class="card-premium p-3 text-center">
+    <small>Coût total</small><h3>{{ kpi.cout_total|money_short }}</h3>
+  </div></div>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-6">
+    <div class="card-premium p-3">
+      <h5>📋 Fiche véhicule</h5>
+      <table class="table table-sm">
+        <tr><td>Code</td><td><code>{{ v.code }}</code></td></tr>
+        <tr><td>VIN / Châssis</td><td>{{ v.vin_chassis or '—' }}</td></tr>
+        <tr><td>Année</td><td>{{ v.annee or '—' }}</td></tr>
+        <tr><td>Carburant</td><td>{{ v.carburant or '—' }}</td></tr>
+        <tr><td>Transmission</td><td>{{ v.transmission or '—' }}</td></tr>
+        <tr><td>Couleur</td><td>{{ v.couleur or '—' }}</td></tr>
+        <tr><td>Puissance</td><td>{{ v.puissance_ch or 0 }} ch</td></tr>
+        <tr><td>Cylindrée</td><td>{{ v.cylindree_cm3 or 0 }} cm³</td></tr>
+      </table>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="card-premium p-3">
+      <h5>👤 Client</h5>
+      {% if v.client_nom %}
+        <p><strong>{{ v.client_prenom or '' }} {{ v.client_nom }}</strong><br>
+        📞 {{ v.client_tel or '—' }}<br>
+        ✉️ {{ v.client_email or '—' }}<br>
+        📍 {{ v.client_adresse or '—' }}</p>
+        <a href="{{ url_for('client_detail', cid=v.client_id) }}" class="btn btn-sm btn-primary">Voir le client</a>
+      {% else %}<p class="text-muted">Aucun client associé.</p>{% endif %}
+
+      <hr>
+      <h6>📅 Documents</h6>
+      <table class="table table-sm">
+        <tr><td>Assurance</td><td>{{ v.assurance_compagnie or '—' }}</td>
+            <td>{{ v.assurance_expiration or '—' }}</td></tr>
+        <tr><td>Visite tech.</td><td colspan="2">{{ v.visite_technique_expiration or '—' }}</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="card-premium p-3 mb-4">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h5>🔧 Historique SAV ({{ historique|length }})</h5>
+    <button class="btn btn-sm btn-success" data-bs-toggle="modal" data-bs-target="#modalHisto">➕ Événement</button>
+  </div>
+  <table class="table table-sm">
+    <thead><tr><th>Date</th><th>Type</th><th>Description</th><th>Intervenant</th><th>Km</th><th>Coût</th></tr></thead>
+    <tbody>
+    {% for h in historique %}
+      <tr>
+        <td>{{ h.date_evenement|dte }}</td>
+        <td><span class="badge bg-secondary">{{ h.type_evenement }}</span></td>
+        <td>{{ h.description or '—' }}</td>
+        <td>{{ h.intervenant_nom or '—' }}</td>
+        <td>{{ h.kilometrage or 0 }} km</td>
+        <td>{{ (h.cout_total or 0)|money_short }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="6" class="text-center text-muted">Aucun événement.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card-premium p-3 mb-4">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h5>📝 Fiches techniques ({{ fiches|length }})</h5>
+    <button class="btn btn-sm btn-success" data-bs-toggle="modal" data-bs-target="#modalFiche">➕ Fiche</button>
+  </div>
+  {% for f in fiches %}
+    <div class="border rounded p-3 mb-2">
+      <div class="d-flex justify-content-between">
+        <strong>{{ f.titre }}</strong>
+        <small class="text-muted">{{ f.date_fiche|dte }} — {{ f.auteur_nom or '—' }}</small>
+      </div>
+      <p class="mb-1"><span class="badge bg-info">{{ f.type_fiche }}</span>
+         <span class="badge bg-warning text-dark">{{ f.priorite }}</span></p>
+      <p class="mb-0">{{ f.contenu or '' }}</p>
+      {% if f.observations %}<p class="mb-0"><em>Observations :</em> {{ f.observations }}</p>{% endif %}
+      {% if f.recommandations %}<p class="mb-0"><em>Recommandations :</em> {{ f.recommandations }}</p>{% endif %}
+      <form method="POST" action="{{ url_for('vehicule_fiche_delete', vid=v.id, fid=f.id) }}"
+            onsubmit="return confirm('Supprimer cette fiche ?')" class="mt-2">
+        <button class="btn btn-sm btn-danger">🗑️ Supprimer</button>
+      </form>
+    </div>
+  {% else %}
+    <p class="text-muted">Aucune fiche.</p>
+  {% endfor %}
+</div>
+
+<div class="card-premium p-3 mb-4">
+  <h5>🔧 Interventions liées ({{ interventions|length }})</h5>
+  <table class="table table-sm">
+    <thead><tr><th>N°</th><th>Date</th><th>Service</th><th>Statut</th><th>Mécanicien</th></tr></thead>
+    <tbody>
+    {% for i in interventions %}
+      <tr>
+        <td><code>{{ i.numero }}</code></td>
+        <td>{{ i.date_debut|dte }}</td>
+        <td>{{ i.service_icone or '' }} {{ i.service_nom or '—' }}</td>
+        <td><span class="badge bg-secondary">{{ i.statut }}</span></td>
+        <td>{{ i.mecanicien_nom or '—' }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="text-center text-muted">Aucune intervention.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<!-- Modals -->
+<div class="modal fade" id="modalHisto" tabindex="-1">
+  <div class="modal-dialog"><div class="modal-content">
+    <form method="POST" action="{{ url_for('vehicule_historique_new', vid=v.id) }}">
+      <div class="modal-header"><h5>Ajouter un événement</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <div class="mb-2"><label>Type</label>
+          <select name="type_evenement" class="form-select">
+            <option value="note">Note</option>
+            <option value="reparation">Réparation</option>
+            <option value="entretien">Entretien</option>
+            <option value="controle">Contrôle</option>
+            <option value="autre">Autre</option>
+          </select></div>
+        <div class="mb-2"><label>Description</label>
+          <textarea name="description" class="form-control" rows="2"></textarea></div>
+        <div class="mb-2"><label>Travaux effectués</label>
+          <textarea name="travaux" class="form-control" rows="2"></textarea></div>
+        <div class="mb-2"><label>Pièces utilisées</label>
+          <textarea name="pieces_utilisees" class="form-control" rows="2"></textarea></div>
+        <div class="row g-2">
+          <div class="col-6"><label>Kilométrage</label>
+            <input type="number" name="kilometrage" class="form-control" value="{{ kpi.km_actuel }}"></div>
+          <div class="col-6"><label>Coût total</label>
+            <input type="number" step="0.01" name="cout_total" class="form-control" value="0"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-success">Enregistrer</button>
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Annuler</button>
+      </div>
+    </form>
+  </div></div>
+</div>
+
+<div class="modal fade" id="modalFiche" tabindex="-1">
+  <div class="modal-dialog"><div class="modal-content">
+    <form method="POST" action="{{ url_for('vehicule_fiche_new', vid=v.id) }}">
+      <div class="modal-header"><h5>Nouvelle fiche technique</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <div class="mb-2"><label>Titre *</label>
+          <input type="text" name="titre" class="form-control" required></div>
+        <div class="row g-2 mb-2">
+          <div class="col-6"><label>Type</label>
+            <select name="type_fiche" class="form-select">
+              <option value="generale">Générale</option>
+              <option value="moteur">Moteur</option>
+              <option value="electricite">Électricité</option>
+              <option value="carrosserie">Carrosserie</option>
+              <option value="pneumatique">Pneumatique</option>
+              <option value="autre">Autre</option>
+            </select></div>
+          <div class="col-6"><label>Priorité</label>
+            <select name="priorite" class="form-select">
+              <option value="basse">Basse</option>
+              <option value="normale" selected>Normale</option>
+              <option value="haute">Haute</option>
+              <option value="urgente">Urgente</option>
+            </select></div>
+        </div>
+        <div class="mb-2"><label>Contenu</label>
+          <textarea name="contenu" class="form-control" rows="3"></textarea></div>
+        <div class="mb-2"><label>Observations</label>
+          <textarea name="observations" class="form-control" rows="2"></textarea></div>
+        <div class="mb-2"><label>Recommandations</label>
+          <textarea name="recommandations" class="form-control" rows="2"></textarea></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-success">Enregistrer</button>
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Annuler</button>
+      </div>
+    </form>
+  </div></div>
+</div>
+
+{% endblock %}

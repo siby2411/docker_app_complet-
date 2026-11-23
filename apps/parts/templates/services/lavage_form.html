@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Nouveau lavage{% endblock %}
+{% block page_title %}🚿 Nouveau lavage{% endblock %}
+{% block content %}
+<form method="POST" class="card-premium p-4">
+  <div class="row g-3">
+    <div class="col-md-6"><label class="form-label">🚗 Véhicule</label>
+      <select name="vehicule_id" class="form-select">
+        <option value="">— Choisir —</option>
+        {% for v in vehicules %}
+          <option value="{{ v.id }}" data-client="{{ v.client_id }}">
+            {{ v.immatriculation }} — {{ v.marque }} {{ v.modele }}
+          </option>
+        {% endfor %}
+      </select></div>
+    <div class="col-md-6"><label class="form-label">👤 Client</label>
+      <select name="client_id" class="form-select">
+        <option value="">— Aucun —</option>
+        {% for c in clients %}
+          <option value="{{ c.id }}">{{ c.prenom or '' }} {{ c.nom }} — {{ c.telephone }}</option>
+        {% endfor %}
+      </select></div>
+    <div class="col-md-4"><label class="form-label">Type de lavage</label>
+      <select name="type_lavage" class="form-select">
+        <option value="standard">Standard</option>
+        <option value="complet">Complet</option>
+        <option value="interieur">Intérieur seul</option>
+        <option value="exterieur">Extérieur seul</option>
+        <option value="moteur">Lavage moteur</option>
+        <option value="premium">Premium (cirage)</option>
+      </select></div>
+    <div class="col-md-4"><label class="form-label">Prix (FCFA)</label>
+      <input type="number" name="prix" class="form-control" value="0"></div>
+    <div class="col-md-4"><label class="form-label">Notes</label>
+      <input type="text" name="notes" class="form-control"></div>
+  </div>
+  <div class="mt-4 d-flex gap-2">
+    <button class="btn btn-success">💾 Enregistrer</button>
+    <a href="{{ url_for('lavage_list') }}" class="btn btn-secondary">Annuler</a>
+  </div>
+</form>
+{% endblock %}
