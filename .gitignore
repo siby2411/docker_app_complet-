@@ -8,3 +8,4 @@ data/
 backups/
 *.log
 node_modules/
+nginx/certs/
